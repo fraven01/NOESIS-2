@@ -5,7 +5,6 @@ from django.utils import timezone
 from django_tenants.utils import schema_context
 
 from cases.models import Case
-from customers.tests.factories import TenantFactory
 from documents.contracts import DocumentMeta, DocumentRef, FileBlob, NormalizedDocument
 from documents.services.document_space_service import (
     DocumentSpaceRequest,
@@ -73,9 +72,11 @@ class _RepositoryStub(DocumentsRepository):
         return None
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
-def test_document_space_service_builds_context():
-    tenant = TenantFactory(schema_name="doc-space-service")
+@pytest.mark.xdist_group("tenant_ops")
+def test_document_space_service_builds_context(tenant_pool):
+    tenant = tenant_pool["alpha"]
     with schema_context(tenant.schema_name):
         case = Case.objects.create(
             tenant=tenant, external_id="CASE-999", title="Service Case"

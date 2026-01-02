@@ -38,33 +38,25 @@ _Counts are approximate snapshots; re-run counts before executing refactors._
 **File**: [theme/views.py](../../theme/views.py)
 
 ```python
-# Lines 205-217: 12 lines to parse boolean
-def _parse_bool(value: object, *, default: bool = False) -> bool:
-    """Parse boolean from query param."""
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    s = str(value).strip().lower()
-    if s in ("true", "1", "yes"):
-        return True
-    if s in ("false", "0", "no"):
-        return False
-    return default
-```
+Resolved: pass-through helpers removed from `theme/views.py`; validation now lives in
+`theme/validators.py` with Pydantic field validators.
 
-**Problem**: This is pure ceremony. Pydantic validators or inline logic would be clearer.
+```python
+from theme.validators import DocumentSpaceQueryParams
+
+params = DocumentSpaceQueryParams.model_validate(request.GET)
+```
 
 ### Complete List of Pass-Through Functions
 
-| Function | Lines | Purpose | Alternative |
+| Function | Status | Purpose | Alternative |
 |----------|-------|---------|-------------|
-| `_parse_bool()` | 205-217 | Boolean parsing | Pydantic `@field_validator` |
-| `_parse_limit()` | 197-202 | Int clamping | Pydantic `@field_validator` with `ge=5, le=200` |
-| `_extract_user_id()` | 101-115 | Attribute access | Direct access or property |
-| `_human_readable_bytes()` | 220-235 | Formatting | Template filter or frontend |
-| `_normalise_quality_mode()` | 268-272 | String validation | Pydantic `Literal` type |
-| `_normalise_max_candidates()` | 275-281 | Int clamping | Pydantic field constraint |
+| `_parse_bool()` | removed | Boolean parsing | Pydantic `@field_validator` |
+| `_parse_limit()` | removed | Int clamping | Pydantic `@field_validator` with `ge=5, le=200` |
+| `_extract_user_id()` | removed | Attribute access | Inline extraction in views |
+| `_human_readable_bytes()` | removed | Formatting | Template filter or frontend |
+| `_normalise_quality_mode()` | removed | String validation | Pydantic `Literal` type |
+| `_normalise_max_candidates()` | removed | Int clamping | Pydantic field constraint |
 
 **Note**: Helpers that include IO or domain logic (tenant resolution, collection lookup, cache/LLM routing) are not pass-through. These should be refactored or relocated, not deleted (e.g. `_tenant_context_from_request`, `_resolve_manual_collection`, `_normalize_collection_id`, `_resolve_rerank_model_preset`).
 
@@ -108,26 +100,17 @@ class SearchQueryParams(BaseModel):
 
 ### Evidence: 54 Normalize/Convert Functions
 
-**Primary Offender**: [ai_core/services/__init__.py:145-188](../../ai_core/services/__init__.py#L145-L188)
+**Primary Offender (resolved)**: [ai_core/services/__init__.py](../../ai_core/services/__init__.py)
 
 ```python
-def _make_json_safe(value):
-    """Convert Python objects to JSON-safe types.
+_JSON_ADAPTER = TypeAdapter(Any)
 
-    43 LINES to manually convert:
-    - UUID -> str
-    - datetime -> ISO string
-    - Decimal -> float
-    - Custom objects -> dict
-
-    This is what Pydantic's JSON adapters handle natively!
-    """
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    # ... 35+ more lines of manual type checking
+def _dump_jsonable(value: Any) -> Any:
+    """Return a structure that json.dumps can serialise."""
+    return _JSON_ADAPTER.dump_python(value, mode="json")
 ```
+
+**Previous anti-pattern**: a 43-line `_make_json_safe` function that hand-rolled type conversions (removed).
 
 ### Pattern Duplication: theme/views.py
 
@@ -195,8 +178,8 @@ class _ViewCrawlerIngestionAdapter:
 
 **Implementation**:
 ```python
-# BEFORE: ai_core/services/__init__.py
-def _make_json_safe(value): ...  # 43 lines
+# BEFORE (removed): ai_core/services/__init__.py
+def _make_json_safe(value): ...  # 43 lines of manual conversions
 
 # AFTER: Use Pydantic JSON adapters for mixed payloads
 from typing import Any
@@ -508,11 +491,11 @@ logger.exception("Failed to process")
 # Line 1055, 1075
 logger.warning("Invalid parameter")
 
-# Line 1214 - PRODUCTION CODE!
+# Line 1214 - PRODUCTION CODE! (removed)
 print("Debug: user_id =", user_id)
 ```
 
-**Problem**: `print()` statement in production code!
+**Problem (resolved)**: `print()` statement in production code (removed; structured logging enforced).
 
 **File**: [ai_core/services/crawler_runner.py](../../ai_core/services/crawler_runner.py)
 
@@ -536,7 +519,7 @@ logger.warning("Rate limit approaching")
 ### Recommendation
 
 **P0 Task**: [Standardize Error Handling](../../roadmap/backlog.md#p0---critical-quick-wins-high-impact-medium-effort)
-**Observability Task**: [Fix Logging Chaos](../../roadmap/backlog.md#observability-cleanup)
+**Observability Task**: [Fix Logging Chaos](../../roadmap/backlog.md#observability-cleanup) (done)
 
 **Implementation**:
 ```python
@@ -576,7 +559,7 @@ logger.info(
 )
 
 # NEVER use print()
-# ALWAYS use structured logging (extra={})
+# ALWAYS use structured logging (extra={}) - see `docs/observability/logging-standards.md`
 ```
 
 ---
@@ -722,23 +705,23 @@ state = SynthesizedState.from_result(result, build.state)
    - **Blocker for**: All other refactorings depend on this
 
 2. **Kill JSON Normalization** BREAKING
-   - Delete `_make_json_safe()` (43 lines)
+   - Delete `_make_json_safe()` (43 lines) (done: replaced with `_dump_jsonable`)
    - Replace with `TypeAdapter(Any).dump_python(..., mode="json")` or `pydantic_core.to_jsonable_python`
    - **Quick win**: Immediate -43 lines
 
-3. **Standardize Error Handling** BREAKING
+3. **Standardize Error Handling** BREAKING (done)
    - Keep `ToolErrorType` as the single response contract
-   - Migrate 395 error sites to boundary mapping
-   - Add unified error-to-response mapping
+   - Migrate error sites to boundary mapping
+   - Add unified error-to-response mapping (see `ai_core/infra/resp.py:build_tool_error_payload`)
    - **Blocker for**: Consistent observability
 
 ### Phase 2: Cleanup (Week 3-4)
 
 **P1 Tasks** - High value, low-medium effort:
 
-4. **Eliminate Pass-Through Functions**
-   - Create `theme/validators.py` with Pydantic models
-   - Remove 10+ helper functions from views.py
+4. **Eliminate Pass-Through Functions** (done)
+   - Create `theme/validators.py` with Pydantic models (done)
+   - Remove helper functions from views.py (done)
    - **Benefit**: -150+ lines, better validation
 
 5. **Normalize the Normalizers**

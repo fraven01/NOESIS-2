@@ -389,8 +389,18 @@ def build_document_processing_graph(
         allowed_mimes = getattr(config, "mime_allowlist", None)
         if allowed_mimes:
             mime = getattr(doc.blob, "media_type", "")
-            print(
-                f"DEBUG: mime='{mime}', allowed='{allowed_mimes}', type(blob)={type(doc.blob)}"
+            logger.debug(
+                "upload.mime_validation",
+                extra={
+                    "tenant_id": getattr(getattr(doc, "ref", None), "tenant_id", None),
+                    "document_id": str(
+                        getattr(getattr(doc, "ref", None), "document_id", "")
+                    )
+                    or None,
+                    "mime": mime,
+                    "allowed_mimes": list(allowed_mimes),
+                    "blob_type": type(doc.blob).__name__,
+                },
             )
             if mime:
                 mime = mime.lower()
@@ -679,7 +689,6 @@ def build_document_processing_graph(
         return state
 
     def _caption_assets(state: DocumentProcessingState) -> DocumentProcessingState:
-        print("\\nCAPTION_DEBUG: _caption_assets ENTERED")
         from . import pipeline as pipeline_module
         from .captioning import AssetExtractionPipeline
         from .contract_utils import is_image_mediatype
@@ -688,15 +697,42 @@ def build_document_processing_graph(
         context = state.context
         metadata = context.metadata
         workflow_id = metadata.workflow_id
+        logger.debug(
+            "caption_assets.entered",
+            extra={
+                "tenant_id": metadata.tenant_id,
+                "trace_id": metadata.trace_id,
+                "workflow_id": workflow_id,
+                "document_id": str(metadata.document_id),
+            },
+        )
 
-        print(
-            f"CAPTION_DEBUG: enable_asset_captions={getattr(config, 'enable_asset_captions', False)}"
+        logger.debug(
+            "caption_assets.config",
+            extra={
+                "tenant_id": metadata.tenant_id,
+                "trace_id": metadata.trace_id,
+                "workflow_id": workflow_id,
+                "document_id": str(metadata.document_id),
+                "enable_asset_captions": getattr(
+                    config, "enable_asset_captions", False
+                ),
+            },
         )
 
         caption_done = pipeline_module._state_rank(
             context.state
         ) >= pipeline_module._state_rank(pipeline_module.ProcessingState.CAPTIONED)
-        print(f"CAPTION_DEBUG: caption_done={caption_done}")
+        logger.debug(
+            "caption_assets.state",
+            extra={
+                "tenant_id": metadata.tenant_id,
+                "trace_id": metadata.trace_id,
+                "workflow_id": workflow_id,
+                "document_id": str(metadata.document_id),
+                "caption_done": caption_done,
+            },
+        )
 
         if config.enable_asset_captions and not caption_done:
 
@@ -854,19 +890,21 @@ def build_document_processing_graph(
             logger.info(
                 "chunk_completed",
                 extra={
+                    "tenant_id": metadata.tenant_id,
+                    "trace_id": metadata.trace_id,
+                    "workflow_id": workflow_id,
                     "document_id": str(metadata.document_id),
                     "chunk_count": len(chunks),
                 },
             )
-            print(
-                f"CHUNK_DEBUG: Chunking completed successfully, {len(chunks)} chunks created"
-            )
 
         except Exception as exc:
-            print(f"CHUNK_DEBUG: EXCEPTION in chunk block: {type(exc).__name__}: {exc}")
             logger.exception(
                 "chunk_document_failed",
                 extra={
+                    "tenant_id": metadata.tenant_id,
+                    "trace_id": metadata.trace_id,
+                    "workflow_id": workflow_id,
                     "document_id": str(metadata.document_id),
                     "error_type": type(exc).__name__,
                     "error_message": str(exc),
@@ -880,20 +918,33 @@ def build_document_processing_graph(
         """Embed document chunks and index in vector store."""
         from . import pipeline as pipeline_module
 
-        # CRITICAL DEBUG
-        print(f"\n{'='*80}")
-        print("EMBED_DEBUG: _embed_chunks CALLED")
-        print(
-            f"EMBED_DEBUG: enable_embedding={getattr(state.config, 'enable_embedding', False)}"
+        logger.debug(
+            "embed_chunks.debug",
+            extra={
+                "tenant_id": state.context.metadata.tenant_id,
+                "trace_id": state.context.metadata.trace_id,
+                "workflow_id": state.context.metadata.workflow_id,
+                "document_id": str(state.context.metadata.document_id),
+                "enable_embedding": getattr(state.config, "enable_embedding", False),
+                "embedder_present": embedder is not None,
+                "chunk_artifact_present": state.chunk_artifact is not None,
+                "chunks_count": (
+                    len(state.chunk_artifact.chunks) if state.chunk_artifact else 0
+                ),
+            },
         )
-        print(f"EMBED_DEBUG: embedder_present={embedder is not None}")
-        print(f"EMBED_DEBUG: chunk_artifact_present={state.chunk_artifact is not None}")
-        if state.chunk_artifact:
-            print(f"EMBED_DEBUG: chunks_count={len(state.chunk_artifact.chunks)}")
-        print(f"{'='*80}\n")
 
         if not getattr(state.config, "enable_embedding", False):
-            print("EMBED_DEBUG: SKIP - enable_embedding=False")
+            logger.debug(
+                "embed_chunks.skip",
+                extra={
+                    "tenant_id": state.context.metadata.tenant_id,
+                    "trace_id": state.context.metadata.trace_id,
+                    "workflow_id": state.context.metadata.workflow_id,
+                    "document_id": str(state.context.metadata.document_id),
+                    "reason": "enable_embedding_false",
+                },
+            )
             return state
 
         # If embedder is not provided, we can't embed.
@@ -902,7 +953,16 @@ def build_document_processing_graph(
         # But we only reach here via graph edges.
 
         if embedder is None:
-            print("EMBED_DEBUG: SKIP - embedder is None")
+            logger.debug(
+                "embed_chunks.skip",
+                extra={
+                    "tenant_id": state.context.metadata.tenant_id,
+                    "trace_id": state.context.metadata.trace_id,
+                    "workflow_id": state.context.metadata.workflow_id,
+                    "document_id": str(state.context.metadata.document_id),
+                    "reason": "embedder_missing",
+                },
+            )
             # Decide if we skip or error.
             # If enabled in config but missing component, it's a configuration error.
             # But making it optional in builder means we might not have it.

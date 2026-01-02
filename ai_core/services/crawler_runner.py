@@ -36,7 +36,7 @@ from documents.domain_service import (
 )
 
 import ai_core.services as services_module
-from . import _get_documents_repository, _make_json_safe
+from . import _get_documents_repository, _dump_jsonable
 from .crawler_state_builder import build_crawler_state
 from documents.normalization import normalize_url
 
@@ -504,7 +504,7 @@ def _build_synchronous_payload(
             {
                 "origin": build.origin,
                 # Single source: state.transitions (populated from output.transitions)
-                "transitions": _make_json_safe(state_data.get("transitions", [])),
+                "transitions": _dump_jsonable(state_data.get("transitions", [])),
             }
         )
         errors_payload.extend(_extract_origin_errors(build, state_data))
@@ -596,7 +596,7 @@ def _extract_origin_errors(
     for error in errors:
         if not isinstance(error, Mapping):
             continue
-        serialised.append({"origin": build.origin, **_make_json_safe(error)})
+        serialised.append({"origin": build.origin, **_dump_jsonable(error)})
     return serialised
 
 
@@ -634,12 +634,12 @@ def _summarize_origin_entry(
         "origin": build.origin,
         "provider": build.provider,
         "document_id": build.document_id,
-        "result": _make_json_safe(result_payload),
-        "control": _make_json_safe(control),
+        "result": _dump_jsonable(result_payload),
+        "control": _dump_jsonable(control),
         "ingest_action": state.get("ingest_action"),
         "gating_score": state.get("gating_score"),
         "graph_run_id": state.get("graph_run_id") or result_payload.get("graph_run_id"),
-        "state": _make_json_safe(summary_state),
+        "state": _dump_jsonable(summary_state),
         "collection_id": build.collection_id,
         "review": build.review,
         "dry_run": build.dry_run,
@@ -672,11 +672,11 @@ def _serialise_guardrail_component(value: object) -> object:
             str(key): _serialise_guardrail_component(value)
             for key, value in candidate.items()
         }
-        return _make_json_safe(processed)
+        return _dump_jsonable(processed)
     if isinstance(candidate, (list, tuple, set)):
         processed_list = [_serialise_guardrail_component(item) for item in candidate]
-        return _make_json_safe(processed_list)
-    return _make_json_safe(candidate)
+        return _dump_jsonable(processed_list)
+    return _dump_jsonable(candidate)
 
 
 def _serialise_guardrail_attributes(

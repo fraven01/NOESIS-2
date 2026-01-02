@@ -5,6 +5,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.http import Http404
 
+from drf_spectacular.utils import extend_schema
 from drf_spectacular.views import SpectacularRedocView, SpectacularSwaggerView
 
 
@@ -32,6 +33,7 @@ class _DocsToggleMixin:
 class BrandedSpectacularSwaggerView(_DocsToggleMixin, SpectacularSwaggerView):
     """Swagger UI view that honours the docs toggle and custom branding."""
 
+    @extend_schema(exclude=True)
     def get(self, request, *args, **kwargs):  # noqa: D401 - inherited behaviour
         self._ensure_docs_enabled()
         self.title = _build_docs_title()
@@ -41,6 +43,7 @@ class BrandedSpectacularSwaggerView(_DocsToggleMixin, SpectacularSwaggerView):
 class BrandedSpectacularRedocView(_DocsToggleMixin, SpectacularRedocView):
     """Redoc view mirroring the Swagger UI toggle and branding."""
 
+    @extend_schema(exclude=True)
     def get(self, request, *args, **kwargs):  # noqa: D401 - inherited behaviour
         self._ensure_docs_enabled()
         self.title = _build_docs_title()

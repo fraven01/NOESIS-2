@@ -93,9 +93,7 @@ def run_graph(  # type: ignore[no-untyped-def]
             case_id=case_id,  # Optional after Option A
             service_id="celery-agents-worker",
             trace_id=trace_id or (scope_context.trace_id if scope_context else None),
-            invocation_id=(
-                scope_context.invocation_id if scope_context else None
-            ),
+            invocation_id=(scope_context.invocation_id if scope_context else None),
             workflow_id=(
                 business_context.workflow_id if business_context else None
             ),  # BREAKING CHANGE: from business_context
@@ -103,9 +101,7 @@ def run_graph(  # type: ignore[no-untyped-def]
             ingestion_run_id=(
                 scope_context.ingestion_run_id if scope_context else None
             ),
-            idempotency_key=(
-                scope_context.idempotency_key if scope_context else None
-            ),
+            idempotency_key=(scope_context.idempotency_key if scope_context else None),
             tenant_schema=scope_context.tenant_schema if scope_context else None,
             collection_id=(
                 business_context.collection_id if business_context else None

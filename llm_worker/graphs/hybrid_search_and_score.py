@@ -20,7 +20,6 @@ from django.core.cache import cache
 
 from ai_core.infra.observability import update_observation
 from ai_core.nodes import retrieve
-from ai_core.tool_contracts import ToolContext
 from ai_core.tool_contracts.base import tool_context_from_meta
 from llm_worker.graphs.score_results import run_score_results
 from llm_worker.schemas import (
@@ -701,7 +700,6 @@ class HybridSearchAndScoreGraph:
         context = tool_context_from_meta(meta)
         tenant_id = str(context.scope.tenant_id or "").strip()
         case_id = str(context.business.case_id or "").strip()
-        trace_id = str(context.scope.trace_id or "").strip()
         if not tenant_id or not case_id:
             return [], {"rag_unavailable": True}
 

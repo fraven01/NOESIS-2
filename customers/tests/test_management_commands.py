@@ -10,11 +10,12 @@ from django_tenants.utils import get_public_schema_name, schema_context
 from customers.models import Domain, Tenant
 from profiles.models import UserProfile
 from users.models import User
-from .factories import DomainFactory, TenantFactory
+from .factories import DomainFactory
 
 
 @pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_create_tenant_command():
     call_command(
         "create_tenant", schema="testschema", name="Test", domain="test.example.com"
@@ -26,6 +27,7 @@ def test_create_tenant_command():
 
 @pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_create_tenant_creates_schema_when_auto_creation_disabled(monkeypatch):
     monkeypatch.setattr("customers.models.Tenant.auto_create_schema", False)
 
@@ -42,6 +44,7 @@ def test_create_tenant_creates_schema_when_auto_creation_disabled(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_create_tenant_disallows_public_schema():
     with pytest.raises(CommandError):
         call_command(
@@ -54,18 +57,23 @@ def test_create_tenant_disallows_public_schema():
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_duplicate_schema():
-    TenantFactory(schema_name="dup")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_duplicate_schema(tenant_pool):
+    existing = tenant_pool["alpha"]
     with pytest.raises(CommandError):
         call_command(
-            "create_tenant", schema="dup", name="Test", domain="test2.example.com"
+            "create_tenant",
+            schema=existing.schema_name,
+            name="Test",
+            domain="test2.example.com",
         )
 
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_duplicate_domain():
-    DomainFactory(domain="dup.example.com")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_duplicate_domain(tenant_pool):
+    DomainFactory(tenant=tenant_pool["alpha"], domain="dup.example.com")
     with pytest.raises(CommandError):
         call_command(
             "create_tenant", schema="test2", name="Test", domain="dup.example.com"
@@ -74,6 +82,7 @@ def test_create_tenant_duplicate_domain():
 
 @pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_create_tenant_is_atomic(monkeypatch):
     def _raise(*args, **kwargs):
         raise RuntimeError("boom")
@@ -88,18 +97,20 @@ def test_create_tenant_is_atomic(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_list_tenants_command(capsys):
-    tenant = TenantFactory(schema_name="alpha")
+@pytest.mark.xdist_group("tenant_ops")
+def test_list_tenants_command(capsys, tenant_pool):
+    tenant = tenant_pool["beta"]
     call_command("list_tenants")
     captured = capsys.readouterr()
-    assert "alpha" in captured.out
+    assert tenant.schema_name in captured.out
     assert tenant.name in captured.out
 
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_superuser_missing_tables(monkeypatch):
-    tenant = TenantFactory(schema_name="missing")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_superuser_missing_tables(monkeypatch, tenant_pool):
+    tenant = tenant_pool["gamma"]
 
     recorded_calls = []
 
@@ -144,8 +155,9 @@ def test_create_tenant_superuser_missing_tables(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_superuser_creates_user(monkeypatch):
-    tenant = TenantFactory(schema_name="createuser")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_superuser_creates_user(monkeypatch, tenant_pool):
+    tenant = tenant_pool["delta"]
 
     recorded_calls = []
 
@@ -182,8 +194,9 @@ def test_create_tenant_superuser_creates_user(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_superuser_updates_existing_user(monkeypatch):
-    tenant = TenantFactory(schema_name="updateuser")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_superuser_updates_existing_user(monkeypatch, tenant_pool):
+    tenant = tenant_pool["alpha"]
 
     with schema_context(tenant.schema_name):
         user = User.objects.create_user(
@@ -225,8 +238,9 @@ def test_create_tenant_superuser_updates_existing_user(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_superuser_requires_password(monkeypatch):
-    tenant = TenantFactory(schema_name="requirespass")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_superuser_requires_password(monkeypatch, tenant_pool):
+    tenant = tenant_pool["beta"]
 
     monkeypatch.setattr(
         "customers.management.commands.create_tenant_superuser.call_command",
@@ -249,8 +263,9 @@ def test_create_tenant_superuser_requires_password(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_superuser_requires_username(monkeypatch):
-    tenant = TenantFactory(schema_name="requiresuser")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_superuser_requires_username(monkeypatch, tenant_pool):
+    tenant = tenant_pool["gamma"]
 
     monkeypatch.setattr(
         "customers.management.commands.create_tenant_superuser.call_command",
@@ -270,6 +285,7 @@ def test_create_tenant_superuser_requires_username(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_create_tenant_superuser_missing_tenant():
     with pytest.raises(CommandError) as excinfo:
         call_command(
@@ -284,8 +300,9 @@ def test_create_tenant_superuser_missing_tenant():
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_add_domain_creates_and_sets_primary():
-    tenant = TenantFactory(schema_name="tenant-add-domain")
+@pytest.mark.xdist_group("tenant_ops")
+def test_add_domain_creates_and_sets_primary(tenant_pool):
+    tenant = tenant_pool["alpha"]
 
     stdout = StringIO()
     call_command(
@@ -306,10 +323,11 @@ def test_add_domain_creates_and_sets_primary():
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_add_domain_requires_force_for_existing_assignment():
-    original = TenantFactory(schema_name="original")
+@pytest.mark.xdist_group("tenant_ops")
+def test_add_domain_requires_force_for_existing_assignment(tenant_pool):
+    original = tenant_pool["alpha"]
     DomainFactory(tenant=original, domain="shared.example.com")
-    target = TenantFactory(schema_name="target")
+    target = tenant_pool["beta"]
 
     with pytest.raises(CommandError) as excinfo:
         call_command(
@@ -325,10 +343,11 @@ def test_add_domain_requires_force_for_existing_assignment():
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_add_domain_force_reassigns_and_sets_primary():
-    original = TenantFactory(schema_name="orig-force")
+@pytest.mark.xdist_group("tenant_ops")
+def test_add_domain_force_reassigns_and_sets_primary(tenant_pool):
+    original = tenant_pool["alpha"]
     domain = DomainFactory(tenant=original, domain="force.example.com", is_primary=True)
-    target = TenantFactory(schema_name="target-force")
+    target = tenant_pool["beta"]
 
     call_command(
         "add_domain",
@@ -347,8 +366,9 @@ def test_add_domain_force_reassigns_and_sets_primary():
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_add_domain_switches_primary_within_tenant():
-    tenant = TenantFactory(schema_name="swap-primary")
+@pytest.mark.xdist_group("tenant_ops")
+def test_add_domain_switches_primary_within_tenant(tenant_pool):
+    tenant = tenant_pool["gamma"]
     old = DomainFactory(tenant=tenant, domain="old.example.com", is_primary=True)
     new = DomainFactory(tenant=tenant, domain="new.example.com", is_primary=False)
 
@@ -369,8 +389,9 @@ def test_add_domain_switches_primary_within_tenant():
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_add_domain_ensures_existing_domain_and_normalizes_input():
-    tenant = TenantFactory(schema_name="tenant-ensure")
+@pytest.mark.xdist_group("tenant_ops")
+def test_add_domain_ensures_existing_domain_and_normalizes_input(tenant_pool):
+    tenant = tenant_pool["delta"]
     domain = DomainFactory(tenant=tenant, domain="normalize.example.com")
     with schema_context(get_public_schema_name()):
         Domain.objects.filter(pk=domain.pk).update(is_primary=False)
@@ -396,8 +417,9 @@ def test_add_domain_ensures_existing_domain_and_normalizes_input():
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_add_domain_normalises_credentials_and_trailing_dot():
-    tenant = TenantFactory(schema_name="tenant-normalize-creds")
+@pytest.mark.xdist_group("tenant_ops")
+def test_add_domain_normalises_credentials_and_trailing_dot(tenant_pool):
+    tenant = tenant_pool["alpha"]
 
     call_command(
         "add_domain",
@@ -413,6 +435,7 @@ def test_add_domain_normalises_credentials_and_trailing_dot():
 
 @pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_add_domain_missing_tenant():
     with pytest.raises(CommandError) as excinfo:
         call_command(
@@ -428,14 +451,16 @@ def test_add_domain_missing_tenant():
 
 @pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_collectstatic_command_resolves():
     call_command("collectstatic", "--dry-run", "--noinput", verbosity=0)
 
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_superuser_uses_environment_defaults(monkeypatch):
-    tenant = TenantFactory(schema_name="env-superuser")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_superuser_uses_environment_defaults(monkeypatch, tenant_pool):
+    tenant = tenant_pool["beta"]
 
     recorded_calls = []
 
@@ -511,8 +536,9 @@ def test_create_tenant_superuser_uses_environment_defaults(monkeypatch):
 
 @pytest.mark.slow
 @pytest.mark.django_db
-def test_create_tenant_superuser_warns_when_no_changes_needed(monkeypatch):
-    tenant = TenantFactory(schema_name="noop-superuser")
+@pytest.mark.xdist_group("tenant_ops")
+def test_create_tenant_superuser_warns_when_no_changes_needed(monkeypatch, tenant_pool):
+    tenant = tenant_pool["gamma"]
 
     monkeypatch.setattr(
         "customers.management.commands.create_tenant_superuser.call_command",

@@ -168,8 +168,10 @@ def tenant_client(client, monkeypatch):
 
     def _mock_process_request(self, request):
         """Mock middleware to set tenant directly without hostname lookup."""
-        # Use hardcoded 'autotest' schema created by test_tenant_schema_name fixture
-        request.tenant = Tenant.objects.get(schema_name="autotest")
+        from django.conf import settings
+
+        test_schema = getattr(settings, "TEST_TENANT_SCHEMA", "autotest")
+        request.tenant = Tenant.objects.get(schema_name=test_schema)
         return None
 
     monkeypatch.setattr(TenantMainMiddleware, "process_request", _mock_process_request)

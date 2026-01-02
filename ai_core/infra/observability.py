@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import json
 import logging
 import os
 import base64
@@ -487,10 +486,9 @@ def emit_event(event: Any, attributes: Optional[dict[str, Any]] = None) -> None:
             except Exception:
                 pass
     output_payload = {"event": event_name, **attrs}
-    try:
-        print(json.dumps(output_payload))
-    except Exception:
-        print(str(output_payload))
+    normalised = _normalise_attributes(output_payload)
+    event_label = normalised.pop("event", event_name)
+    LOGGER.info("observability.event", extra={"event": event_label, **normalised})
 
 
 def get_langchain_callbacks() -> Iterable[Any]:

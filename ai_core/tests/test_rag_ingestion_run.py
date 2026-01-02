@@ -187,8 +187,8 @@ def test_rag_ingestion_run_with_empty_document_ids_returns_400(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["code"] == "validation_error"
-    assert "document_ids" in body["detail"]
+    assert body["error"]["code"] == "validation_error"
+    assert "document_ids" in body["error"]["message"]
 
 
 @pytest.mark.django_db
@@ -213,8 +213,8 @@ def test_rag_ingestion_run_without_profile_returns_400(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["code"] == "validation_error"
-    assert "embedding_profile" in body["detail"]
+    assert body["error"]["code"] == "validation_error"
+    assert "embedding_profile" in body["error"]["message"]
 
 
 @pytest.mark.django_db
@@ -243,8 +243,8 @@ def test_rag_ingestion_run_with_invalid_priority_returns_400(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["code"] == "validation_error"
-    assert "priority" in body["detail"]
+    assert body["error"]["code"] == "validation_error"
+    assert "priority" in body["error"]["message"]
 
 
 @pytest.mark.django_db
@@ -272,5 +272,5 @@ def test_rag_ingestion_run_with_invalid_document_id_returns_400(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["code"] == "validation_error"
-    assert "document_ids" in body["detail"]
+    assert body["error"]["code"] == "validation_error"
+    assert "document_ids" in body["error"]["message"]

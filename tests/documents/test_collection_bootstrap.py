@@ -17,7 +17,13 @@ from documents.service_facade import ingest_document
 from ai_core.contracts.scope import ScopeContext
 
 
-@pytest.mark.django_db(transaction=True)
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.django_db,
+    pytest.mark.xdist_group("tenant_ops"),
+]
+
+
 def test_bootstrap_creates_manual_collection(tenant: Tenant):
     """Test that bootstrap creates manual-search collection."""
     service = CollectionService()
@@ -38,7 +44,6 @@ def test_bootstrap_creates_manual_collection(tenant: Tenant):
         assert collection.key == "manual-search"
 
 
-@pytest.mark.django_db(transaction=True)
 def test_bootstrap_is_idempotent(tenant: Tenant):
     """Test that bootstrapping same collection twice doesn't create duplicates."""
     service = CollectionService()
@@ -62,7 +67,6 @@ def test_bootstrap_is_idempotent(tenant: Tenant):
         assert count == 1
 
 
-@pytest.mark.django_db(transaction=True)
 def test_ingest_with_collection_key_uses_existing_collection(tenant: Tenant):
     """Test that ingestion with collection_key finds existing collection.
 
@@ -124,7 +128,6 @@ def test_ingest_with_collection_key_uses_existing_collection(tenant: Tenant):
         assert memberships.count() == 1
 
 
-@pytest.mark.django_db(transaction=True)
 def test_ingest_with_only_collection_id_creates_duplicate_old_bug(tenant: Tenant):
     """Test that ingestion with only collection_id creates duplicate (OLD BUG).
 
@@ -173,7 +176,6 @@ def test_ingest_with_only_collection_id_creates_duplicate_old_bug(tenant: Tenant
         # this test documents expected behavior
 
 
-@pytest.mark.django_db(transaction=True)
 def test_resolve_collection_reference_finds_by_collection_id(tenant: Tenant):
     """Test that _resolve_collection_reference finds collection by collection_id."""
     service = CollectionService()
@@ -207,7 +209,6 @@ def test_resolve_collection_reference_finds_by_collection_id(tenant: Tenant):
         assert all_collections.count() == 1
 
 
-@pytest.mark.django_db(transaction=True)
 def test_resolve_collection_reference_with_key_finds_collection(tenant: Tenant):
     """Test that _resolve_collection_reference finds collection by key."""
     service = CollectionService()

@@ -4,29 +4,32 @@ from django.db import connection
 from django.test import RequestFactory
 
 from customers.tenant_context import TenantContext, TenantRequiredError
-from customers.tests.factories import TenantFactory
 
 
-@pytest.mark.django_db
-def test_resolve_identifier_prefers_schema_name():
-    tenant = TenantFactory(schema_name="alpha")
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.django_db,
+    pytest.mark.xdist_group("tenant_ops"),
+]
 
-    resolved = TenantContext.resolve_identifier("alpha")
+
+def test_resolve_identifier_prefers_schema_name(tenant_pool):
+    tenant = tenant_pool["alpha"]
+
+    resolved = TenantContext.resolve_identifier(tenant.schema_name)
 
     assert resolved == tenant
 
 
-@pytest.mark.django_db
-def test_resolve_identifier_allows_pk_when_opted_in():
-    tenant = TenantFactory()
+def test_resolve_identifier_allows_pk_when_opted_in(tenant_pool):
+    tenant = tenant_pool["beta"]
 
     assert TenantContext.resolve_identifier(str(tenant.pk)) is None
     assert TenantContext.resolve_identifier(str(tenant.pk), allow_pk=True) == tenant
 
 
-@pytest.mark.django_db
-def test_from_request_prefers_request_tenant_and_caches(monkeypatch):
-    tenant = TenantFactory(schema_name="cached")
+def test_from_request_prefers_request_tenant_and_caches(monkeypatch, tenant_pool):
+    tenant = tenant_pool["gamma"]
     request = RequestFactory().get("/")
     request.tenant = tenant
 
@@ -45,9 +48,8 @@ def test_from_request_prefers_request_tenant_and_caches(monkeypatch):
     assert request._tenant_context_cache is tenant
 
 
-@pytest.mark.django_db
-def test_from_request_resolves_connection_schema(monkeypatch):
-    tenant = TenantFactory(schema_name="schema-source")
+def test_from_request_resolves_connection_schema(monkeypatch, tenant_pool):
+    tenant = tenant_pool["delta"]
     request = RequestFactory().get("/")
 
     monkeypatch.setattr(connection, "schema_name", tenant.schema_name, raising=False)
@@ -57,9 +59,8 @@ def test_from_request_resolves_connection_schema(monkeypatch):
     assert resolved == tenant
 
 
-@pytest.mark.django_db
-def test_from_request_resolves_connection_schema_pk(monkeypatch):
-    tenant = TenantFactory()
+def test_from_request_resolves_connection_schema_pk(monkeypatch, tenant_pool):
+    tenant = tenant_pool["alpha"]
     request = RequestFactory().get("/")
 
     monkeypatch.setattr(connection, "schema_name", str(tenant.pk), raising=False)
@@ -72,9 +73,10 @@ def test_from_request_resolves_connection_schema_pk(monkeypatch):
     assert resolved_optional is None
 
 
-@pytest.mark.django_db
-def test_from_request_resolves_connection_schema_pk_when_allowed(monkeypatch):
-    tenant = TenantFactory()
+def test_from_request_resolves_connection_schema_pk_when_allowed(
+    monkeypatch, tenant_pool
+):
+    tenant = tenant_pool["beta"]
     request = RequestFactory().get("/")
 
     monkeypatch.setattr(connection, "schema_name", str(tenant.pk), raising=False)
@@ -84,9 +86,10 @@ def test_from_request_resolves_connection_schema_pk_when_allowed(monkeypatch):
     assert resolved == tenant
 
 
-@pytest.mark.django_db
-def test_from_request_resolves_connection_schema_pk_in_cli_context(monkeypatch):
-    tenant = TenantFactory()
+def test_from_request_resolves_connection_schema_pk_in_cli_context(
+    monkeypatch, tenant_pool
+):
+    tenant = tenant_pool["gamma"]
     from types import SimpleNamespace
 
     request = SimpleNamespace()
@@ -98,9 +101,8 @@ def test_from_request_resolves_connection_schema_pk_in_cli_context(monkeypatch):
     assert resolved == tenant
 
 
-@pytest.mark.django_db
-def test_from_request_resolves_headers_when_allowed(monkeypatch):
-    tenant = TenantFactory(schema_name="header-tenant")
+def test_from_request_resolves_headers_when_allowed(monkeypatch, tenant_pool):
+    tenant = tenant_pool["delta"]
     request = RequestFactory().get("/", HTTP_X_TENANT_ID=tenant.schema_name)
 
     public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
@@ -111,9 +113,8 @@ def test_from_request_resolves_headers_when_allowed(monkeypatch):
     assert resolved == tenant
 
 
-@pytest.mark.django_db
-def test_from_request_resolves_header_pk(monkeypatch):
-    tenant = TenantFactory()
+def test_from_request_resolves_header_pk(monkeypatch, tenant_pool):
+    tenant = tenant_pool["alpha"]
     request = RequestFactory().get("/", HTTP_X_TENANT_ID=str(tenant.pk))
 
     public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
@@ -124,7 +125,6 @@ def test_from_request_resolves_header_pk(monkeypatch):
     assert resolved == tenant
 
 
-@pytest.mark.django_db
 def test_from_request_raises_when_required_and_missing(monkeypatch):
     request = RequestFactory().get("/")
 

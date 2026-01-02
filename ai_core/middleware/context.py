@@ -12,7 +12,7 @@ from ai_core.ids import (
     coerce_trace_id,
     normalize_request,
 )
-from ai_core.infra.resp import apply_std_headers
+from ai_core.infra.resp import apply_std_headers, build_tool_error_payload
 from customers.tenant_context import TenantRequiredError
 
 
@@ -50,16 +50,24 @@ class RequestContextMiddleware:
                 if "Case header" in error_msg
                 else "invalid_request"
             )
-            return JsonResponse({"detail": error_msg, "code": error_code}, status=400)
+            payload = build_tool_error_payload(
+                message=error_msg,
+                status_code=400,
+                code=error_code,
+            )
+            return JsonResponse(payload, status=400)
         except ValidationError as exc:
             # Handle Pydantic validation errors from ScopeContext
             # We take the first error message for simplicity
             error_msg = str(exc)
             if exc.errors():
                 error_msg = exc.errors()[0]["msg"]
-            return JsonResponse(
-                {"detail": error_msg, "code": "invalid_request"}, status=400
+            payload = build_tool_error_payload(
+                message=error_msg,
+                status_code=400,
+                code="invalid_request",
             )
+            return JsonResponse(payload, status=400)
         else:
             bind_contextvars(**meta["log_context"])
 
@@ -134,7 +142,12 @@ class RequestContextMiddleware:
 
     @staticmethod
     def _tenant_required_response(exc: TenantRequiredError) -> HttpResponse:
-        return JsonResponse({"detail": str(exc)}, status=403)
+        payload = build_tool_error_payload(
+            message=str(exc),
+            status_code=403,
+            code="tenant_not_found",
+        )
+        return JsonResponse(payload, status=403)
 
     def _resolve_trace_and_span(self, request: HttpRequest) -> tuple[str, str | None]:
         """Resolve trace and span IDs from headers, query params, and body."""

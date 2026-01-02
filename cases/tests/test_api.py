@@ -1,31 +1,46 @@
 """Tests for Cases API."""
 
+import pytest
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from cases.models import Case
 from customers.models import Tenant
+from testsupport.tenant_fixtures import (
+    _advisory_lock,
+    bootstrap_tenant_schema,
+    ensure_tenant_domain,
+)
 from profiles.models import UserProfile
 from users.tests.factories import UserFactory
 
 
+@pytest.mark.slow
+@pytest.mark.xdist_group("tenant_ops")
 class CaseApiTests(APITestCase):
     """Test Case management API."""
 
     def setUp(self):
+        from django.conf import settings
         from django_tenants.utils import get_public_schema_name, schema_context
 
         with schema_context(get_public_schema_name()):
-            self.tenant, _ = Tenant.objects.get_or_create(
-                schema_name="autotest", defaults={"name": "Test Tenant"}
-            )
-            # Defensive check for MockTenant leaking into tests
-            if not isinstance(self.tenant.id, int):
-                # If we got a mock without an ID, force one.
-                # Ideally this shouldn't happen with get_or_create unless the manager is mocked.
-                self.tenant.id = 1
+            test_schema = getattr(settings, "TEST_TENANT_SCHEMA", "autotest")
+            with _advisory_lock(f"tenant:{test_schema}"):
+                self.tenant, _ = Tenant.objects.get_or_create(
+                    schema_name=test_schema, defaults={"name": "Test Tenant"}
+                )
+                # Defensive check for MockTenant leaking into tests
+                if not isinstance(self.tenant.id, int):
+                    # If we got a mock without an ID, force one.
+                    # Ideally this shouldn't happen with get_or_create unless the manager is mocked.
+                    self.tenant.id = 1
 
+        bootstrap_tenant_schema(self.tenant, migrate=True)
+        ensure_tenant_domain(self.tenant, domain="testserver")
+
+        with schema_context(get_public_schema_name()):
             self.other_tenant, _ = Tenant.objects.get_or_create(
                 schema_name="other_tenant", defaults={"name": "Other Tenant"}
             )

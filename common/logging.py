@@ -905,6 +905,22 @@ def configure_django_logging(logging_settings: dict[str, object] | None) -> None
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     """Return a structlog logger bound to service context."""
 
+    if _CONFIGURED:
+        stream = _CONFIGURED_STREAM
+        if stream is not None and getattr(stream, "closed", False):
+            configure_logging()
+        else:
+            root_logger = logging.getLogger()
+            for handler in root_logger.handlers:
+                if not isinstance(handler, logging.StreamHandler):
+                    continue
+                handler_stream = getattr(handler, "stream", None)
+                if handler_stream is not None and getattr(
+                    handler_stream, "closed", False
+                ):
+                    configure_logging()
+                    break
+
     logger = structlog.get_logger(name) if name else structlog.get_logger()
 
     if isinstance(logger, structlog._config.BoundLoggerLazyProxy):  # type: ignore[attr-defined]

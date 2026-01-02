@@ -1,5 +1,7 @@
 """Global test fixtures for tests/* subtree."""
 
+from uuid import uuid4
+
 import pytest
 from testsupport.tenant_fixtures import cleanup_test_tenants
 
@@ -22,7 +24,7 @@ def use_inmemory_lifecycle_store(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def cleanup_tenants_after_test(django_db_blocker):
+def cleanup_tenants_after_test(request, django_db_blocker, tenant_pool_schemas):
     """
     Ensure tenant cleanup runs for tests under tests/ subtree.
 
@@ -30,11 +32,15 @@ def cleanup_tenants_after_test(django_db_blocker):
     fixture here so AttributeErrors go away and schemas are dropped.
     """
     yield
+    if request.node.get_closest_marker("slow") or request.node.get_closest_marker(
+        "tenant_ops"
+    ):
+        return
     with django_db_blocker.unblock():
         from django.db import connection
 
         try:
-            cleanup_test_tenants()
+            cleanup_test_tenants(preserve=list(tenant_pool_schemas.values()))
         except Exception:
             try:
                 connection.rollback()
@@ -43,14 +49,17 @@ def cleanup_tenants_after_test(django_db_blocker):
 
 
 @pytest.fixture
-def tenant(django_db_blocker):
-    """
-    Provide a fresh tenant for tests in tests/ (mirrors fixtures in other trees).
-    """
-    from testsupport.tenant_fixtures import create_test_tenant
+def tenant(request, tenant_pool, django_db_blocker):
+    """Provide a pooled tenant for tests in tests/ subtree."""
+    if "transactional_db" in request.fixturenames:
+        from testsupport.tenant_fixtures import create_test_tenant
 
-    with django_db_blocker.unblock():
-        return create_test_tenant(schema_name="test", name="Test Tenant")
+        with django_db_blocker.unblock():
+            return create_test_tenant(
+                schema_name=f"txn_{uuid4().hex[:8]}",
+                name="Transactional Tenant",
+            )
+    return tenant_pool["alpha"]
 
 
 @pytest.fixture(autouse=True)

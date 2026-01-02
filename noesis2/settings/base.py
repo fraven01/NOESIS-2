@@ -468,6 +468,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": API_DOCS_DESCRIPTION,
     "VERSION": "v1",
     "SECURITY": [{api_schema.ADMIN_BEARER_AUTH_SCHEME: []}],
+    "DISABLE_ERRORS_AND_WARNINGS": True,
     "APPEND_COMPONENTS": {
         "parameters": TENANT_HEADER_COMPONENTS,
         "headers": {
@@ -479,6 +480,17 @@ SPECTACULAR_SETTINGS = {
                 "scheme": "bearer",
                 "bearerFormat": "API Key",
                 "description": "LiteLLM Admin bearer token used for privileged endpoints.",
+            },
+            "cookieAuth": {
+                "type": "apiKey",
+                "in": "cookie",
+                "name": "sessionid",
+                "description": "Django session cookie with account policy enforcement.",
+            },
+            "basicAuth": {
+                "type": "http",
+                "scheme": "basic",
+                "description": "HTTP Basic authentication with account policy enforcement.",
             },
         },
     },

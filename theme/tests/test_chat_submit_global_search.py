@@ -4,13 +4,14 @@ import pytest
 from django.test import RequestFactory
 from django.urls import reverse
 
-from customers.tests.factories import TenantFactory
 from theme.views import chat_submit
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
-def test_chat_submit_global_search_does_not_require_case_id():
-    tenant = TenantFactory(schema_name="workbench")
+@pytest.mark.xdist_group("tenant_ops")
+def test_chat_submit_global_search_does_not_require_case_id(tenant_pool):
+    tenant = tenant_pool["alpha"]
     factory = RequestFactory()
 
     request = factory.post(

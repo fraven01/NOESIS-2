@@ -1,18 +1,21 @@
 import pytest
 from django_tenants.utils import schema_context
 
-from customers.tests.factories import TenantFactory
 from profiles.models import UserProfile
 from profiles.services import ensure_user_profile
 from users.tests.factories import UserFactory
 
 
-pytestmark = pytest.mark.django_db
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.django_db,
+    pytest.mark.xdist_group("tenant_ops"),
+]
 
 
-def test_user_profile_isolation():
-    tenant1 = TenantFactory(schema_name="alpha")
-    tenant2 = TenantFactory(schema_name="beta")
+def test_user_profile_isolation(tenant_pool):
+    tenant1 = tenant_pool["alpha"]
+    tenant2 = tenant_pool["beta"]
 
     with schema_context(tenant1.schema_name):
         user1 = UserFactory()

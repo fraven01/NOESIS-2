@@ -29,7 +29,7 @@ from ai_core.tools.framework_contracts import (
     FrameworkAnalysisErrorCode,
     map_framework_error_to_status,
 )
-from ai_core.infra.resp import apply_std_headers
+from ai_core.infra.resp import apply_std_headers, build_tool_error_payload
 
 
 logger = get_logger(__name__)
@@ -41,13 +41,12 @@ def _error_response(
     http_status: int,
 ) -> Response:
     """Build standardized error response."""
-    return Response(
-        {
-            "error": message,
-            "error_code": error_code,
-        },
-        status=http_status,
+    payload = build_tool_error_payload(
+        message=message,
+        status_code=http_status,
+        code=error_code,
     )
+    return Response(payload, status=http_status)
 
 
 def _prepare_framework_request(request: Request) -> tuple[dict, Response | None]:
@@ -281,8 +280,14 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                 OpenApiExample(
                     "invalid_json",
                     value={
-                        "code": "invalid_json",
-                        "detail": "Request body is not valid JSON.",
+                        "status": "error",
+                        "input": {},
+                        "error": {
+                            "type": "VALIDATION",
+                            "message": "Request body is not valid JSON.",
+                            "code": "invalid_json",
+                        },
+                        "meta": {"took_ms": 0},
                     },
                     media_type="application/json",
                     response_only=True,
@@ -301,8 +306,14 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                 OpenApiExample(
                     "unsupported_media_type",
                     value={
-                        "code": "unsupported_media_type",
-                        "detail": "Request payload must be encoded as application/json.",
+                        "status": "error",
+                        "input": {},
+                        "error": {
+                            "type": "VALIDATION",
+                            "message": "Request payload must be encoded as application/json.",
+                            "code": "unsupported_media_type",
+                        },
+                        "meta": {"took_ms": 0},
                     },
                     media_type="application/json",
                     response_only=True,

@@ -20,13 +20,13 @@ if not settings.configured:
 django.setup()
 print(f"INSTALLED_APPS: {settings.INSTALLED_APPS}")
 
-from ai_core.services import _make_json_safe  # noqa: E402
+from ai_core.services import _dump_jsonable  # noqa: E402
 from documents.parsers import ParsedResult, ParsedTextBlock  # noqa: E402
 import json  # noqa: E402
 
 
 def test_fix():
-    print("Testing _make_json_safe with ParsedResult...")
+    print("Testing _dump_jsonable with ParsedResult...")
 
     block = ParsedTextBlock(text="Test", kind="paragraph")
     result = ParsedResult(text_blocks=(block,))
@@ -35,7 +35,7 @@ def test_fix():
     print(f"Is instance of ParsedResult? {isinstance(result, ParsedResult)}")
 
     try:
-        safe = _make_json_safe(result)
+        safe = _dump_jsonable(result)
         print("Successfully converted to safe dict.")
         print(f"Safe dict keys: {safe.keys()}")
 

@@ -97,7 +97,7 @@ from pydantic import ValidationError
 from . import services
 from ai_core.services.crawler_runner import run_crawler_runner
 from .infra import rate_limit
-from .infra.resp import apply_std_headers
+from .infra.resp import apply_std_headers, build_tool_error_payload
 from .ingestion import partition_document_ids as partition_document_ids  # test hook
 from .ingestion import run_ingestion as run_ingestion  # re-export for tests
 from .ingestion_status import (
@@ -249,8 +249,12 @@ def assert_case_active(
             case = None
 
     if case is None:
-        # Allow dev cases for dev tenant
-        is_dev_tenant = getattr(tenant_obj, "schema_name", "") in ("dev", "autotest")
+        # Allow dev cases for dev tenant (include test schema in test runs)
+        test_schema = getattr(settings, "TEST_TENANT_SCHEMA", None)
+        dev_schemas = {"dev", "autotest"}
+        if test_schema:
+            dev_schemas.add(test_schema)
+        is_dev_tenant = getattr(tenant_obj, "schema_name", "") in dev_schemas
         is_dev_case = (
             normalized_case_id.startswith("dev-case-") or normalized_case_id == "upload"
         )
@@ -336,8 +340,12 @@ TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 def _error_response(detail: str, code: str, status_code: int) -> Response:
     """Return a standardised error payload."""
-
-    return Response({"detail": detail, "code": code}, status=status_code)
+    payload = build_tool_error_payload(
+        message=detail,
+        status_code=status_code,
+        code=code,
+    )
+    return Response(payload, status=status_code)
 
 
 def _extract_internal_key(request: object) -> str | None:
@@ -1325,8 +1333,20 @@ INTAKE_SCHEMA = {
 RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
     name="RagDemoDeprecatedResponse",
     fields={
-        "detail": serializers.CharField(),
-        "code": serializers.CharField(),
+        "status": serializers.CharField(),
+        "input": serializers.DictField(),
+        "error": inline_serializer(
+            name="RagDemoDeprecatedErrorDetail",
+            fields={
+                "type": serializers.CharField(),
+                "message": serializers.CharField(),
+                "code": serializers.CharField(required=False),
+            },
+        ),
+        "meta": inline_serializer(
+            name="RagDemoDeprecatedErrorMeta",
+            fields={"took_ms": serializers.IntegerField()},
+        ),
     },
 )
 
@@ -1670,6 +1690,33 @@ class RagQueryViewV1(_GraphView):
             serializer = RagQueryResponseSerializer(data=graph_payload)
             try:
                 serializer.is_valid(raise_exception=True)
+            except serializers.ValidationError:
+                try:
+                    logger.warning(
+                        "rag.response.validation_failed",
+                        extra={
+                            "errors": getattr(serializer, "errors", None),
+                            "keys": (
+                                list(graph_payload.keys())
+                                if isinstance(graph_payload, dict)
+                                else None
+                            ),
+                        },
+                    )
+                except Exception:
+                    pass
+                details = (
+                    serializer.errors
+                    if isinstance(serializer.errors, Mapping)
+                    else None
+                )
+                payload = build_tool_error_payload(
+                    message="Response payload failed validation.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    code="invalid_response",
+                    details=details,
+                )
+                return Response(payload, status=status.HTTP_400_BAD_REQUEST)
             except Exception:
                 try:
                     logger.warning(
@@ -2047,8 +2094,12 @@ class CrawlerIngestionRunnerView(APIView):
                 graph_factory=None,
             )
         except CrawlerRunError as exc:
-            payload = {"detail": str(exc), "code": exc.code}
-            payload.update(exc.details)
+            payload = build_tool_error_payload(
+                message=str(exc),
+                status_code=exc.status_code,
+                code=exc.code,
+                details=exc.details,
+            )
             response = Response(payload, status=exc.status_code)
             return apply_response_headers(response, meta)
         except ValueError as exc:
@@ -2056,7 +2107,24 @@ class CrawlerIngestionRunnerView(APIView):
                 str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
             )
 
-        response = Response(result.payload, status=result.status_code)
+        payload = result.payload
+        if result.status_code >= 400 and isinstance(payload, Mapping):
+            message = str(
+                payload.get("reason") or payload.get("detail") or "Crawler failed."
+            )
+            code = str(payload.get("code") or "crawler_error")
+            details = {
+                k: v
+                for k, v in payload.items()
+                if k not in {"code", "detail", "reason"}
+            }
+            payload = build_tool_error_payload(
+                message=message,
+                status_code=result.status_code,
+                code=code,
+                details=details or None,
+            )
+        response = Response(payload, status=result.status_code)
         return apply_response_headers(response, meta, result.idempotency_key)
 
 
@@ -2081,8 +2149,14 @@ class RagDemoViewV1(_BaseAgentView):
                 summary="Deprecated",
                 description="The demo endpoint has been removed and now returns HTTP 410.",
                 value={
-                    "detail": "The RAG demo endpoint has been removed.",
-                    "code": "rag_demo_removed",
+                    "status": "error",
+                    "input": {},
+                    "error": {
+                        "type": "VALIDATION",
+                        "message": "The RAG demo endpoint has been removed.",
+                        "code": "rag_demo_removed",
+                    },
+                    "meta": {"took_ms": 0},
                 },
             )
         ],

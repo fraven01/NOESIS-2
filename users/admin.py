@@ -1,3 +1,4 @@
+import logging
 import secrets
 
 from django.contrib import admin, messages
@@ -5,6 +6,8 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils import timezone
 
 from .models import Invitation, User
+
+logger = logging.getLogger(__name__)
 
 
 @admin.register(User)
@@ -46,8 +49,13 @@ class InvitationAdmin(admin.ModelAdmin):
                     days=7
                 )
             invitation.save()
-            print(
-                f"Stub mail to {invitation.email}: /invite/accept/{invitation.token}/"
+            logger.info(
+                "invitation.stub_mail",
+                extra={
+                    "email": invitation.email,
+                    "token": invitation.token,
+                    "path": f"/invite/accept/{invitation.token}/",
+                },
             )
             self.message_user(
                 request,

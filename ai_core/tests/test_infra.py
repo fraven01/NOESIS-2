@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -279,13 +280,16 @@ def test_emit_event_accepts_event_name_signature(monkeypatch):
     assert events == [("node.start", {"foo": "bar"})]
 
 
-def test_emit_event_prints_without_span(monkeypatch, capsys):
+def test_emit_event_prints_without_span(monkeypatch, caplog):
     monkeypatch.setattr(observability, "_get_current_span", lambda: None)
 
-    emit_event({"event": "node.start", "foo": "bar"})
+    with caplog.at_level(logging.INFO, logger=observability.LOGGER.name):
+        emit_event({"event": "node.start", "foo": "bar"})
 
-    out = capsys.readouterr().out.strip().splitlines()
-    assert json.loads(out[0]) == {"event": "node.start", "foo": "bar"}
+    record = caplog.records[-1]
+    assert record.message == "observability.event"
+    assert record.event == "node.start"
+    assert record.foo == "bar"
 
 
 def test_start_and_end_trace_manage_context(monkeypatch):

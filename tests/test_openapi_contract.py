@@ -132,11 +132,13 @@ def test_post_requests_document_unsupported_media_type(openapi_schema):
             examples = content.get("examples") or {}
             values = list(_example_values(examples))
             assert any(
-                example.get("value", {}).get("code") == "unsupported_media_type"
+                example.get("value", {}).get("error", {}).get("code")
+                == "unsupported_media_type"
                 for example in values
             ), f"{path} {method} missing unsupported_media_type example"
             assert "Request payload must be encoded as application/json." in {
-                example.get("value", {}).get("detail") for example in values
+                example.get("value", {}).get("error", {}).get("message")
+                for example in values
             }
 
             json_error = responses.get("400")
@@ -144,7 +146,8 @@ def test_post_requests_document_unsupported_media_type(openapi_schema):
                 json_content = json_error.get("content", {}).get("application/json", {})
                 json_examples = json_content.get("examples") or {}
                 assert any(
-                    example.get("value", {}).get("code") == "invalid_json"
+                    example.get("value", {}).get("error", {}).get("code")
+                    == "invalid_json"
                     for example in _example_values(json_examples)
                 ), f"{path} {method} missing invalid_json example"
 

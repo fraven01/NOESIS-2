@@ -75,9 +75,10 @@ npm run dev:reset    # Komplett-Reset
 
 ### Tests
 
-**Python-Tests (Linux)**:
+**Python-Tests (Plattformunabhängig via Docker)**:
 ```bash
 npm run test:py              # Vollständig (inkl. @pytest.mark.slow)
+npm run test:py:parallel     # EMPFOHLEN: Fast parallel + slow serial (optimiert)
 npm run test:py:single -- <path>  # Einzelner Test oder spezifische Funktion
 npm run test:py:fast         # Schnell (ohne @pytest.mark.slow)
 npm run test:py:unit         # Unit-Tests (ohne DB, super schnell)
@@ -85,7 +86,13 @@ npm run test:py:cov          # Coverage über alles
 npm run test:py:clean        # Clean (pip --no-cache-dir) + vollständig
 ```
 
-**Beispiele für einzelne Tests (Linux)**:
+**Hinweis**: `test:py:parallel` ist die **empfohlene** Methode für lokale Entwicklung:
+- **Phase 1**: Fast tests (`-m 'not slow'`) parallel mit xdist (`-n auto`)
+- **Phase 2**: Slow tests (`-m 'slow'`) serial für Tenant-Operationen
+- Isolierte Test-DBs pro Worker (`test_noesis2_gw0`, etc.)
+- ~5-10x schneller als `test:py` (je nach CPU-Kernen)
+
+**Beispiele für einzelne Tests**:
 ```bash
 # Einzelne Datei
 npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
@@ -97,27 +104,26 @@ npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
 npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::TestClass::test_method
 ```
 
-**Python-Tests (Windows)**:
+**Windows-Aliase** (verweisen auf plattformunabhängige Docker-Befehle):
 ```bash
-npm run win:test:py              # Vollständig
-npm run win:test:py:single -- <path>  # Einzelner Test oder spezifische Funktion
-npm run win:test:py:fast         # Schnell
-npm run win:test:py:unit         # Unit-Tests
-npm run win:test:py:cov          # Coverage
-npm run win:test:py:clean        # Clean + vollständig
+npm run win:test:py              # → test:py
+npm run win:test:py:parallel     # → test:py:parallel (EMPFOHLEN)
+npm run win:test:py:fast         # → test:py:fast
+npm run win:test:py:unit         # → test:py:unit
+npm run win:test:py:cov          # → test:py:cov
+npm run win:test:py:clean        # → test:py:clean
+
+# Platform-spezifische Befehle (PowerShell):
+npm run win:test:py:single -- <path>  # Einzelner Test via PowerShell-Skript
+npm run win:test:py:rag               # RAG-spezifische Tests
 ```
 
-**Beispiele für einzelne Tests (Windows)**:
-```bash
-# Einzelne Datei
-npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
-
-# Spezifische Testfunktion
-npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::test_function_name
-
-# Testklasse und -methode
-npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::TestClass::test_method
-```
+**Test-DB-Isolation (wichtig!)**:
+- **Test-Settings**: `noesis2.settings.test_parallel` konfiguriert worker-spezifische Test-DBs
+- **Produktions-DBs werden NIEMALS für Tests verwendet** (seit 2026-01-02 Fix)
+- **Parallele Workers**: Jeder xdist-Worker (`gw0`, `gw1`, etc.) bekommt eigene DB (`test_noesis2_gw0`, etc.)
+- **Slow Tests**: Laufen gegen dedizierte Test-DB mit eigenem Tenant-Schema (`autotest_gw0`)
+- **Schema-Namen**: MÜSSEN gequotet werden (via `connection.ops.quote_name()`) um Bindestriche zu unterstützen
 
 **Frontend-Tests**:
 ```bash
@@ -130,8 +136,29 @@ npm run e2e            # Playwright E2E
 - `@pytest.mark.gold`: PII-Tests mit `PII_MODE=gold`
 - `@pytest.mark.chaos`: Fault-Injection-Tests
 - `@pytest.mark.perf_smoke`: High-Concurrency-Tests
+- `@pytest.mark.tenant_write`: Tests die Tenant-Schemas erstellen/modifizieren (gruppiert für xdist)
 
-Test-DB: `noesis2_test` (isoliert von Dev-Daten)
+**Häufige Test-Probleme & Lösungen**:
+
+1. **"relation does not exist" in slow tests**:
+   - **Ursache**: Fehlende `TEST["NAME"]` Konfiguration oder nicht-gequotete Schema-Namen
+   - **Lösung**: Bereits gefixt in `noesis2/settings/test_parallel.py` (2026-01-02)
+   - **Verifikation**: `TEST["NAME"]` muss auf `test_noesis2_*` gesetzt sein
+
+2. **"current transaction is aborted" Fehler**:
+   - **Ursache**: Vorheriger SQL-Fehler (oft durch nicht-gequotete Schema-Namen mit `-`)
+   - **Lösung**: Immer `connection.ops.quote_name()` für Schema-/Tabellen-Namen verwenden
+   - **Beispiel**: `cursor.execute(f"SET search_path TO {connection.ops.quote_name(schema)}")`
+
+3. **Tests laufen gegen Production-DB**:
+   - **Ursache**: `TEST["NAME"]` nicht gesetzt, pytest-django verwendet `NAME` statt `TEST["NAME"]`
+   - **Symptom**: DB-Name in Logs zeigt `noesis2` statt `test_noesis2`
+   - **Fix**: Siehe `noesis2/settings/test_parallel.py` Zeilen 30-39
+
+4. **Slow tests überspringen Schemas von fast tests**:
+   - **Ursache**: `_MIGRATED_SCHEMAS` Set ist prozess-global, aber Tests laufen in separaten Prozessen
+   - **Lösung**: `test_tenant_schema_name` Fixture prüft fehlende Tabellen und migriert nach
+   - **Siehe**: `conftest.py` Zeilen 537-622
 
 ### Linting & Formatierung
 

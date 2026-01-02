@@ -116,8 +116,9 @@ def run_saved_search_alerts() -> dict[str, int]:
     total_notifications = 0
     now = timezone.now()
 
-    with schema_context(get_public_schema_name()):
-        tenants = list(Tenant.objects.all())
+    public_schema = get_public_schema_name()
+    with schema_context(public_schema):
+        tenants = list(Tenant.objects.exclude(schema_name=public_schema))
 
     for tenant in tenants:
         with schema_context(tenant.schema_name):
@@ -268,8 +269,9 @@ def send_pending_email_deliveries() -> dict[str, int]:
     total_skipped = 0
     now = timezone.now()
 
-    with schema_context(get_public_schema_name()):
-        tenants = list(Tenant.objects.all())
+    public_schema = get_public_schema_name()
+    with schema_context(public_schema):
+        tenants = list(Tenant.objects.exclude(schema_name=public_schema))
 
     for tenant in tenants:
         with schema_context(tenant.schema_name):

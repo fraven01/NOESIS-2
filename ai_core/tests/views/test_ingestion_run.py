@@ -50,8 +50,8 @@ def test_ingestion_run_rejects_blank_document_ids(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["code"] == "validation_error"
-    assert "document_ids" in body["detail"]
+    assert body["error"]["code"] == "validation_error"
+    assert "document_ids" in body["error"]["message"]
 
 
 def test_ingestion_run_rejects_empty_embedding_profile(
@@ -82,8 +82,8 @@ def test_ingestion_run_rejects_empty_embedding_profile(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["code"] == "validation_error"
-    assert "embedding_profile" in body["detail"]
+    assert body["error"]["code"] == "validation_error"
+    assert "embedding_profile" in body["error"]["message"]
 
 
 def test_ingestion_run_normalises_payload_before_dispatch(

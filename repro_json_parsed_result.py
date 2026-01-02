@@ -1,7 +1,7 @@
 import json
 from dataclasses import is_dataclass
 from documents.parsers import ParsedResult, ParsedTextBlock
-from ai_core.services import _make_json_safe
+from ai_core.services import _dump_jsonable
 
 
 def test_serialization():
@@ -15,7 +15,7 @@ def test_serialization():
     print(f"Type: {type(result)}")
 
     try:
-        safe = _make_json_safe(result)
+        safe = _dump_jsonable(result)
         print(f"Safe representation: {safe}")
         json_str = json.dumps(safe)
         print(f"JSON: {json_str}")

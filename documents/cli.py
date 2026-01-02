@@ -45,6 +45,7 @@ from .logging_utils import (
     log_call,
     log_extra_entry,
     log_extra_exit,
+    suppress_logging,
 )
 from .parsers import ParsedResult, ParsedTextBlock, ParserDispatcher, ParserRegistry
 from .pipeline import (
@@ -1053,8 +1054,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 @log_call("cli.main")
-def main(
-    argv: Optional[Iterable[str]] = None, *, context: Optional[CLIContext] = None
+def _main(
+    argv: Optional[Sequence[str]] = None, *, context: Optional[CLIContext] = None
 ) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -1077,6 +1078,25 @@ def main(
     except ValueError as exc:
         log_extra_exit(status="error", error_code=str(exc))
         return _print_error(args, str(exc))
+
+
+def _json_flag_present(
+    argv: Optional[Iterable[str]],
+) -> tuple[Optional[list[str]], bool]:
+    if argv is None:
+        return None, "--json" in sys.argv[1:]
+    args_list = list(argv)
+    return args_list, "--json" in args_list
+
+
+def main(
+    argv: Optional[Iterable[str]] = None, *, context: Optional[CLIContext] = None
+) -> int:
+    argv_list, use_json = _json_flag_present(argv)
+    if use_json:
+        with suppress_logging():
+            return _main(argv_list, context=context)
+    return _main(argv_list, context=context)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entrypoint

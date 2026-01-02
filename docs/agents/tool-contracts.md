@@ -41,6 +41,13 @@ Implementation: `ai_core/tool_contracts/base.py`
 - Both envelopes carry `meta.took_ms` (`ToolResultMeta` / `ToolErrorMeta`).
 - `ToolResultMeta` includes optional fields such as `routing`, `token_usage`, `cache_hit`, `source_counts`.
 
+## HTTP error responses
+
+HTTP APIs in `ai_core`/`theme` return the `ToolError` envelope for error cases.
+Use `ai_core/infra/resp.py:build_tool_error_payload` to build the payload and
+return it via `Response`/`JsonResponse`. This keeps error responses aligned with
+`ToolErrorType` and the shared contract.
+
 ## `ToolErrorType`
 
 `ToolErrorDetail.type` is a `StrEnum` defined in `ai_core/tools/errors.py:ToolErrorType`:

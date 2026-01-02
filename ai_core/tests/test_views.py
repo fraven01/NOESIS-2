@@ -107,8 +107,8 @@ def test_ping_view_applies_rate_limit(
     )
     assert resp2.status_code == 429
     error_body = resp2.json()
-    assert error_body["detail"] == "Rate limit exceeded for tenant."
-    assert error_body["code"] == "rate_limit_exceeded"
+    assert error_body["error"]["message"] == "Rate limit exceeded for tenant."
+    assert error_body["error"]["code"] == "rate_limit_exceeded"
     assert X_TRACE_ID_HEADER not in resp2
 
 
@@ -155,8 +155,10 @@ def test_invalid_case_header_returns_400(authenticated_client, test_tenant_schem
     )
     assert resp.status_code == 400
     error_body = resp.json()
-    assert error_body["detail"] == "Case header must use the documented format."
-    assert error_body["code"] == "invalid_case_header"
+    assert (
+        error_body["error"]["message"] == "Case header must use the documented format."
+    )
+    assert error_body["error"]["code"] == "invalid_case_header"
 
 
 @pytest.mark.django_db
@@ -176,9 +178,10 @@ def test_tenant_schema_header_mismatch_returns_400(
     assert resp.status_code == 400
     error_body = resp.json()
     assert (
-        error_body["detail"] == "Tenant schema header does not match resolved schema."
+        error_body["error"]["message"]
+        == "Tenant schema header does not match resolved schema."
     )
-    assert error_body["code"] == "tenant_schema_mismatch"
+    assert error_body["error"]["code"] == "tenant_schema_mismatch"
 
 
 @pytest.mark.django_db
@@ -223,7 +226,7 @@ def test_assert_case_active_rejects_connection_fallback(
 
     assert isinstance(error, Response)
     assert error.status_code == status.HTTP_403_FORBIDDEN
-    assert error.data["code"] == "tenant_not_found"
+    assert error.data["error"]["code"] == "tenant_not_found"
 
 
 @pytest.mark.django_db
@@ -237,7 +240,7 @@ def test_assert_case_active_rejects_mismatched_token_tenant(test_tenant_schema_n
 
     assert isinstance(error, Response)
     assert error.status_code == status.HTTP_403_FORBIDDEN
-    assert error.data["code"] == "tenant_mismatch"
+    assert error.data["error"]["code"] == "tenant_mismatch"
 
 
 @pytest.mark.django_db
@@ -253,9 +256,10 @@ def test_missing_tenant_resolution_returns_400(authenticated_client, monkeypatch
     assert resp.status_code == 400
     error_body = resp.json()
     assert (
-        error_body["detail"] == "Tenant header is required for multi-tenant requests."
+        error_body["error"]["message"]
+        == "Tenant header is required for multi-tenant requests."
     )
-    assert error_body["code"] == "invalid_tenant_header"
+    assert error_body["error"]["code"] == "invalid_tenant_header"
 
 
 @pytest.mark.django_db
@@ -276,9 +280,10 @@ def test_non_json_payload_returns_415(
     assert resp.status_code == 415
     error_body = resp.json()
     assert (
-        error_body["detail"] == "Request payload must be encoded as application/json."
+        error_body["error"]["message"]
+        == "Request payload must be encoded as application/json."
     )
-    assert error_body["code"] == "unsupported_media_type"
+    assert error_body["error"]["code"] == "unsupported_media_type"
 
     v1_response = authenticated_client.post(
         "/v1/ai/intake/",
@@ -292,8 +297,11 @@ def test_non_json_payload_returns_415(
 
     assert v1_response.status_code == 415
     v1_error = v1_response.json()
-    assert v1_error["detail"] == "Request payload must be encoded as application/json."
-    assert v1_error["code"] == "unsupported_media_type"
+    assert (
+        v1_error["error"]["message"]
+        == "Request payload must be encoded as application/json."
+    )
+    assert v1_error["error"]["code"] == "unsupported_media_type"
 
 
 @pytest.mark.django_db
@@ -314,8 +322,8 @@ def test_intake_rejects_invalid_metadata_type(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["code"] == "invalid_request"
-    assert "metadata must be a JSON object" in body["detail"]
+    assert body["error"]["code"] == "invalid_request"
+    assert "metadata must be a JSON object" in body["error"]["message"]
 
 
 @pytest.mark.django_db
@@ -661,10 +669,11 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
 
     assert response.status_code == 400
     payload = response.json()
-    assert "retrieval" in payload
-    assert payload["retrieval"] == ["This field is required."]
-    assert "snippets" in payload
-    assert payload["snippets"] == ["This field is required."]
+    details = payload["error"]["details"]
+    assert "retrieval" in details
+    assert details["retrieval"] == ["This field is required."]
+    assert "snippets" in details
+    assert details["snippets"] == ["This field is required."]
 
 
 @pytest.mark.django_db
@@ -820,8 +829,9 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
 
     assert response.status_code == 400
     payload = response.json()
-    assert "prompt_version" in payload
-    assert payload["prompt_version"] == ["This field is required."]
+    details = payload["error"]["details"]
+    assert "prompt_version" in details
+    assert details["prompt_version"] == ["This field is required."]
 
 
 @pytest.mark.django_db
@@ -1362,10 +1372,11 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
     )
 
     assert response.status_code == 404
-    assert response.json() == {
-        "detail": "No matching documents were found for the query.",
-        "code": "rag_no_matches",
-    }
+    payload = response.json()
+    assert (
+        payload["error"]["message"] == "No matching documents were found for the query."
+    )
+    assert payload["error"]["code"] == "rag_no_matches"
 
 
 @pytest.mark.django_db
@@ -1410,8 +1421,8 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
 
     assert response.status_code == 422
     payload = response.json()
-    assert payload["code"] == "retrieval_inconsistent_metadata"
-    assert "reindex required" in payload["detail"]
+    assert payload["error"]["code"] == "retrieval_inconsistent_metadata"
+    assert "reindex required" in payload["error"]["message"]
 
 
 def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
@@ -1768,12 +1779,13 @@ def test_crawler_runner_guardrail_denial_returns_413(
 
     assert response.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
     body = response.json()
-    assert body["code"] == "crawler_guardrail_denied"
-    assert body["reason"] == "document_too_large"
-    assert body["origin"] == "https://example.com/docs/denied"
-    assert body["policy_events"] == ["max_document_bytes"]
-    assert body["attributes"]["error"]["error_class"] == "policy_deny"
-    assert body["limits"]["max_document_bytes"] == 10
+    assert body["error"]["code"] == "crawler_guardrail_denied"
+    assert body["error"]["message"] == "document_too_large"
+    details = body["error"]["details"]
+    assert details["origin"] == "https://example.com/docs/denied"
+    assert details["policy_events"] == ["max_document_bytes"]
+    assert details["attributes"]["error"]["error_class"] == "policy_deny"
+    assert details["limits"]["max_document_bytes"] == 10
 
 
 @pytest.mark.django_db

@@ -18,6 +18,7 @@ from structlog.stdlib import get_logger
 from ai_core.contracts import ScopeContext, BusinessContext
 from common.logging import bind_log_context
 from ai_core.services import _get_documents_repository
+from ai_core.infra.resp import build_tool_error_payload
 from ai_core.services.crawler_runner import run_crawler_runner
 from ai_core.graphs.technical.collection_search import (
     GraphInput as CollectionSearchGraphInput,
@@ -43,6 +44,7 @@ from documents.services.document_space_service import (
     DocumentSpaceRequest,
     DocumentSpaceService,
 )
+from theme.validators import DocumentSpaceQueryParams, SearchQualityParams
 
 from ai_core.views import crawl_selected as _core_crawl_selected
 from ai_core.graphs.business.framework_analysis_graph import (
@@ -94,25 +96,48 @@ def _tenant_context_from_request(request) -> tuple[str, str]:
     return str(tenant_id), str(tenant_schema)
 
 
-def _extract_user_id(request) -> str | None:
-    """Extract user_id from authenticated request (Pre-MVP ID Contract).
-
-    User Request Hop: user_id is required when auth is present.
-    Returns None for unauthenticated requests.
-    """
-    user = getattr(request, "user", None)
-    if user is None:
-        return None
-    if not getattr(user, "is_authenticated", False):
-        return None
-    user_pk = getattr(user, "pk", None)
-    if user_pk is None:
-        return None
-    return str(user_pk)
-
-
 def _tenant_required_response(exc: TenantRequiredError) -> JsonResponse:
-    return JsonResponse({"detail": str(exc)}, status=403)
+    return _json_error_response(str(exc), status_code=403, code="tenant_not_found")
+
+
+def _default_error_code(status_code: int) -> str:
+    if status_code == 400:
+        return "invalid_request"
+    if status_code == 403:
+        return "forbidden"
+    if status_code == 404:
+        return "not_found"
+    if status_code == 409:
+        return "conflict"
+    if status_code == 413:
+        return "payload_too_large"
+    if status_code == 415:
+        return "unsupported_media_type"
+    if status_code == 429:
+        return "rate_limited"
+    if status_code == 502:
+        return "upstream_error"
+    if status_code == 504:
+        return "timeout"
+    if status_code >= 500:
+        return "internal_error"
+    return "error"
+
+
+def _json_error_response(
+    message: str,
+    *,
+    status_code: int,
+    code: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> JsonResponse:
+    payload = build_tool_error_payload(
+        message=message,
+        status_code=status_code,
+        code=code or _default_error_code(status_code),
+        details=details,
+    )
+    return JsonResponse(payload, status=status_code)
 
 
 def _resolve_manual_collection(
@@ -190,47 +215,6 @@ def _normalize_collection_id(
         return None
 
 
-def _parse_limit(value: object, *, default: int = 25) -> int:
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError):
-        numeric = default
-    return max(5, min(200, numeric))
-
-
-def _parse_bool(value: object, *, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    token = str(value).strip().lower()
-    if not token:
-        return default
-    if token in {"1", "true", "yes", "on"}:
-        return True
-    if token in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _human_readable_bytes(size: object) -> str:
-    try:
-        numeric = float(size)
-    except (TypeError, ValueError):
-        return "—"
-    if numeric < 0:
-        return "—"
-    units = ("B", "KB", "MB", "GB", "TB")
-    value = float(numeric)
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(value)} B"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{int(value)} B"
-
-
 _RERANK_MODEL_FALLBACK = "fast"
 _RERANK_CACHE_PREFIX = "rag_tools.rerank_model"
 
@@ -259,22 +243,6 @@ def _resolve_rerank_model_preset() -> str:
 
     cache.set(cache_key, resolved, timeout=300)
     return resolved
-
-
-def _normalise_quality_mode(value: object, default: str = "standard") -> str:
-    candidate = str(value or "").strip().lower()
-    if candidate in {"standard", "premium", "fast"}:
-        return candidate
-    return default
-
-
-def _normalise_max_candidates(value: object, *, default: int = 20) -> int:
-    try:
-        numeric = int(value)
-    except (TypeError, ValueError):
-        numeric = default
-    numeric = max(5, min(40, numeric))
-    return numeric
 
 
 def _result_identifier(result: Mapping[str, object]) -> str | None:
@@ -338,16 +306,13 @@ def _build_rerank_state(
     results: list[Mapping[str, object]],
     request_data: Mapping[str, object],
 ) -> dict[str, object]:
-    quality_mode = _normalise_quality_mode(request_data.get("quality_mode"))
-    max_candidates = _normalise_max_candidates(request_data.get("max_candidates"))
-    purpose = str(request_data.get("purpose") or "web_search_rerank").strip() or (
-        "web_search_rerank"
-    )
+    params = SearchQualityParams.model_validate(request_data)
+    purpose = params.purpose or "web_search_rerank"
     return {
         "question": query,
         "collection_scope": collection_id,
-        "quality_mode": quality_mode,
-        "max_candidates": max_candidates,
+        "quality_mode": params.quality_mode,
+        "max_candidates": params.max_candidates,
         "purpose": purpose,
         "search": {"results": results},
     }
@@ -653,15 +618,16 @@ def document_space(request):
         except Exception:
             tenant_obj = None
 
-    requested_collection = request.GET.get("collection")
-    limit = _parse_limit(request.GET.get("limit"))
+    query_params = DocumentSpaceQueryParams.model_validate(request.GET)
+    requested_collection = query_params.collection
+    limit = query_params.limit
     limit_options = [10, 25, 50, 100, 200]
     if limit not in limit_options:
         limit_options = sorted(set(limit_options + [limit]))
-    latest_only = _parse_bool(request.GET.get("latest"), default=True)
-    search_term = str(request.GET.get("q", "") or "").strip()
-    cursor_param = str(request.GET.get("cursor", "") or "").strip()
-    workflow_filter = str(request.GET.get("workflow", "") or "").strip()
+    latest_only = query_params.latest
+    search_term = query_params.q
+    cursor_param = query_params.cursor
+    workflow_filter = query_params.workflow
 
     repository = _get_documents_repository()
     params = DocumentSpaceRequest(
@@ -728,16 +694,17 @@ def document_explorer(request):
             except Exception:
                 tenant_obj = None
 
-        requested_collection = request.GET.get("collection")
-        limit = _parse_limit(request.GET.get("limit"))
+        query_params = DocumentSpaceQueryParams.model_validate(request.GET)
+        requested_collection = query_params.collection
+        limit = query_params.limit
         limit_options = [10, 25, 50, 100, 200]
         if limit not in limit_options:
             limit_options = sorted(set(limit_options + [limit]))
-        latest_only = _parse_bool(request.GET.get("latest"), default=True)
-        show_retired = _parse_bool(request.GET.get("show_retired"), default=False)
-        search_term = str(request.GET.get("q", "") or "").strip()
-        cursor_param = str(request.GET.get("cursor", "") or "").strip()
-        workflow_filter = str(request.GET.get("workflow", "") or "").strip()
+        latest_only = query_params.latest
+        show_retired = query_params.show_retired
+        search_term = query_params.q
+        cursor_param = query_params.cursor
+        workflow_filter = query_params.workflow
 
         repository = _get_documents_repository()
         params = DocumentSpaceRequest(
@@ -821,19 +788,33 @@ def web_search(request):
         else:
             data = json.loads(request.body)
     except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+        return _json_error_response(
+            "Invalid JSON",
+            status_code=400,
+            code="invalid_json",
+        )
 
     query = str(data.get("query") or "").strip()
     if not query:
-        return JsonResponse({"error": "Query is required"}, status=400)
+        return _json_error_response(
+            "Query is required",
+            status_code=400,
+            code="missing_query",
+        )
 
     try:
         tenant_id, tenant_schema = _tenant_context_from_request(request)
     except TenantRequiredError as exc:
         return _tenant_required_response(exc)
     case_id = str(data.get("case_id") or "").strip() or None
-    # Identity ID (Pre-MVP ID Contract)
-    user_id = _extract_user_id(request)
+    user = getattr(request, "user", None)
+    user_id = (
+        str(user.pk)
+        if user
+        and getattr(user, "is_authenticated", False)
+        and getattr(user, "pk", None) is not None
+        else None
+    )
 
     trace_id = str(uuid4())
     # Try to use active OTel trace
@@ -870,16 +851,19 @@ def web_search(request):
     )
 
     search_type = str(data.get("search_type") or "external_knowledge").strip()
+    quality_params = SearchQualityParams.model_validate(data)
 
     if search_type == "collection_search":
         # Collection Search Graph Execution
         purpose = str(data.get("purpose") or "").strip()
         if not purpose:
-            return JsonResponse(
-                {"error": "Purpose is required for Collection Search"}, status=400
+            return _json_error_response(
+                "Purpose is required for Collection Search",
+                status_code=400,
+                code="missing_purpose",
             )
 
-        quality_mode = _normalise_quality_mode(data.get("quality_mode"))
+        quality_mode = quality_params.quality_mode
         auto_ingest = str(data.get("auto_ingest") or "").lower() == "on"
 
         graph_input = {
@@ -895,7 +879,11 @@ def web_search(request):
             CollectionSearchGraphInput.model_validate(graph_input)
         except Exception as exc:
             logger.info("web_search.collection.invalid_input", error=str(exc))
-            return JsonResponse({"error": f"Invalid input: {str(exc)}"}, status=400)
+            return _json_error_response(
+                f"Invalid input: {str(exc)}",
+                status_code=400,
+                code="invalid_request",
+            )
 
     # Execution logic consolidated below to handle both search types cleanly
 
@@ -906,11 +894,13 @@ def web_search(request):
         # Copied from original file context
         purpose = str(data.get("purpose") or "").strip()
         if not purpose:
-            return JsonResponse(
-                {"error": "Purpose is required for Collection Search"}, status=400
+            return _json_error_response(
+                "Purpose is required for Collection Search",
+                status_code=400,
+                code="missing_purpose",
             )
 
-        quality_mode = _normalise_quality_mode(data.get("quality_mode"))
+        quality_mode = quality_params.quality_mode
         auto_ingest = str(data.get("auto_ingest") or "").lower() == "on"
 
         graph_input = {
@@ -923,7 +913,11 @@ def web_search(request):
         try:
             CollectionSearchGraphInput.model_validate(graph_input)
         except Exception as exc:
-            return JsonResponse({"error": f"Invalid input: {str(exc)}"}, status=400)
+            return _json_error_response(
+                f"Invalid input: {str(exc)}",
+                status_code=400,
+                code="invalid_request",
+            )
 
         # BREAKING CHANGE (Option A - Strict Separation):
         # Build ScopeContext and BusinessContext for Collection Search
@@ -1131,7 +1125,11 @@ def web_search_ingest_selected(request):
 
         logger.info("web_search_ingest_selected", url_count=len(urls), mode=mode)
         if not urls:
-            return JsonResponse({"error": "URLs are required"}, status=400)
+            return _json_error_response(
+                "URLs are required",
+                status_code=400,
+                code="missing_urls",
+            )
 
         try:
             tenant_id, tenant_schema = _tenant_context_from_request(request)
@@ -1142,8 +1140,10 @@ def web_search_ingest_selected(request):
         )
         collection_id = _normalize_collection_id(collection_id, tenant_schema)
         if not collection_id:
-            return JsonResponse(
-                {"error": "Collection ID could not be resolved"}, status=400
+            return _json_error_response(
+                "Collection ID could not be resolved",
+                status_code=400,
+                code="invalid_collection",
             )
 
         # Build payload for crawler dispatch
@@ -1181,7 +1181,11 @@ def web_search_ingest_selected(request):
             result = manager.dispatch_crawl_request(request_model, meta)
         except Exception as exc:
             logger.exception("web_search.crawler_dispatch_failed")
-            return JsonResponse({"error": str(exc)}, status=500)
+            return _json_error_response(
+                str(exc),
+                status_code=500,
+                code="internal_error",
+            )
 
         response_data = {
             "status": "dispatched",
@@ -1210,16 +1214,20 @@ def web_search_ingest_selected(request):
         )
 
     except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+        return _json_error_response(
+            "Invalid JSON",
+            status_code=400,
+            code="invalid_json",
+        )
     except Exception as e:
         import traceback
-        import sys
 
-        print("!!! WEB SEARCH INGEST SELECTED FAILED !!!", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
         logger.exception("web_search_ingest_selected.failed")
-        return JsonResponse(
-            {"error": str(e), "traceback": traceback.format_exc()}, status=500
+        return _json_error_response(
+            str(e),
+            status_code=500,
+            code="internal_error",
+            details={"traceback": traceback.format_exc()},
         )
 
 
@@ -1234,37 +1242,40 @@ def start_rerank_workflow(request):
         data = json.loads(request.body)
         query = data.get("query", "").strip()
         collection_id = data.get("collection_id", "").strip()
-        quality_mode = data.get("quality_mode", "standard").strip().lower()
-        max_candidates = data.get("max_candidates", 20)
+        quality_params = SearchQualityParams.model_validate(data)
+        quality_mode = quality_params.quality_mode
+        max_candidates = quality_params.max_candidates
 
         logger.info(
             "start_rerank_workflow.request", query=query, collection_id=collection_id
         )
 
         if not query:
-            return JsonResponse({"error": "Query is required"}, status=400)
+            return _json_error_response(
+                "Query is required",
+                status_code=400,
+                code="missing_query",
+            )
 
         if not collection_id:
-            return JsonResponse({"error": "Collection ID is required"}, status=400)
-
-        # Validate max_candidates
-        try:
-            max_candidates = int(max_candidates)
-            if max_candidates < 5 or max_candidates > 40:
-                max_candidates = 20
-        except (ValueError, TypeError):
-            max_candidates = 20
-
-        # Validate quality_mode
-        if quality_mode not in ("standard", "premium", "fast"):
-            quality_mode = "standard"
+            return _json_error_response(
+                "Collection ID is required",
+                status_code=400,
+                code="missing_collection_id",
+            )
 
         try:
             tenant_id, tenant_schema = _tenant_context_from_request(request)
         except TenantRequiredError as exc:
             return _tenant_required_response(exc)
-        # Identity ID (Pre-MVP ID Contract)
-        user_id = _extract_user_id(request)
+        user = getattr(request, "user", None)
+        user_id = (
+            str(user.pk)
+            if user
+            and getattr(user, "is_authenticated", False)
+            and getattr(user, "pk", None) is not None
+            else None
+        )
         trace_id = str(uuid4())
         run_id = str(uuid4())
 
@@ -1357,17 +1368,29 @@ def start_rerank_workflow(request):
         return JsonResponse(response_data)
 
     except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
+        return _json_error_response(
+            "Invalid JSON",
+            status_code=400,
+            code="invalid_json",
+        )
     except Exception as e:
         logger.exception("start_rerank_workflow.failed")
-        return JsonResponse({"error": str(e)}, status=500)
+        return _json_error_response(
+            str(e),
+            status_code=500,
+            code="internal_error",
+        )
 
 
 @require_POST
 def crawler_submit(request):
     """Handle crawler form submission via HTMX."""
     if not request.headers.get("HX-Request"):
-        return JsonResponse({"error": "HTMX required"}, status=400)
+        return _json_error_response(
+            "HTMX required",
+            status_code=400,
+            code="htmx_required",
+        )
 
     try:
         # Parse form data
@@ -1443,6 +1466,14 @@ def crawler_submit(request):
         tenant_id, tenant_schema = _tenant_context_from_request(request)
         case_id = str(data.get("case_id") or "").strip() or None
         trace_id = str(uuid4())
+        user = getattr(request, "user", None)
+        user_id = (
+            str(user.pk)
+            if user
+            and getattr(user, "is_authenticated", False)
+            and getattr(user, "pk", None) is not None
+            else None
+        )
         scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
@@ -1451,7 +1482,7 @@ def crawler_submit(request):
             "invocation_id": str(uuid4()),
             "run_id": str(uuid4()),
             "ingestion_run_id": payload.get("ingestion_run_id"),
-            "user_id": _extract_user_id(request),
+            "user_id": user_id,
         }
         meta = {"scope_context": scope_context}
 
@@ -1520,13 +1551,21 @@ def ingestion_submit(request):
         )
 
         # Prepare metadata for upload
+        user = getattr(request, "user", None)
+        user_id = (
+            str(user.pk)
+            if user
+            and getattr(user, "is_authenticated", False)
+            and getattr(user, "pk", None) is not None
+            else None
+        )
         scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "trace_id": uuid4().hex,
             "invocation_id": uuid4().hex,
             "run_id": uuid4().hex,
-            "user_id": _extract_user_id(request),
+            "user_id": user_id,
         }
         business_context = {
             "case_id": case_id,
@@ -1797,7 +1836,11 @@ def framework_analysis_submit(request):
         try:
             tenant_id, _ = _tenant_context_from_request(request)
         except TenantRequiredError:
-            return JsonResponse({"error": "Tenant ID missing"}, status=400)
+            return _json_error_response(
+                "Tenant ID missing",
+                status_code=400,
+                code="invalid_tenant_header",
+            )
 
     tenant_schema = request.headers.get("X-Tenant-Schema") or "public"
     trace_id = request.headers.get("X-Trace-ID") or uuid4().hex

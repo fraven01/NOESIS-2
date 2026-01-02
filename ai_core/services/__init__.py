@@ -19,6 +19,7 @@ import json
 import logging
 import mimetypes
 import time
+from datetime import datetime
 from inspect import signature
 from collections.abc import Iterable, Mapping
 from importlib import import_module
@@ -29,7 +30,7 @@ from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 from django.utils import timezone
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -41,6 +42,7 @@ from ai_core.infra.observability import (
     end_trace as lf_end_trace,
     tracing_enabled as lf_tracing_enabled,
 )
+from ai_core.infra.resp import build_tool_error_payload
 
 from common.constants import (
     COLLECTION_ID_HEADER_CANDIDATES,
@@ -49,7 +51,6 @@ from common.constants import (
 
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
 from ai_core.graph.schemas import merge_state
-from ai_core.tool_contracts import ToolContext
 from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.graph.schemas import normalize_meta as _base_normalize_meta
 from ai_core.graphs.technical.cost_tracking import coerce_cost_value, track_ledger_costs
@@ -141,51 +142,39 @@ ledger = _LedgerShim()
 
 _DOCUMENTS_REPOSITORY: DocumentsRepository | None = None
 
+_JSON_ADAPTER = TypeAdapter(Any)
 
-# Helper: make arbitrary payloads JSON-serialisable (UUIDs → strings)
-def _make_json_safe(value):  # type: ignore[no-untyped-def]
-    """Return a structure that json.dumps can serialise.
 
-    - Converts uuid.UUID instances to str
-    - Recurses into mappings and sequences
-    - Normalises datetime/date instances to ISO strings
-    """
-    import uuid as _uuid
-    from collections.abc import Mapping as _Mapping
-    from dataclasses import asdict, is_dataclass
-    from datetime import date as _date, datetime as _datetime
+def _dump_jsonable(value: Any) -> Any:
+    """Return a structure that json.dumps can serialise."""
+    dumped = _JSON_ADAPTER.dump_python(value, mode="json")
+    return _coerce_jsonable(dumped)
 
-    try:
-        from documents.parsers import ParsedResult
 
-        if isinstance(value, ParsedResult):
-            return _make_json_safe(asdict(value))
-    except (ImportError, TypeError):
-        pass
-
-    if hasattr(value, "model_dump"):
-        try:
-            return _make_json_safe(value.model_dump())
-        except Exception:  # pragma: no cover - defensive conversion
-            pass
-    if is_dataclass(value) and not isinstance(value, type):
-        return _make_json_safe(asdict(value))
-    if isinstance(value, _uuid.UUID):
+def _coerce_jsonable(value: Any) -> Any:
+    if isinstance(value, UUID):
         return str(value)
-    if isinstance(value, (_datetime, _date)):
+    if isinstance(value, datetime):
         return value.isoformat()
-    if isinstance(value, _Mapping):
+    if isinstance(value, Mapping):
         return {
-            (str(k) if isinstance(k, _uuid.UUID) else k): _make_json_safe(v)
-            for k, v in value.items()
+            _coerce_json_key(key): _coerce_jsonable(item) for key, item in value.items()
         }
-    if isinstance(value, (list, tuple, set)):
-        return [_make_json_safe(v) for v in value]
-    if hasattr(value, "__dict__") and not isinstance(
-        value, (str, bytes, bytearray, type)
-    ):
-        return _make_json_safe(vars(value))
+    if isinstance(value, list):
+        return [_coerce_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_coerce_jsonable(item) for item in value]
+    if isinstance(value, set):
+        return [_coerce_jsonable(item) for item in value]
     return value
+
+
+def _coerce_json_key(key: Any) -> Any:
+    if isinstance(key, UUID):
+        return str(key)
+    if isinstance(key, datetime):
+        return key.isoformat()
+    return key
 
 
 # Allow tests to monkeypatch the run_ingestion task via ai_core.views.run_ingestion
@@ -735,7 +724,7 @@ def _log_graph_response_payload(payload: object, context: GraphContext) -> None:
     """Emit diagnostics about the response payload produced by a graph run."""
 
     try:
-        payload_json = json.dumps(_make_json_safe(payload), ensure_ascii=False)
+        payload_json = json.dumps(_dump_jsonable(payload), ensure_ascii=False)
     except TypeError:
         logger.exception(
             "graph.response_payload_serialization_error",
@@ -761,7 +750,12 @@ def _log_graph_response_payload(payload: object, context: GraphContext) -> None:
 
 def _error_response(detail: str, code: str, status_code: int) -> Response:
     """Return a standardised error payload."""
-    return Response({"detail": detail, "code": code}, status=status_code)
+    payload = build_tool_error_payload(
+        message=detail,
+        status_code=status_code,
+        code=code,
+    )
+    return Response(payload, status=status_code)
 
 
 def _format_validation_error(error: ValidationError) -> str:
@@ -1059,13 +1053,13 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
             return _error_response(detail, "rag_no_matches", status.HTTP_404_NOT_FOUND)
         except ToolInconsistentMetadataError as exc:
             logger.warning("tool.inconsistent_metadata")
-            payload = {
-                "detail": str(exc) or "reindex required",
-                "code": "retrieval_inconsistent_metadata",
-            }
             context = getattr(exc, "context", None)
-            if context:
-                payload["context"] = context
+            payload = build_tool_error_payload(
+                message=str(exc) or "reindex required",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                code="retrieval_inconsistent_metadata",
+                details=context if isinstance(context, Mapping) else None,
+            )
             return Response(payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
         except ToolInputError as exc:
             return _error_response(
@@ -1145,7 +1139,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
             )
 
         try:
-            _get_checkpointer().save(context, _make_json_safe(new_state))
+            _get_checkpointer().save(context, _dump_jsonable(new_state))
         except (TypeError, ValueError) as exc:
             return _error_response(
                 str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
@@ -1166,7 +1160,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
             )
 
         try:
-            response = Response(_make_json_safe(result))
+            response = Response(_dump_jsonable(result))
         except TypeError:
             logger.exception(
                 "graph.response_serialization_error",
@@ -1302,9 +1296,7 @@ def start_ingestion_run(
             update={"ingestion_run_id": ingestion_run_id}
         )
         tool_context = tool_context.model_copy(update={"scope": updated_scope})
-        meta["scope_context"] = updated_scope.model_dump(
-            mode="json", exclude_none=True
-        )
+        meta["scope_context"] = updated_scope.model_dump(mode="json", exclude_none=True)
         meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
     state_payload: dict[str, object] = {
         "tenant_id": tool_context.scope.tenant_id,
@@ -1806,8 +1798,15 @@ def handle_document_upload(
     if isinstance(business_context, dict):
         business_context.setdefault("workflow_id", document_meta.workflow_id)
 
-    print(
-        f"DEBUG: collection_ids={collection_ids!r} metadata_obj_collection_id={metadata_obj.get('collection_id')!r}"
+    logger.debug(
+        "upload.collection_resolution",
+        extra={
+            "tenant_id": scope_context.get("tenant_id"),
+            "trace_id": scope_context.get("trace_id"),
+            "invocation_id": scope_context.get("invocation_id"),
+            "collection_ids": collection_ids,
+            "metadata_collection_id": metadata_obj.get("collection_id"),
+        },
     )
     ref_payload: dict[str, object] = {
         "tenant_id": document_meta.tenant_id,

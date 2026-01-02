@@ -4,16 +4,16 @@ from django.urls import reverse
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import patch, MagicMock
 
-from customers.tests.factories import TenantFactory
 from theme.views import ingestion_submit
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
-def test_ingestion_submit_happy_path(settings):
+@pytest.mark.xdist_group("tenant_ops")
+def test_ingestion_submit_happy_path(settings, tenant_pool):
     # Ensure RAG_UPLOAD_ENABLED is True if checked, but it seems not checked involved in view
 
-    tenant_schema = "test_ingestion"
-    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant = tenant_pool["alpha"]
     # The view expects request.tenant to be set by middleware
 
     factory = RequestFactory()
@@ -63,11 +63,12 @@ def test_ingestion_submit_happy_path(settings):
         assert meta["business_context"]["collection_id"] is not None
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
-def test_ingestion_submit_real_service_call(settings):
+@pytest.mark.xdist_group("tenant_ops")
+def test_ingestion_submit_real_service_call(settings, tenant_pool):
     """Call the real service stack to see if vector client logging issues appear."""
-    tenant_schema = "test_ingestion_real"
-    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant = tenant_pool["beta"]
 
     factory = RequestFactory()
     file_content = b"real content"

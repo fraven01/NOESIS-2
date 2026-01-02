@@ -1,4 +1,5 @@
 import io
+import logging
 import socket
 from typing import Any, Dict
 from unittest import mock
@@ -98,7 +99,10 @@ urlpatterns = [
 
 
 @override_settings(ROOT_URLCONF="noesis2.tests.test_health_and_versioning")
+@pytest.mark.slow
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_version_endpoint_requires_tenant(api_client, tenant):
     response = api_client.get("/test/version/")
 
@@ -110,7 +114,9 @@ def test_version_endpoint_requires_tenant(api_client, tenant):
 
 
 @override_settings(ROOT_URLCONF="noesis2.tests.test_health_and_versioning")
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_version_endpoint_requires_version_header(api_client, tenant):
     response = api_client.get(
         "/test/version/",
@@ -122,7 +128,9 @@ def test_version_endpoint_requires_version_header(api_client, tenant):
 
 
 @override_settings(ROOT_URLCONF="noesis2.tests.test_health_and_versioning")
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_version_endpoint_rejects_unsupported_version(api_client, tenant):
     response = api_client.get(
         "/test/version/",
@@ -140,7 +148,9 @@ def test_version_endpoint_rejects_unsupported_version(api_client, tenant):
     ROOT_URLCONF="noesis2.tests.test_health_and_versioning",
     API_DEPRECATIONS=DEPRECATION_CONFIG,
 )
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_version_endpoint_legacy_version_marks_deprecated(api_client, tenant):
     response = api_client.get(
         "/test/version/",
@@ -157,7 +167,9 @@ def test_version_endpoint_legacy_version_marks_deprecated(api_client, tenant):
 
 
 @override_settings(ROOT_URLCONF="noesis2.tests.test_health_and_versioning")
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_version_endpoint_modern_version_has_no_deprecation_headers(api_client, tenant):
     response = api_client.get(
         "/test/version/",
@@ -175,7 +187,9 @@ def test_version_endpoint_modern_version_has_no_deprecation_headers(api_client, 
     ROOT_URLCONF="noesis2.tests.test_health_and_versioning",
     API_DEPRECATIONS=DEPRECATION_CONFIG,
 )
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_mixin_adds_deprecation_headers(api_client, tenant):
     response = api_client.get("/test/mixin/")
 
@@ -249,7 +263,7 @@ def test_health_main_uses_configured_port(monkeypatch):
     )
 
 
-def test_health_main_sets_socket_reuse_and_falls_back(monkeypatch, capsys):
+def test_health_main_sets_socket_reuse_and_falls_back(monkeypatch, caplog):
     observed: Dict[str, Any] = {}
 
     class DummyServer:
@@ -269,10 +283,13 @@ def test_health_main_sets_socket_reuse_and_falls_back(monkeypatch, capsys):
     monkeypatch.setenv("PORT", "invalid")
     monkeypatch.setattr(healthsrv, "HTTPServer", DummyServer)
 
-    healthsrv.main()
+    with caplog.at_level(logging.ERROR, logger=healthsrv.LOGGER.name):
+        healthsrv.main()
 
-    captured = capsys.readouterr()
-    assert "Invalid PORT value: invalid" in captured.err
+    assert any(
+        record.message == "healthsrv.invalid_port" and record.port == "invalid"
+        for record in caplog.records
+    )
     assert observed["addr"] == ("0.0.0.0", 8080)
     assert observed["served"] is True
     assert observed["closed"] is True
