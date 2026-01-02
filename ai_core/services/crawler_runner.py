@@ -52,6 +52,77 @@ class CrawlerRunnerCoordinatorResult:
     idempotency_key: str | None
 
 
+@dataclass(slots=True)
+class CrawlerRunResultSummary:
+    """Minimal result summary for a crawler ingestion run."""
+
+    decision: str | None
+    reason: str | None
+
+    @classmethod
+    def from_output(cls, output: Mapping[str, object]) -> CrawlerRunResultSummary:
+        decision = output.get("decision")
+        reason = output.get("reason")
+        return cls(
+            decision=str(decision) if decision is not None else None,
+            reason=str(reason) if reason is not None else None,
+        )
+
+    def as_mapping(self) -> dict[str, object]:
+        return {"decision": self.decision, "reason": self.reason}
+
+
+@dataclass(slots=True)
+class CrawlerRunState:
+    """Structured state extracted from graph output."""
+
+    artifacts: dict[str, object]
+    transitions: list[object]
+    control: dict[str, object]
+
+    @classmethod
+    def from_result(
+        cls,
+        *,
+        result: Mapping[str, object],
+        output: Mapping[str, object],
+        build: CrawlerStateBundle,
+    ) -> CrawlerRunState:
+        artifacts = result.get("artifacts", {})
+        if not isinstance(artifacts, Mapping):
+            artifacts = {}
+        transitions = output.get("transitions", [])
+        if isinstance(transitions, (list, tuple)):
+            transitions = list(transitions)
+        else:
+            transitions = []
+        control = build.state.get("control", {})
+        if not isinstance(control, Mapping):
+            control = {}
+        return cls(
+            artifacts=dict(artifacts),
+            transitions=transitions,
+            control=dict(control),
+        )
+
+    def as_mapping(self) -> dict[str, object]:
+        return {
+            "artifacts": self.artifacts,
+            "transitions": self.transitions,
+            "control": self.control,
+        }
+
+
+@dataclass(slots=True)
+class CrawlerRunEntry:
+    """Structured entry for a completed crawler run."""
+
+    build: CrawlerStateBundle
+    result: CrawlerRunResultSummary
+    state: CrawlerRunState
+    ingestion_run_id: str | None = None
+
+
 def run_crawler_runner(
     *,
     meta: dict[str, Any],
@@ -230,7 +301,7 @@ def run_crawler_runner(
     _service_id = scope_meta.service_id
     _user_id = scope_meta.user_id
 
-    completed_runs: list[dict[str, object]] = []
+    completed_runs: list[CrawlerRunEntry] = []
     # Updated to use UniversalIngestionGraph
     graph_app = build_universal_ingestion_graph()
 
@@ -306,23 +377,20 @@ def run_crawler_runner(
         # Map to legacy entry format for response builder
         # Synthesize state from output
         # Per contract: artifacts in root state, transitions in output
-        synthesized_state = {
-            "artifacts": result.get("artifacts", {}),
-            "transitions": output.get("transitions", []),
-            "control": build.state.get("control", {}),
-        }
+        synthesized_state = CrawlerRunState.from_result(
+            result=result,
+            output=output,
+            build=build,
+        )
 
         # DO NOT set ingest_action - Universal Graph handles ingestion internally
         # No legacy start_ingestion_run should be triggered
 
-        entry = {
-            "build": build,
-            "result": {
-                "decision": output.get("decision"),
-                "reason": output.get("reason"),
-            },
-            "state": synthesized_state,
-        }
+        entry = CrawlerRunEntry(
+            build=build,
+            result=CrawlerRunResultSummary.from_output(output),
+            state=synthesized_state,
+        )
 
         # Validate and use canonical ingestion_run_id
         output_run_id = output.get("ingestion_run_id")
@@ -339,7 +407,7 @@ def run_crawler_runner(
             )
 
         # Always use canonical ID (coordinator is source of truth)
-        entry["ingestion_run_id"] = canonical_ingestion_run_id
+        entry.ingestion_run_id = canonical_ingestion_run_id
 
         completed_runs.append(entry)
 
@@ -462,27 +530,21 @@ def _resolve_tenant(identifier: object):
 
 
 def _detect_guardrail_error(
-    completed_runs: list[dict[str, object]],
+    completed_runs: list[CrawlerRunEntry],
 ) -> dict[str, object] | None:
     for entry in completed_runs:
-        state_data = entry.get("state")
-        if not isinstance(state_data, Mapping):
-            continue
-        artifacts = state_data.get("artifacts")
-        if not isinstance(artifacts, Mapping):
-            continue
         guardrail_decision = _coerce_guardrail_decision(
-            artifacts.get("guardrail_decision")
+            entry.state.artifacts.get("guardrail_decision")
         )
         if guardrail_decision and not guardrail_decision.allowed:
-            return _build_guardrail_denied_payload(entry["build"], guardrail_decision)
+            return _build_guardrail_denied_payload(entry.build, guardrail_decision)
     return None
 
 
 def _build_synchronous_payload(
     request_model: CrawlerRunRequest,
     workflow_id: str,
-    completed_runs: list[dict[str, object]],
+    completed_runs: list[CrawlerRunEntry],
     meta: Mapping[str, Any],
     idempotent_flag: bool,
 ) -> dict[str, object]:
@@ -492,13 +554,9 @@ def _build_synchronous_payload(
     errors_payload: list[dict[str, object]] = []
 
     for entry in completed_runs:
-        build = entry["build"]
-        state_data = entry.get("state")
-        if not isinstance(state_data, Mapping):
-            state_data = {}
-        result_payload = entry.get("result")
-        if not isinstance(result_payload, Mapping):
-            result_payload = {}
+        build = entry.build
+        state_data = entry.state.as_mapping()
+        result_payload = entry.result.as_mapping()
         telemetry_payload.append(_build_fetch_telemetry_entry(build))
         transitions_payload.append(
             {
@@ -510,7 +568,7 @@ def _build_synchronous_payload(
         errors_payload.extend(_extract_origin_errors(build, state_data))
 
         # Use existing ingestion_run_id if present (from Universal Graph)
-        ingestion_run_id = entry.get("ingestion_run_id")
+        ingestion_run_id = entry.ingestion_run_id
         if not ingestion_run_id:
             ingestion_run_id = _maybe_start_ingestion(build, state_data, meta)
 

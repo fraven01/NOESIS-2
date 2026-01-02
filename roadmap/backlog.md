@@ -62,7 +62,7 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 
 ### Hygiene
 
-- [ ] **State Dict -> Dataclasses**: Replace manual dict building with typed dataclasses (pointers: `ai_core/services/crawler_runner.py:298-314` (synthesized_state, entry dicts built manually); implementation: create typed dataclasses for common state shapes, use Pydantic models for serialization; acceptance: no manual dict building for structured data, type-safe state management)
+- [x] **State Dict -> Dataclasses**: Replace manual dict building with typed dataclasses (pointers: `ai_core/services/crawler_runner.py:298-314` (synthesized_state, entry dicts built manually); implementation: create typed dataclasses for common state shapes, use Pydantic models for serialization; acceptance: no manual dict building for structured data, type-safe state management)
 
 ## Semantics / IDs
 
