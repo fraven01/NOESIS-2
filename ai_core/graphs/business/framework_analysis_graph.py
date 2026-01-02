@@ -17,6 +17,7 @@ from ai_core.llm import client as llm_client
 from ai_core.nodes import retrieve
 from ai_core.tool_contracts import ToolContext
 from ai_core.tools.framework_contracts import (
+    ComponentLocation,
     FrameworkAnalysisInput,
     FrameworkAnalysisMetadata,
     FrameworkAnalysisOutput,
@@ -451,27 +452,10 @@ class FrameworkAnalysisGraph:
         # Simplified validation based on confidence
         validations = {}
         for component, location in state.get("located_components", {}).items():
-            confidence = location.get("confidence", 0.0)
-            found = location.get("location") != "not_found"
-
-            if not found:
-                validations[component] = {
-                    "plausible": False,
-                    "confidence": 0.0,
-                    "reason": "Not found",
-                }
-            elif confidence >= 0.8:
-                validations[component] = {
-                    "plausible": True,
-                    "confidence": confidence,
-                    "reason": "High confidence",
-                }
-            else:
-                validations[component] = {
-                    "plausible": True,
-                    "confidence": confidence,
-                    "reason": "Moderate confidence",
-                }
+            resolved = ComponentLocation.from_partial(location)
+            validations[component] = resolved.validation_summary(
+                high_confidence_threshold=0.8
+            )
 
         state["validations"] = validations
 
@@ -507,45 +491,25 @@ class FrameworkAnalysisGraph:
             located = state["located_components"].get(component, {})
             validated = state["validations"].get(component, {})
 
-            if located.get("location") == "not_found":
+            resolved = ComponentLocation.from_partial(located)
+            assembled_location, validation_failed = resolved.to_assembled(
+                validation=validated
+            )
+
+            if not resolved.is_found():
                 missing.append(component)
-                assembled[component] = {
-                    "location": "not_found",
-                    "outline_path": None,
-                    "heading": None,
-                    "chunk_ids": [],
-                    "page_numbers": [],
-                    "confidence": 0.0,
-                    "validated": False,
-                    "validation_notes": "Not found",
-                }
+                assembled[component] = assembled_location.model_dump()
                 continue
 
-            merged = {
-                "location": located.get("location"),
-                "outline_path": located.get("outline_path"),
-                "heading": located.get("heading"),
-                "chunk_ids": located.get("chunk_ids", []),
-                "page_numbers": located.get("page_numbers", []),
-                "confidence": located.get("confidence", 0.0),
-                "annex_root": located.get("annex_root"),
-                "subannexes": located.get("subannexes", []),
-            }
-
-            if not validated.get("plausible", True):
+            if validation_failed:
                 hitl_required = True
                 hitl_reasons.append(f"{component}: Validation failed")
-                merged["validated"] = False
-                merged["validation_notes"] = validated.get("reason", "")
-            else:
-                merged["validated"] = True
-                merged["validation_notes"] = validated.get("reason", "Plausible")
 
-            if merged["confidence"] < CONFIDENCE_THRESHOLD:
+            if resolved.is_low_confidence(CONFIDENCE_THRESHOLD):
                 hitl_required = True
                 hitl_reasons.append(f"{component}: Low confidence")
 
-            assembled[component] = merged
+            assembled[component] = assembled_location.model_dump()
 
         completeness_score = (
             len([c for c in assembled.values() if c["location"] != "not_found"]) / 4.0

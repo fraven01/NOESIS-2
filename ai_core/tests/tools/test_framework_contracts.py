@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from ai_core.tools.framework_contracts import (
     TypeDetectionOutput,
     TypeEvidence,
+    AlternativeType,
+    ScopeIndicators,
     ComponentLocation,
     ComponentValidation,
     FrameworkAnalysisInput,
@@ -82,6 +84,84 @@ class TestTypeDetectionOutput:
             TypeEvidence(text="x" * 201, location="Test", reasoning="Test")  # Max 200
 
 
+class TestTypeEvidenceMethods:
+    """Tests for TypeEvidence behavior."""
+
+    def test_is_strong(self) -> None:
+        """Test evidence strength heuristic."""
+        evidence = TypeEvidence(
+            text="KBV",
+            location="Preamble",
+            reasoning="Explicit mention in heading and summary.",
+        )
+        assert evidence.is_strong(min_reasoning_chars=10) is True
+
+        weak = TypeEvidence(
+            text="KBV",
+            location="Preamble",
+            reasoning="Short",
+        )
+        assert weak.is_strong(min_reasoning_chars=10) is False
+
+    def test_merge_with(self) -> None:
+        """Test merging evidence with identical text/location."""
+        first = TypeEvidence(
+            text="KBV",
+            location="Preamble",
+            reasoning="Explicit mention in heading.",
+        )
+        second = TypeEvidence(
+            text="KBV",
+            location="Preamble",
+            reasoning="Repeated in footer.",
+        )
+        merged = first.merge_with(second)
+        assert merged.text == "KBV"
+        assert "Explicit mention" in merged.reasoning
+        assert "Repeated in footer" in merged.reasoning
+
+
+class TestAlternativeTypeMethods:
+    """Tests for AlternativeType behavior."""
+
+    def test_is_confident(self) -> None:
+        """Test confidence threshold check."""
+        alternative = AlternativeType(
+            type="GBV",
+            confidence=0.82,
+            reason="Language suggests multiple locations.",
+        )
+        assert alternative.is_confident() is True
+        assert alternative.is_confident(min_confidence=0.9) is False
+
+    def test_normalized_type(self) -> None:
+        """Test normalization of type labels."""
+        alternative = AlternativeType(
+            type="  GBV ",
+            confidence=0.3,
+            reason="Weak signal.",
+        )
+        assert alternative.normalized_type() == "gbv"
+
+
+class TestScopeIndicatorsMethods:
+    """Tests for ScopeIndicators behavior."""
+
+    def test_has_any(self) -> None:
+        """Test scope indicator presence detection."""
+        assert ScopeIndicators().has_any() is False
+        assert ScopeIndicators(raeumlich="all sites").has_any() is True
+        assert ScopeIndicators(sachlich="IT systems").has_any() is True
+
+    def test_merge_with(self) -> None:
+        """Test merging scope indicators."""
+        base = ScopeIndicators(raeumlich="all sites")
+        other = ScopeIndicators(sachlich="IT systems")
+        merged = base.merge_with(other)
+        assert merged.raeumlich == "all sites"
+        assert merged.sachlich == "IT systems"
+
+
 class TestComponentLocation:
     """Tests for ComponentLocation contract."""
 
@@ -117,6 +197,36 @@ class TestComponentLocation:
         assert location.location == "not_found"
         assert location.confidence == 0.0
         assert location.chunk_ids == []
+
+    def test_component_location_is_found(self) -> None:
+        """Test found check for component location."""
+        found = ComponentLocation(location="main", confidence=0.7)
+        assert found.is_found() is True
+        assert found.is_low_confidence(0.8) is True
+
+        missing = ComponentLocation(location="not_found", confidence=0.0)
+        assert missing.is_found() is False
+
+    def test_component_location_validation_summary(self) -> None:
+        """Test validation summary mapping."""
+        strong = ComponentLocation(location="main", confidence=0.9)
+        assert strong.validation_summary()["reason"] == "High confidence"
+
+        moderate = ComponentLocation(location="main", confidence=0.6)
+        assert moderate.validation_summary()["reason"] == "Moderate confidence"
+
+        missing = ComponentLocation(location="not_found", confidence=0.0)
+        assert missing.validation_summary()["reason"] == "Not found"
+
+    def test_component_location_to_assembled(self) -> None:
+        """Test assembled conversion with validation."""
+        location = ComponentLocation(location="main", confidence=0.9)
+        assembled, validation_failed = location.to_assembled(
+            validation={"plausible": False, "reason": "Mismatch"}
+        )
+        assert assembled.validated is False
+        assert assembled.validation_notes == "Mismatch"
+        assert validation_failed is True
 
     def test_invalid_location_type(self) -> None:
         """Test that invalid location types are rejected."""

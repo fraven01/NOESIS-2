@@ -14,6 +14,7 @@ from structlog.stdlib import get_logger
 from ai_core.contracts import ScopeContext, BusinessContext
 from ai_core.infra.resp import build_tool_error_payload
 from ai_core.services.crawler_runner import run_crawler_runner
+from ai_core.services import _get_documents_repository as _core_get_documents_repository
 from ai_core.rag.collections import (
     MANUAL_COLLECTION_SLUG,
     manual_collection_uuid,
@@ -38,6 +39,10 @@ DOCUMENT_SPACE_SERVICE = DocumentSpaceService()
 # build_graph aliasing removed as build_external_knowledge_graph is gone
 crawl_selected = _core_crawl_selected  # Re-export for tests
 DEV_DEFAULT_CASE_ID = "dev-case-local"
+
+
+def _get_documents_repository():
+    return _core_get_documents_repository()
 
 
 def _get_dev_simulated_users():
