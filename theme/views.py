@@ -13,7 +13,6 @@ from structlog.stdlib import get_logger
 
 from ai_core.contracts import ScopeContext, BusinessContext
 from ai_core.infra.resp import build_tool_error_payload
-from ai_core.services import _get_documents_repository
 from ai_core.services.crawler_runner import run_crawler_runner
 from ai_core.rag.collections import (
     MANUAL_COLLECTION_SLUG,
