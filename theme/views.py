@@ -451,3 +451,36 @@ def _resolve_lifecycle_store() -> object | None:
     except Exception:  # pragma: no cover - defensive import guard
         return None
     return getattr(documents_api, "DEFAULT_LIFECYCLE_STORE", None)
+
+
+from theme.views_rag_tools import (  # noqa: E402,F401
+    rag_tools,
+    rag_tools_identity_switch,
+    tool_collaboration,
+    start_rerank_workflow,
+    workbench_index,
+    tool_search,
+    tool_ingestion,
+    tool_crawler,
+    tool_framework,
+    tool_chat,
+)
+from theme.views_documents import (  # noqa: E402,F401
+    document_space,
+    document_explorer,
+    document_delete,
+    document_restore,
+)
+from theme.views_web_search import (  # noqa: E402,F401
+    web_search,
+    web_search_ingest_selected,
+)
+from theme.views_ingestion import (  # noqa: E402,F401
+    crawler_submit,
+    ingestion_submit,
+)
+from theme.views_framework import (  # noqa: E402,F401
+    framework_analysis_tool,
+    framework_analysis_submit,
+)
+from theme.views_chat import chat_submit  # noqa: E402,F401
