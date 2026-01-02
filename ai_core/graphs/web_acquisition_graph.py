@@ -16,8 +16,9 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables import RunnableConfig
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import observe_span
 from ai_core.tools.shared_workers import get_web_search_worker
 from ai_core.tool_contracts import ToolContext
@@ -28,6 +29,62 @@ from ai_core.tools.web_search import (
 
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------- I/O Contracts
+
+WEB_ACQUISITION_SCHEMA_ID = "noesis.graphs.web_acquisition"
+WEB_ACQUISITION_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
+WEB_ACQUISITION_IO_VERSION_STRING = WEB_ACQUISITION_IO_VERSION.as_string()
+
+
+class WebAcquisitionInputModel(BaseModel):
+    """Pydantic input contract for the web acquisition graph."""
+
+    query: str | None = None
+    search_config: dict[str, Any] | None = None
+    preselected_results: list[dict[str, Any]] | None = None
+    mode: Literal["search_only", "select_best"] | None = None
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class WebAcquisitionGraphInput(BaseModel):
+    """Boundary input model for the web acquisition graph."""
+
+    schema_id: Literal[WEB_ACQUISITION_SCHEMA_ID] = WEB_ACQUISITION_SCHEMA_ID
+    schema_version: Literal[WEB_ACQUISITION_IO_VERSION_STRING] = (
+        WEB_ACQUISITION_IO_VERSION_STRING
+    )
+    input: WebAcquisitionInputModel
+    tool_context: ToolContext | None = None
+    context: dict[str, Any] | None = None
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class WebAcquisitionGraphOutput(BaseModel):
+    """Boundary output model for the web acquisition graph."""
+
+    schema_id: Literal[WEB_ACQUISITION_SCHEMA_ID] = WEB_ACQUISITION_SCHEMA_ID
+    schema_version: Literal[WEB_ACQUISITION_IO_VERSION_STRING] = (
+        WEB_ACQUISITION_IO_VERSION_STRING
+    )
+    search_results: list[dict[str, Any]]
+    selected_result: dict[str, Any] | None
+    decision: Literal["acquired", "error", "no_results"]
+    error: str | None
+    telemetry: dict[str, Any]
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+WEB_ACQUISITION_IO = GraphIOSpec(
+    schema_id=WEB_ACQUISITION_SCHEMA_ID,
+    version=WEB_ACQUISITION_IO_VERSION,
+    input_model=WebAcquisitionGraphInput,
+    output_model=WebAcquisitionGraphOutput,
+)
 
 
 # --------------------------------------------------------------------- State
@@ -58,6 +115,7 @@ class WebAcquisitionState(TypedDict):
     input: WebAcquisitionInput
     # ToolContext is validated once and stored here
     tool_context: ToolContext | None
+    context: dict[str, Any] | None
 
     # Internal state
     search_results: list[dict[str, Any]]
@@ -145,34 +203,39 @@ def validate_input_node(
     state: WebAcquisitionState, config: RunnableConfig
 ) -> dict[str, Any]:
     """Validate input and initialize ToolContext."""
-    inp = state.get("input", {})
-    # Note: config.configurable can be used for future extensions
+    try:
+        graph_input = WebAcquisitionGraphInput.model_validate(state)
+    except ValidationError as exc:
+        msg = f"Invalid graph input: {exc.errors()}"
+        logger.error(msg)
+        return {"error": msg}
 
-    # 1. Recover Context from configurable (passed by invocation)
-    # Ideally LangGraph invocations pass 'context' in configurable
-    # For now, we assume caller passes it in the state "context" key if not in configurable
-    # BUT architectural fix says: "tool_context will be validated once and kept in state"
-    # So we expect the caller to pass 'tool_context' in state OR a raw dict 'context' we parse.
-
-    # Let's support both for transition:
-    # 1. 'tool_context' already in state (ideal)
-    # 2. 'context' dict in state (legacy adapter)
-
-    tool_context = state.get("tool_context")
+    inp = graph_input.input
+    tool_context = graph_input.tool_context
     if not tool_context:
-        raw_context = state.get("context")  # Legacy hook
+        raw_context = graph_input.context
         if raw_context:
             try:
                 tool_context = ToolContext.model_validate(raw_context)
-            except ValidationError as ve:
-                return {"error": f"Invalid context: {ve}"}
+            except ValidationError as exc:
+                msg = f"Invalid context: {exc.errors()}"
+                return {"error": msg}
         else:
             return {"error": "Missing 'tool_context' or 'context' in input state"}
 
-    if not inp.get("query") and not inp.get("preselected_results"):
-        return {"error": "Missing 'query' or 'preselected_results'"}
+    input_payload = inp.model_dump(mode="json")
+    if not inp.query and not inp.preselected_results:
+        return {
+            "error": "Missing 'query' or 'preselected_results'",
+            "tool_context": tool_context,
+            "input": input_payload,
+        }
 
-    return {"tool_context": tool_context, "error": None}
+    return {
+        "tool_context": tool_context,
+        "input": input_payload,
+        "error": None,
+    }
 
 
 @observe_span(name="node.search")
@@ -320,30 +383,28 @@ def finalize_node(state: WebAcquisitionState) -> dict[str, Any]:
         telemetry = {}
 
     if error:
-        return {
-            "output": {
-                "decision": "error",
-                "error": error,
-                "search_results": [],
-                "selected_result": None,
-                "telemetry": telemetry,
-            }
-        }
+        output = WebAcquisitionGraphOutput(
+            decision="error",
+            error=error,
+            search_results=[],
+            selected_result=None,
+            telemetry=telemetry,
+        )
+        return {"output": output.model_dump(mode="json")}
 
     results = state.get("search_results", [])
     selected = state.get("selected_result")
 
     decision = "acquired" if results else "no_results"
 
-    return {
-        "output": {
-            "decision": decision,
-            "error": None,
-            "search_results": results,
-            "selected_result": selected,
-            "telemetry": telemetry,
-        }
-    }
+    output = WebAcquisitionGraphOutput(
+        decision=decision,
+        error=None,
+        search_results=results,
+        selected_result=selected,
+        telemetry=telemetry,
+    )
+    return {"output": output.model_dump(mode="json")}
 
 
 # --------------------------------------------------------------------- Graph
@@ -379,4 +440,6 @@ def build_web_acquisition_graph() -> StateGraph:
     workflow.add_edge("select", "finalize")
     workflow.add_edge("finalize", END)
 
-    return workflow.compile()
+    graph = workflow.compile()
+    setattr(graph, "io_spec", WEB_ACQUISITION_IO)
+    return graph

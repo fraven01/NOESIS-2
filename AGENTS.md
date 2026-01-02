@@ -313,6 +313,12 @@ Canonical tool envelope models live in `ai_core/tool_contracts/base.py`.
 - File-backed checkpoint location: `common/object_store_defaults.py:BASE_PATH` (`.ai_core_store/`) + `ai_core/graph/core.py:FileCheckpointer._path` (`{tenant}/{case}/state.json`).
 - Transition payload shape used by graphs: `ai_core/graphs/transition_contracts.py:StandardTransitionResult` and `ai_core/graphs/transition_contracts.py:GraphTransition`.
 
+## Graph I/O contracts (mandatory)
+
+- All graphs must declare versioned Pydantic input/output models and a `GraphIOSpec` (`ai_core/graph/io.py`).
+- Boundary payloads must include `schema_id` and `schema_version` fields and be validated at the graph boundary.
+- Attach the spec to compiled graphs via `io_spec` (or as a field on graph classes).
+
 ## Tool error identifiers
 
 Deterministic error type identifiers are defined in `ai_core/tools/errors.py:ToolErrorType`:

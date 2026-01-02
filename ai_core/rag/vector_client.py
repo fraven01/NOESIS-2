@@ -518,17 +518,23 @@ def _normalise_document_identity(
 
     chunks = doc.get("chunks")
     if isinstance(chunks, Sequence):
+        updated_chunks: list[Chunk | MutableMapping[str, Any]] = []
+        changed = False
         for chunk in chunks:
+            updated_chunk = chunk
             if isinstance(chunk, Chunk):
-                chunk_meta = chunk.meta
-                if isinstance(chunk_meta, MutableMapping):
-                    chunk_meta["document_id"] = canonical_id
-                elif isinstance(chunk_meta, Mapping):
-                    new_meta = dict(chunk_meta)
-                    new_meta["document_id"] = canonical_id
-                    chunk.meta = new_meta
+                if chunk.meta.get("document_id") != canonical_id:
+                    updated_chunk = chunk.model_copy(
+                        update={"meta": {**chunk.meta, "document_id": canonical_id}}
+                    )
+                    changed = True
             elif isinstance(chunk, MutableMapping):
-                chunk["document_id"] = canonical_id
+                if chunk.get("document_id") != canonical_id:
+                    chunk["document_id"] = canonical_id
+                    changed = True
+            updated_chunks.append(updated_chunk)
+        if changed:
+            doc["chunks"] = updated_chunks
 
     for parent_key in ("parents", "parent_nodes"):
         parent_map = doc.get(parent_key)
@@ -3311,8 +3317,10 @@ class PgVectorClient:
                     continue
                 if chunk_key not in cutoff_candidates:
                     continue
-                chunk.meta["cutoff_fallback"] = True
-                filtered_results.append(chunk)
+                new_meta = dict(chunk.meta)
+                new_meta["cutoff_fallback"] = True
+                updated_chunk = chunk.model_copy(update={"meta": new_meta})
+                filtered_results.append(updated_chunk)
                 selected_chunk_keys.add(chunk_key)
                 fallback_promoted.append(
                     {

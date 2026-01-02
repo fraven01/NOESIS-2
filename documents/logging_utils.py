@@ -57,6 +57,8 @@ def log_extra(
 def suppress_logging() -> Iterable[None]:
     root_logger = logging.getLogger()
     swapped: list[tuple[logging.StreamHandler, object]] = []
+    previous_raise: bool = logging.raiseExceptions
+    logging.raiseExceptions = False
     for handler in root_logger.handlers:
         if not isinstance(handler, logging.StreamHandler):
             continue
@@ -75,6 +77,7 @@ def suppress_logging() -> Iterable[None]:
     try:
         yield
     finally:
+        logging.raiseExceptions = previous_raise
         for handler, stream in swapped:
             try:
                 if stream is None or getattr(stream, "closed", False):

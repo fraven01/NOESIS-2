@@ -76,8 +76,8 @@ def test_retrieve_hybrid_search(monkeypatch):
     _patch_routing(monkeypatch)
 
     chunk = Chunk(
-        "Hybrid Result",
-        {
+        content="Hybrid Result",
+        meta={
             "id": "doc-1",
             "source": "src",
             "hash": "h1",
@@ -234,8 +234,8 @@ def test_retrieve_deduplicates_matches(monkeypatch):
 
     chunks = [
         Chunk(
-            "First",
-            {
+            content="First",
+            meta={
                 "id": "doc-1",
                 "chunk_id": "chunk-1",
                 "score": 0.4,
@@ -245,8 +245,8 @@ def test_retrieve_deduplicates_matches(monkeypatch):
             },
         ),
         Chunk(
-            "Second",
-            {
+            content="Second",
+            meta={
                 "id": "doc-1",
                 "chunk_id": "chunk-1",
                 "score": 0.9,
@@ -257,8 +257,8 @@ def test_retrieve_deduplicates_matches(monkeypatch):
             },
         ),
         Chunk(
-            "Third",
-            {
+            content="Third",
+            meta={
                 "id": "doc-1",
                 "chunk_id": "chunk-2",
                 "score": 0.6,
@@ -268,8 +268,8 @@ def test_retrieve_deduplicates_matches(monkeypatch):
             },
         ),
         Chunk(
-            "Fourth",
-            {
+            content="Fourth",
+            meta={
                 "id": "doc-2",
                 "chunk_id": "chunk-3",
                 "score": 0.5,
@@ -324,7 +324,7 @@ def test_retrieve_deduplicates_matches(monkeypatch):
 def test_retrieve_raises_on_chunks_without_ids(monkeypatch):
     _patch_routing(monkeypatch)
 
-    chunk = Chunk("Invalid", {"tenant_id": "tenant-1"})
+    chunk = Chunk(content="Invalid", meta={"tenant_id": "tenant-1"})
     hybrid_result = HybridSearchResult(
         chunks=[chunk],
         vector_candidates=1,

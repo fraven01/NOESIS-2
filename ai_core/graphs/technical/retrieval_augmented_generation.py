@@ -5,13 +5,54 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import Any, Protocol, Tuple
+from typing import Any, Literal, Protocol, Tuple
+from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.nodes import compose, retrieve
 from ai_core.tool_contracts import ContextError, ToolContext
 from ai_core.tool_contracts.base import tool_context_from_meta
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 
 logger = logging.getLogger(__name__)
+
+
+RAG_SCHEMA_ID = "noesis.graphs.retrieval_augmented_generation"
+RAG_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
+RAG_IO_VERSION_STRING = RAG_IO_VERSION.as_string()
+
+
+class RetrievalAugmentedGenerationInput(retrieve.RetrieveInput):
+    """Boundary input model for the retrieval augmented generation graph."""
+
+    schema_id: Literal[RAG_SCHEMA_ID] = RAG_SCHEMA_ID
+    schema_version: Literal[RAG_IO_VERSION_STRING] = RAG_IO_VERSION_STRING
+
+    model_config = ConfigDict(
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        frozen=True,
+    )
+
+
+class RetrievalAugmentedGenerationOutput(BaseModel):
+    """Boundary output model for the retrieval augmented generation graph."""
+
+    schema_id: Literal[RAG_SCHEMA_ID] = RAG_SCHEMA_ID
+    schema_version: Literal[RAG_IO_VERSION_STRING] = RAG_IO_VERSION_STRING
+    answer: str | None
+    prompt_version: str | None
+    retrieval: Mapping[str, Any]
+    snippets: list[dict[str, Any]]
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+RAG_GRAPH_IO = GraphIOSpec(
+    schema_id=RAG_SCHEMA_ID,
+    version=RAG_IO_VERSION,
+    input_model=RetrievalAugmentedGenerationInput,
+    output_model=RetrievalAugmentedGenerationOutput,
+)
 
 
 class RetrieveNode(Protocol):
@@ -148,6 +189,7 @@ class RetrievalAugmentedGenerationGraph:
 
     retrieve_node: RetrieveNode = retrieve.run
     compose_node: ComposeNode = compose.run
+    io_spec: GraphIOSpec = RAG_GRAPH_IO
 
     def run(
         self,
@@ -157,8 +199,18 @@ class RetrievalAugmentedGenerationGraph:
         working_state = _ensure_mutable_state(state)
         working_meta = _ensure_mutable_meta(meta)
 
+        try:
+            graph_input = RetrievalAugmentedGenerationInput.model_validate(
+                working_state
+            )
+        except ValidationError as exc:
+            # This graph fails fast on invalid input instead of returning state errors.
+            raise ValueError(f"Invalid graph input: {exc.errors()}") from exc
+
         context = _build_tool_context(working_meta)
-        params = retrieve.RetrieveInput.from_state(working_state)
+        params = retrieve.RetrieveInput.model_validate(
+            graph_input.model_dump(exclude={"schema_id", "schema_version"})
+        )
         retrieve_output = self.retrieve_node(context, params)
         retrieval_meta = retrieve_output.meta.model_dump(mode="json", exclude_none=True)
         took_ms = retrieval_meta.get("took_ms")
@@ -191,12 +243,12 @@ class RetrievalAugmentedGenerationGraph:
             snippets_payload, retrieve_output.matches
         )
 
-        result_payload = {
-            "answer": compose_result.get("answer"),
-            "prompt_version": compose_result.get("prompt_version"),
-            "retrieval": retrieval_payload,
-            "snippets": snippets_payload,
-        }
+        result_payload = RetrievalAugmentedGenerationOutput(
+            answer=compose_result.get("answer"),
+            prompt_version=compose_result.get("prompt_version"),
+            retrieval=retrieval_payload,
+            snippets=snippets_payload,
+        ).model_dump(mode="json")
 
         if result_payload["prompt_version"] is None:
             logger.warning(

@@ -74,16 +74,19 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 
 ## Layering / boundaries
 
-- [ ] Graph package split: business vs technical graphs (finish relocation of remaining root graphs like `ai_core/graphs/info_intake.py`)
+- [ ] Remove legacy graph shims after call sites are migrated (pointers: `ai_core/graphs/info_intake.py`, `ai_core/graphs/__init__.py`, `ai_core/views.py`; note: coordinate with the `info_intake` deprecation plan)
 - [x] Enforce import direction (business -> technical) via a lightweight repo test (no new dependencies)
-- [ ] Capability-first rule: graphs call explicit capabilities (`ai_core/nodes/`, `ai_core/tools/`, domain services) instead of embedding ad-hoc logic (TODOs: `roadmap/capability-first-todos.md`)
+- [ ] Capability-first: framework analysis graph extractions (pointers: `ai_core/graphs/business/framework_analysis_graph.py`, `roadmap/capability-first-todos.md`; acceptance: extracted capabilities for gremium normalization, ToC extraction, LLM JSON parsing, component validation, persistence adapter)
+- [ ] Capability-first: collection search graph extractions (pointers: `ai_core/graphs/technical/collection_search.py`, `roadmap/capability-first-todos.md`; acceptance: scoring/strategy/HITL/auto-ingest logic moved to nodes/tools/services)
+- [ ] Capability-first: universal ingestion graph extractions (pointers: `ai_core/graphs/technical/universal_ingestion_graph.py`, `roadmap/capability-first-todos.md`; acceptance: selection and normalization logic moved to capabilities, DI root optionally in factory)
 
 ## Externalization readiness (later)
 
-- [ ] Contract drift (defer until externalization): migrate `ai_core/rag/schemas.py:Chunk` off `@dataclass` (pointers: `docs/audit/contract_divergence_report.md#1-chunk-schema-non-compliance`, `ai_core/rag/schemas.py`, `ai_core/rag/vector_client.py` (mutating `chunk.meta`), `ai_core/api.py`, `ai_core/tasks.py`; rationale: RAG path stable, high call-site/mutation cost; revisit when external interfaces harden; acceptance: a Pydantic `ChunkV2` (frozen) exists, call sites migrated, legacy kept only behind explicit adapter until removed)
-- [ ] Technical graph interface: versioned Pydantic I/O (avoid implicit state dicts) for externalization readiness
-- [ ] Graph executor boundary: local vs celery vs remote execution (business graphs call executor; planned location `ai_core/graph/execution/`)
-- [ ] Graph registry: once a real GraphExecutor exists, extend `ai_core/graph/registry.py` to support factories + versioning + optional request/response model metadata
+- [x] Contract drift (hard break): migrate `Chunk` to Pydantic (frozen) and remove `Chunk.meta` mutation (pointers: `docs/audit/contract_divergence_report.md#1-chunk-schema-compliance`, `ai_core/rag/schemas.py`, `ai_core/rag/vector_client.py`, `ai_core/api.py`, `ai_core/tasks.py`; acceptance: `Chunk` is Pydantic (frozen), call sites migrated to keyword-only construction, no in-place `Chunk.meta` mutation)
+- [x] Technical graph interface: versioned Pydantic I/O for graph boundaries (pilot: `universal_ingestion_graph`, `web_acquisition_graph`, `retrieval_augmented_generation`, `crawler.ingestion` alias; acceptance: graphs declare input/output models and version tokens)
+- [ ] Technical graph interface: expand versioned Pydantic I/O to remaining graphs (e.g., `collection_search`, `info_intake`, `external_knowledge_graph`, `framework_analysis_graph`)
+- [ ] Graph executor boundary: wire `ai_core/graph/execution` into business graphs and add a Celery/remote executor implementation (acceptance: business graphs call executor interface; local + async executors covered)
+- [ ] Graph registry: add versioning + request/response model metadata (note: factory support already exists via `LazyGraphFactory`)
 
 ## Domain boundary cleanup (later)
 

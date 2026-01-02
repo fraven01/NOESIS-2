@@ -245,10 +245,11 @@ python manage.py check_rag_schemas   # Health-Check
 ### Bei Graph-Entwicklung
 
 1. Lies [ai_core/graphs/README.md](ai_core/graphs/README.md)
-2. Nutze `GraphNode` & `GraphTransition`
-3. Teste mit Fake-Services/Retrievers
-4. Emittiere strukturierte Transitions
-5. Dokumentiere Guardrails
+2. Definiere Graph I/O Spezifikationen: versionierte Pydantic Input/Output Modelle mit `schema_id`/`schema_version` und `io_spec` (siehe `ai_core/graph/io.py`)
+3. Nutze `GraphNode` & `GraphTransition`
+4. Teste mit Fake-Services/Retrievers
+5. Emittiere strukturierte Transitions
+6. Dokumentiere Guardrails
 
 ## Multi-Tenancy (Setup & Commands)
 

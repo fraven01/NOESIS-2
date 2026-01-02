@@ -968,8 +968,8 @@ def test_rag_query_endpoint_applies_top_k_override(
             case_meta = case_id or "case-topk"
             chunks = [
                 Chunk(
-                    f"Snippet {index}",
-                    {
+                    content=f"Snippet {index}",
+                    meta={
                         "id": f"doc-{index}",
                         "score": 0.9 - (index * 0.01),
                         "source": f"doc-{index}.md",

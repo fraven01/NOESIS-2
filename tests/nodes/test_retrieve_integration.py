@@ -220,8 +220,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     case = "case-7"
     vector_chunks = [
         Chunk(
-            "Vector Match A",
-            {
+            content="Vector Match A",
+            meta={
                 "id": "doc-1",
                 "score": 0.9,
                 "source": "vector",
@@ -230,8 +230,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
             },
         ),
         Chunk(
-            "Vector Match B",
-            {
+            content="Vector Match B",
+            meta={
                 "id": "doc-2",
                 "score": 0.4,
                 "source": "vector",
@@ -242,8 +242,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     ]
     lexical_chunks = [
         Chunk(
-            "Lexical Match A",
-            {
+            content="Lexical Match A",
+            meta={
                 "id": "doc-1",
                 "score": 0.7,
                 "source": "lexical",
@@ -252,8 +252,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
             },
         ),
         Chunk(
-            "Lexical Match B",
-            {
+            content="Lexical Match B",
+            meta={
                 "id": "doc-3",
                 "score": 0.8,
                 "source": "lexical",
@@ -354,8 +354,8 @@ def test_retrieve_includes_parent_context(monkeypatch):
     case = "case-parent"
     doc_uuid = "11111111-1111-1111-1111-111111111111"
     chunk = Chunk(
-        "Parented chunk",
-        {
+        content="Parented chunk",
+        meta={
             "id": "doc-parent",
             "document_id": doc_uuid,
             "score": 0.9,
@@ -408,8 +408,8 @@ def _run_visibility_scenario(
     tenant = "tenant-visibility"
     case = "case-vis"
     active_chunk = Chunk(
-        "Active",
-        {
+        content="Active",
+        meta={
             "id": "doc-active",
             "score": 0.91,
             "source": "vector",
@@ -418,8 +418,8 @@ def _run_visibility_scenario(
         },
     )
     deleted_chunk = Chunk(
-        "Deleted",
-        {
+        content="Deleted",
+        meta={
             "id": "doc-deleted",
             "score": 0.42,
             "source": "vector",
@@ -532,8 +532,8 @@ def test_retrieve_scoped_router_without_schema(monkeypatch, caplog):
     response = _HybridSearchResult(
         [
             Chunk(
-                "Scoped",
-                {
+                content="Scoped",
+                meta={
                     "id": "doc-1",
                     "score": 0.8,
                     "source": "vector",
@@ -565,8 +565,8 @@ def test_retrieve_warns_without_for_tenant(monkeypatch, caplog):
     response = _HybridSearchResult(
         [
             Chunk(
-                "Unscoped",
-                {
+                content="Unscoped",
+                meta={
                     "id": "doc-2",
                     "score": 0.7,
                     "source": "vector",
@@ -597,8 +597,8 @@ def test_retrieve_raises_on_incompatible_for_tenant(monkeypatch):
     response = _HybridSearchResult(
         [
             Chunk(
-                "Fallback",
-                {
+                content="Fallback",
+                meta={
                     "id": "doc-3",
                     "score": 0.6,
                     "source": "vector",

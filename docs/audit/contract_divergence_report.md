@@ -15,43 +15,35 @@ This audit identifies inconsistencies between implemented Pydantic contracts and
 
 ## Critical Findings
 
-### 1. Chunk Schema Non-Compliance ⚠️ DEFERRED
+### 1. Chunk Schema Compliance ✅ RESOLVED (2026-01-02)
 
 **Location**: [`ai_core/rag/schemas.py`](../../ai_core/rag/schemas.py:1-15)
 
-**Issue**: The `Chunk` schema uses Python `@dataclass` instead of Pydantic `BaseModel`.
+**Issue**: The `Chunk` schema previously used Python `@dataclass` instead of Pydantic `BaseModel`.
 
 **AGENTS.md Requirement**:
 > Tool-Hüllmodelle basieren auf Pydantic `BaseModel` mit `frozen=True` (immutable)
 
-**Current Implementation** (retained):
+**Current Implementation**:
 
 ```python
-@dataclass
-class Chunk:
+class Chunk(BaseModel):
     """A chunk of knowledge used for retrieval."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     content: str
-    meta: Dict[str, Any]
-    embedding: Optional[List[float]] = None
-    parents: Optional[Dict[str, Dict[str, Any]]] = None
+    meta: dict[str, Any]
+    embedding: list[float] | None = None
+    parents: dict[str, dict[str, Any]] | None = None
 ```
 
-**Migration Attempted & Reverted** (2025-12-15):
+**Migration Notes**:
 
-> [!CAUTION]
-> Pydantic migration was attempted but reverted due to breaking changes:
->
-> 1. **50+ call sites** use positional arguments: `Chunk("content", {"meta": ...})`
-> 2. **vector_client.py:529** assigns `chunk.meta = new_meta` (requires mutability)
-> 3. Pydantic `BaseModel` requires keyword arguments and `frozen=True` prevents mutation
+- Call sites migrated to keyword-only construction (Pydantic v2 requirement).
+- Chunk metadata updates reconstruct a new `Chunk` instead of mutating `Chunk.meta` in-place (see `ai_core/rag/vector_client.py`).
 
-**Recommendation for Future**:
-
-- Create a `ChunkV2` Pydantic model for new code paths
-- Gradually migrate callers during refactoring sprints
-- Keep `Chunk` dataclass until all callers are migrated
-
-**Status**: ⚠️ DEFERRED - Retained as `@dataclass` due to extensive codebase usage patterns
+**Status**: ✅ COMPLIANT (hard break applied; legacy dataclass removed)
 
 ---
 

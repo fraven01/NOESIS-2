@@ -16,8 +16,9 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables import RunnableConfig
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import observe_span
 from documents.contracts import NormalizedDocument
 from documents.pipeline import DocumentProcessingContext, DocumentPipelineConfig
@@ -25,7 +26,11 @@ from documents.processing_graph import build_document_processing_graph
 from ai_core.services import _get_documents_repository
 from ai_core.tool_contracts import ToolContext
 
-# --------------------------------------------------------------------- Contracts
+# --------------------------------------------------------------------- I/O Contracts
+
+UNIVERSAL_INGESTION_SCHEMA_ID = "noesis.graphs.universal_ingestion"
+UNIVERSAL_INGESTION_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
+UNIVERSAL_INGESTION_IO_VERSION_STRING = UNIVERSAL_INGESTION_IO_VERSION.as_string()
 
 
 class UniversalIngestionInput(TypedDict):
@@ -56,6 +61,58 @@ class UniversalIngestionOutput(TypedDict):
 
     # Legacy compatibility fields (can be deprecated later)
     formatted_status: str | None
+
+
+class UniversalIngestionInputModel(BaseModel):
+    """Pydantic input contract for the universal ingestion graph."""
+
+    normalized_document: dict[str, Any] | NormalizedDocument | None = None
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class UniversalIngestionGraphInput(BaseModel):
+    """Boundary input model for the universal ingestion graph."""
+
+    schema_id: Literal[UNIVERSAL_INGESTION_SCHEMA_ID] = UNIVERSAL_INGESTION_SCHEMA_ID
+    schema_version: Literal[UNIVERSAL_INGESTION_IO_VERSION_STRING] = (
+        UNIVERSAL_INGESTION_IO_VERSION_STRING
+    )
+    input: UniversalIngestionInputModel
+    context: dict[str, Any]
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class UniversalIngestionGraphOutput(BaseModel):
+    """Boundary output model for the universal ingestion graph."""
+
+    schema_id: Literal[UNIVERSAL_INGESTION_SCHEMA_ID] = UNIVERSAL_INGESTION_SCHEMA_ID
+    schema_version: Literal[UNIVERSAL_INGESTION_IO_VERSION_STRING] = (
+        UNIVERSAL_INGESTION_IO_VERSION_STRING
+    )
+    decision: Literal["processed", "skipped", "failed"]
+    reason_code: (
+        Literal[
+            "DUPLICATE", "VALIDATION_ERROR", "PERSISTENCE_ERROR", "PROCESSING_ERROR"
+        ]
+        | None
+    )
+    reason: str | None
+    document_id: str | None
+    ingestion_run_id: str | None
+    telemetry: dict[str, Any]
+    formatted_status: str | None
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+UNIVERSAL_INGESTION_IO = GraphIOSpec(
+    schema_id=UNIVERSAL_INGESTION_SCHEMA_ID,
+    version=UNIVERSAL_INGESTION_IO_VERSION,
+    input_model=UniversalIngestionGraphInput,
+    output_model=UniversalIngestionGraphOutput,
+)
 
 
 class UniversalIngestionState(TypedDict):
@@ -95,8 +152,15 @@ class UniversalIngestionError(Exception):
 @observe_span(name="node.validate_input")
 def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
     """Validate input contract and context."""
-    inp = state.get("input", {})
-    context_dict = state.get("context", {})
+    try:
+        graph_input = UniversalIngestionGraphInput.model_validate(state)
+    except ValidationError as exc:
+        msg = f"Invalid graph input: {exc.errors()}"
+        logger.error(msg)
+        return {"error": msg, "tool_context": None}
+
+    inp = graph_input.input
+    context_dict = graph_input.context
 
     # 1. Validate ToolContext (Single Source of Truth)
     try:
@@ -107,7 +171,7 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
         return {"error": msg, "tool_context": None}
 
     # 2. Validate Input (NormalizedDocument)
-    raw_doc = inp.get("normalized_document")
+    raw_doc = inp.normalized_document
     if not raw_doc:
         return {
             "error": "Missing normalized_document in input",
@@ -334,17 +398,16 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
         reason_code = None
         reason = "Ingestion successful."
 
-    return {
-        "output": {
-            "decision": decision,
-            "reason_code": reason_code,
-            "reason": reason,
-            "document_id": doc_id,
-            "ingestion_run_id": ingestion_run_id,
-            "telemetry": telemetry,
-            "formatted_status": decision.upper(),  # Legacy compat
-        }
-    }
+    output = UniversalIngestionGraphOutput(
+        decision=decision,
+        reason_code=reason_code,
+        reason=reason,
+        document_id=doc_id,
+        ingestion_run_id=ingestion_run_id,
+        telemetry=telemetry,
+        formatted_status=decision.upper(),  # Legacy compat
+    )
+    return {"output": output.model_dump(mode="json")}
 
 
 # --------------------------------------------------------------------- Graph
@@ -387,4 +450,6 @@ def build_universal_ingestion_graph() -> StateGraph:
     workflow.add_edge("process", "finalize")
     workflow.add_edge("finalize", END)
 
-    return workflow.compile()
+    graph = workflow.compile()
+    setattr(graph, "io_spec", UNIVERSAL_INGESTION_IO)
+    return graph
