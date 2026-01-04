@@ -36,7 +36,6 @@ class TestFrameworkAnalysisGraphBuilder:
         assert "locate_components" in node_names
         assert "validate_components" in node_names
         assert "assemble_profile" in node_names
-        assert "persist_profile" in node_names
         assert "finish" in node_names
 
     def test_nodes_are_ordered_correctly(self) -> None:
@@ -50,7 +49,6 @@ class TestFrameworkAnalysisGraphBuilder:
             "locate_components",
             "validate_components",
             "assemble_profile",
-            "persist_profile",
             "finish",
         ]
 
@@ -299,42 +297,14 @@ class TestGraphEndToEnd:
 
     @patch("ai_core.graphs.business.framework_analysis_graph.llm_client")
     @patch("ai_core.graphs.business.framework_analysis_graph.retrieve")
-    @patch("documents.services.framework_service.Tenant")
-    @patch("documents.services.framework_service.DocumentCollection")
-    @patch("documents.services.framework_service.FrameworkProfile")
-    @patch("documents.services.framework_service.FrameworkDocument")
     @patch("ai_core.graphs.business.framework_analysis_graph.load_prompt")
-    @pytest.mark.django_db
     def test_graph_executes_all_nodes(
         self,
         mock_load_prompt: MagicMock,
-        mock_framework_document: MagicMock,
-        mock_framework_profile: MagicMock,
-        mock_document_collection: MagicMock,
-        mock_tenant: MagicMock,
         mock_retrieve: MagicMock,
         mock_llm: MagicMock,
     ) -> None:
         """Test that graph executes all nodes successfully."""
-        # Mock DB
-        mock_tenant.objects.get.return_value = MagicMock()
-        mock_document_collection.objects.get.return_value = MagicMock()
-        mock_framework_profile.objects.filter.return_value.first.return_value = None
-        mock_profile = MagicMock()
-        mock_profile.id = uuid4()
-        mock_profile.version = 1
-        mock_profile.analysis_metadata = {
-            "detected_type": "kbv",
-            "type_confidence": 0.95,
-            "gremium_name_raw": "Konzernbetriebsrat",
-            "gremium_identifier": "KBR",
-            "completeness_score": 0.95,
-            "missing_components": [],
-            "analysis_timestamp": "2025-01-01T00:00:00Z",
-            "model_version": "v1",
-        }
-        mock_framework_profile.objects.create.return_value = mock_profile
-
         # Mock prompt
         mock_load_prompt.return_value = {"text": "Prompt text", "version": "v1"}
 
@@ -420,7 +390,7 @@ class TestGraphEndToEnd:
         assert output.gremium_identifier == "KBR"
         assert output.completeness_score == 0.75
         assert "zugriffsrechte" in output.missing_components
-        assert output.version == 1
+        assert output.analysis_metadata.model_version == "framework_analysis_v1"
 
     @patch("ai_core.graphs.business.framework_analysis_graph.llm_client")
     @patch("ai_core.graphs.business.framework_analysis_graph.retrieve")

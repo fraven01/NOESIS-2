@@ -1478,7 +1478,7 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
         guardrail_limits=GuardrailLimits(),
     )
     assert len(builds) == 1
-    guardrails = builds[0].state.get("guardrails")
+    guardrails = builds[0].state.guardrails
     assert isinstance(guardrails, dict)
     assert guardrails["limits"] is not None
     assert guardrails["limits"]["max_document_bytes"] is None
@@ -1563,7 +1563,7 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
         guardrail_limits=GuardrailLimits(),
     )
     assert len(builds) == 1
-    normalized = builds[0].state.get("normalized_document_input")
+    normalized = builds[0].state.normalized_document_input
     assert isinstance(normalized, dict)
     assert normalized["meta"]["origin_uri"] == "https://example.org/utf8"
     assert normalized["meta"]["tags"] == []
@@ -1656,7 +1656,7 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
         guardrail_limits=GuardrailLimits(),
     )
     assert len(builds) == 1
-    normalized = builds[0].state.get("normalized_document_input")
+    normalized = builds[0].state.normalized_document_input
     assert isinstance(normalized, dict)
     assert normalized["blob"]["media_type"] == "application/octet-stream"
     assert normalized["blob"]["size"] == len(payload)

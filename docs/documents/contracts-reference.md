@@ -1,6 +1,6 @@
 # Dokumenten-Contracts Referenz
 
-Diese Referenz bündelt alle Felder und Fehlermeldungen der Dokument-Verträge. Sie ergänzt die [Architekturübersicht](../architektur/documents-subsystem.md) um eine feldgenaue Sicht und verweist aufeinander über interne Anker.
+Diese Referenz bündelt alle Felder und Fehlermeldungen der Dokument-Verträge. Sie ergänzt die [Architekturübersicht](../architecture/documents-subsystem.md) um eine feldgenaue Sicht und verweist aufeinander über interne Anker.
 
 ## Schnellnavigation
 - [DocumentRef](#documentref)

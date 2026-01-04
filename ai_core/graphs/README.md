@@ -152,14 +152,8 @@ Die sequentielle Ausführung umfasst 7 Knoten:
    Konfidenz < Threshold ODER Validierung fehlgeschlagen. Loggt Warning mit
    `hitl_reasons`.
 
-6. **persist_profile** — Atomare Transaktion:
-   * Prüft ob Profil existiert (Konflikt wenn `force_reanalysis=false`)
-   * Setzt altes Profil `is_current=false`, inkrementiert Version
-   * Erstellt `FrameworkProfile` mit Struktur-JSON + Metadata
-   * Verknüpft `FrameworkDocument` für Hauptdokument
-   * Loggt Persistierung mit `profile_id`, Version, Typ
-
-7. **finish** — Bündelt finales `FrameworkAnalysisOutput` mit Transition-History
+6. **finish** - Bundelt finales `FrameworkAnalysisDraft` (nur Orchestrierung).
+   Persistierung erfolgt nachgelagert ueber die Service Boundary.
 
 ### Datenmodelle
 
@@ -277,7 +271,6 @@ Error-Codes:
 * `framework.locate_components`
 * `framework.validate_components`
 * `framework.assemble_profile`
-* `framework.persist_profile`
 
 **Strukturierte Logs**:
 

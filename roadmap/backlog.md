@@ -38,7 +38,7 @@ _Based on architectural analysis 2025-12-31. Pre-MVP; breaking changes and test 
 - [x] Break Up God Files (owner: ai-core+theme; docs: `docs/audit/architecture-anti-patterns-2025-12-31.md`; tests: `ai_core/tests/conftest.py`, `ai_core/tests/test_views.py`, `ai_core/tests/test_ingestion_view.py`, `ai_core/tests/test_repro_upload.py`, `ai_core/tests/services/test_crawler_runner.py`, `theme/tests/test_rag_tools_view.py`, `theme/tests/test_document_space_view.py`, `theme/tests/test_chat_submit_global_search.py`; acceptance notes: modules split, imports updated, no file > 500 lines)
 - [x] Targeted Domain Enrichment (owner: ai-core; docs: `docs/audit/architecture-anti-patterns-2025-12-31.md`; tests: `ai_core/tests/tools/test_framework_contracts.py`, `ai_core/tests/graphs/test_framework_analysis_graph.py`; acceptance notes: domain methods replace duplicated logic)
 - [x] Service Layer Refactoring (owner: ai-core; docs: `docs/audit/architecture-anti-patterns-2025-12-31.md`; tests: `ai_core/tests/test_graph_worker_timeout.py`, `ai_core/tests/test_services_observability.py`, `ai_core/tests/test_ingestion_view.py`, `ai_core/tests/test_repro_upload.py`, `ai_core/tests/services/test_crawler_runner.py`; acceptance notes: command objects used, `execute_graph` <= 100 lines)
-- [ ] State Dict -> Dataclasses (owner: ai-core; docs: `docs/audit/architecture-anti-patterns-2025-12-31.md`; tests: `ai_core/tests/services/test_crawler_runner.py`, `ai_core/tests/test_services_observability.py`; acceptance notes: structured state uses dataclasses/Pydantic)
+- [x] State Dict -> Dataclasses (owner: ai-core; docs: `docs/audit/architecture-anti-patterns-2025-12-31.md`; tests: `ai_core/tests/services/test_crawler_runner.py`, `ai_core/tests/test_services_observability.py`; acceptance notes: structured state uses dataclasses/Pydantic)
 
 ### P1 - High Value Cleanups (Low-Medium Effort)
 
@@ -76,6 +76,7 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 
 - [ ] Remove legacy graph shims after call sites are migrated (pointers: `ai_core/graphs/info_intake.py`, `ai_core/graphs/__init__.py`, `ai_core/views.py`; note: coordinate with the `info_intake` deprecation plan)
 - [x] Enforce import direction (business -> technical) via a lightweight repo test (no new dependencies)
+- [ ] Dev Workbench: review UI capability boundary for web acquisition search (pointers: `theme/views_web_search.py`, `theme/views_rag_tools.py`, `ai_core/graphs/web_acquisition_graph.py`, `crawler/manager.py`; acceptance: explicit capability vs graph boundary and consistent naming in rag-tools UI)
 - [ ] Capability-first: framework analysis graph extractions (pointers: `ai_core/graphs/business/framework_analysis_graph.py`, `roadmap/capability-first-todos.md`; acceptance: extracted capabilities for gremium normalization, ToC extraction, LLM JSON parsing, component validation, persistence adapter)
 - [ ] Capability-first: collection search graph extractions (pointers: `ai_core/graphs/technical/collection_search.py`, `roadmap/capability-first-todos.md`; acceptance: scoring/strategy/HITL/auto-ingest logic moved to nodes/tools/services)
 - [ ] Capability-first: universal ingestion graph extractions (pointers: `ai_core/graphs/technical/universal_ingestion_graph.py`, `roadmap/capability-first-todos.md`; acceptance: selection and normalization logic moved to capabilities, DI root optionally in factory)
@@ -84,13 +85,13 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 
 - [x] Contract drift (hard break): migrate `Chunk` to Pydantic (frozen) and remove `Chunk.meta` mutation (pointers: `docs/audit/contract_divergence_report.md#1-chunk-schema-compliance`, `ai_core/rag/schemas.py`, `ai_core/rag/vector_client.py`, `ai_core/api.py`, `ai_core/tasks.py`; acceptance: `Chunk` is Pydantic (frozen), call sites migrated to keyword-only construction, no in-place `Chunk.meta` mutation)
 - [x] Technical graph interface: versioned Pydantic I/O for graph boundaries (pilot: `universal_ingestion_graph`, `web_acquisition_graph`, `retrieval_augmented_generation`, `crawler.ingestion` alias; acceptance: graphs declare input/output models and version tokens)
-- [ ] Technical graph interface: expand versioned Pydantic I/O to remaining graphs (e.g., `collection_search`, `info_intake`, `external_knowledge_graph`, `framework_analysis_graph`)
+- [x] Technical graph interface: expand versioned Pydantic I/O to remaining graphs (completed: `framework_analysis_graph`; `info_intake` deferred to `docs/roadmap/rag-query.md`; `external_knowledge_graph` is `web_acquisition_graph` already migrated)
 - [ ] Graph executor boundary: wire `ai_core/graph/execution` into business graphs and add a Celery/remote executor implementation (acceptance: business graphs call executor interface; local + async executors covered)
 - [ ] Graph registry: add versioning + request/response model metadata (note: factory support already exists via `LazyGraphFactory`)
 
 ## Domain boundary cleanup (later)
 
-- [ ] Framework analysis graph: separate orchestration vs persistence boundary (`ai_core/graphs/framework_analysis_graph.py`, `documents/framework_models.py`)
+- [x] Framework analysis graph: separate orchestration vs persistence boundary (`ai_core/graphs/framework_analysis_graph.py`, `documents/framework_models.py`)
 
 ## Observability / operations
 
@@ -98,7 +99,7 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 
 ## Agent navigation (docs-only drift)
 
-- [ ] Fix stale docs links and naming drift around `docs/architektur/` vs `docs/architecture/` (pointers: `docs/audit/cleanup_report.md#link-fixes-required`, `docs/litellm/admin-gui.md`, `docs/development/onboarding.md`, `docs/documents/contracts-reference.md`, `docs/rag/overview.md`, `docs/crawler/overview.md`, `docs/architecture/architecture-reality.md`, `docs/roadmap/graphs.md`, `docs/architektur/langgraph-facade.md`; acceptance: no references to missing/renamed paths; LLM navigation lands on the canonical docs/code)
+- [x] Fix stale docs links and naming drift around `docs/architektur/` vs `docs/architecture/` (pointers: `docs/litellm/admin-gui.md`, `docs/development/onboarding.md`, `docs/documents/contracts-reference.md`, `docs/rag/overview.md`, `docs/crawler/overview.md`, `docs/architecture/architecture-reality.md`, `docs/roadmap/graphs.md`, `docs/architecture/langgraph-facade.md`; acceptance: no references to missing/renamed paths; LLM navigation lands on the canonical docs/code)
 
 ## Hygiene (lowest priority)
 

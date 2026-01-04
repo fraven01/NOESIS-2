@@ -314,7 +314,7 @@ Jeder Node emittiert strukturierte Spans mit:
 
 ## Weitere Informationen
 
-- **Architektur**: [docs/architektur/overview.md](../../docs/architektur/overview.md)
+- **Architektur**: [docs/architecture/overview.md](../../docs/architecture/overview.md)
 - **Tool-Contracts**: [docs/agents/tool-contracts.md](../../docs/agents/tool-contracts.md)
 - **RAG-Architektur**: [docs/rag/overview.md](../../docs/rag/overview.md)
 - **Embedding-Profile**: [docs/rag/configuration.md](../../docs/rag/configuration.md)

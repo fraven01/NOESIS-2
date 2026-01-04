@@ -25,7 +25,7 @@ NOESIS 2 ist eine mandantenfähige Django-Plattform (Python 3.12+) mit folgenden
 - **LiteLLM**: Proxy für LLM-Zugriff (Gemini, Vertex AI)
 - **Observability**: Langfuse (Traces) + ELK (Logs)
 
-**Vollständige Architektur & Contracts**: [AGENTS.md](AGENTS.md) → [docs/architektur/overview.md](docs/architektur/overview.md)
+**Vollständige Architektur & Contracts**: [AGENTS.md](AGENTS.md) → [docs/architecture/overview.md](docs/architecture/overview.md)
 
 ### Technologie-Stack
 
@@ -418,7 +418,7 @@ make sdk                   # Generate SDKs
 ### Contracts & Architektur (AGENTS.md)
 
 1. **[AGENTS.md](AGENTS.md)** - Hauptleitfaden (Contracts, Glossar, Schnittstellen)
-2. [docs/architektur/overview.md](docs/architektur/overview.md) - Systemarchitektur
+2. [docs/architecture/overview.md](docs/architecture/overview.md) - Systemarchitektur
 3. [docs/multi-tenancy.md](docs/multi-tenancy.md) - Mandantenfähigkeit
 4. [docs/architecture/id-semantics.md](docs/architecture/id-semantics.md) & [docs/architecture/id-propagation.md](docs/architecture/id-propagation.md) - ID-Semantik & End-to-End-Propagation
 5. [docs/architecture/id-guide-for-agents.md](docs/architecture/id-guide-for-agents.md) - Praktischer Implementierungs-Guide für Agenten

@@ -96,9 +96,7 @@ class CrawlerRunState:
             transitions = list(transitions)
         else:
             transitions = []
-        control = build.state.get("control", {})
-        if not isinstance(control, Mapping):
-            control = {}
+        control = build.state.control.as_mapping()
         return cls(
             artifacts=dict(artifacts),
             transitions=transitions,
@@ -307,7 +305,7 @@ def run_crawler_runner(
 
     for build in state_builds:
         # Construct Input for Universal Graph
-        normalized = build.state.get("normalized_document_input")
+        normalized = build.state.normalized_document_input
         input_payload: UniversalIngestionInput = {
             "source": "crawler",
             "mode": "ingest_only",
@@ -443,7 +441,7 @@ def _build_ingest_specs(
     pairs: list[tuple[CrawlerStateBundle, DocumentIngestSpec]] = []
 
     for build in builds:
-        normalized = build.state.get("normalized_document_input")
+        normalized = build.state.normalized_document_input
         if not isinstance(normalized, Mapping):
             continue
 
@@ -491,9 +489,9 @@ def _apply_ingest_result_to_build(
 ) -> None:
     document_id = str(record.result.document.id)
     build.document_id = document_id
-    build.state["document_id"] = document_id
+    build.state.document_id = document_id
 
-    normalized = build.state.get("normalized_document_input")
+    normalized = build.state.normalized_document_input
     if not isinstance(normalized, Mapping):
         return
 
@@ -513,7 +511,7 @@ def _apply_ingest_result_to_build(
 
     normalized_mutable["ref"] = ref_payload
     normalized_mutable["checksum"] = record.spec.content_hash
-    build.state["normalized_document_input"] = normalized_mutable
+    build.state.normalized_document_input = normalized_mutable
 
 
 def _resolve_tenant(identifier: object):
@@ -779,7 +777,7 @@ def _build_guardrail_denied_payload(
     decision: guardrails_middleware.GuardrailDecision,
 ) -> dict[str, object]:
     limits = {}
-    guardrail_state = build.state.get("guardrails")
+    guardrail_state = build.state.guardrails
     if isinstance(guardrail_state, Mapping):
         limits = guardrail_state.get("limits") or {}
     return {

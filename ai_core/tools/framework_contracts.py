@@ -294,6 +294,40 @@ class FrameworkAnalysisInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class FrameworkAnalysisDraftMetadata(BaseModel):
+    """Metadata captured before persistence."""
+
+    detected_type: str
+    type_confidence: float = Field(..., ge=0.0, le=1.0)
+    gremium_name_raw: str
+    gremium_identifier: str
+    completeness_score: float = Field(..., ge=0.0, le=1.0)
+    missing_components: list[str]
+    model_version: str = "framework_analysis_v1"
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class FrameworkAnalysisDraft(BaseModel):
+    """Pre-persistence framework analysis output."""
+
+    gremium_identifier: str
+    gremium_name_raw: str
+    agreement_type: str
+    document_collection_id: str
+    document_id: str | None
+    structure: FrameworkStructure
+    completeness_score: float = Field(..., ge=0.0, le=1.0)
+    missing_components: list[str]
+    hitl_required: bool
+    hitl_reasons: list[str] = Field(default_factory=list)
+    analysis_metadata: FrameworkAnalysisDraftMetadata
+    confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    force_reanalysis: bool = False
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 class AssembledComponentLocation(BaseModel):
     """Assembled and validated component location."""
 

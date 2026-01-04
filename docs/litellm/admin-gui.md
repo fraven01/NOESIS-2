@@ -3,7 +3,7 @@ LiteLLM bündelt alle LLM-Zugriffe und liefert eine Admin-GUI. Dieses Dokument e
 
 # Wie
 ## Betriebsmodell
-- LiteLLM läuft als eigener Cloud Run Service (siehe [Architektur](../architektur/overview.md)).
+- LiteLLM läuft als eigener Cloud Run Service (siehe [Architektur](../architecture/overview.md)).
 - Konfiguration stammt aus [`config/litellm-config.yaml`](../../config/litellm-config.yaml); `require_auth: true` erzwingt Authentifizierung.
 - Der Dienst verwendet `DATABASE_URL`, um Nutzungsdaten und API-Keys zu speichern. In Cloud-Umgebungen liegt diese Datenbank im selben Cloud SQL Projekt wie Django.
 

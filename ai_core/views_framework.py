@@ -21,8 +21,9 @@ from common.constants import X_TENANT_ID_HEADER, X_TRACE_ID_HEADER
 from common.logging import bind_log_context, get_logger
 from noesis2.api import default_extend_schema
 
+from ai_core.contracts.business import BusinessContext
 from ai_core.contracts.scope import ScopeContext
-from ai_core.graphs.business.framework_analysis_graph import build_graph
+from ai_core.services.framework_analysis import run_framework_analysis
 from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.tools.framework_contracts import (
     FrameworkAnalysisInput,
@@ -370,15 +371,31 @@ class FrameworkAnalysisView(APIView):
 
         context = tool_context_from_meta(meta)
         tenant_id = context.scope.tenant_id
-        tenant_schema = meta["tenant_schema"]
         trace_id = context.scope.trace_id
 
         # Parse request body
         try:
             request_data = dict(request.data or {})
+            document_collection_id = request_data.get("document_collection_id")
+            document_id = request_data.get("document_id")
 
-            # Validate and parse input
-            input_params = FrameworkAnalysisInput(**request_data)
+            if not document_collection_id:
+                return _error_response(
+                    "document_collection_id is required.",
+                    "invalid_input",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+            input_payload = {}
+            if "force_reanalysis" in request_data:
+                input_payload["force_reanalysis"] = request_data["force_reanalysis"]
+            if "confidence_threshold" in request_data:
+                input_payload["confidence_threshold"] = request_data[
+                    "confidence_threshold"
+                ]
+
+            # Validate and parse functional inputs
+            input_params = FrameworkAnalysisInput(**input_payload)
 
         except ValidationError as e:
             logger.warning(
@@ -416,21 +433,26 @@ class FrameworkAnalysisView(APIView):
                 extra={
                     "tenant_id": tenant_id,
                     "trace_id": trace_id,
-                    "document_collection_id": str(input_params.document_collection_id),
-                    "document_id": (
-                        str(input_params.document_id)
-                        if input_params.document_id
-                        else None
-                    ),
+                    "document_collection_id": str(document_collection_id),
+                    "document_id": str(document_id) if document_id else None,
                 },
             )
 
-            graph = build_graph()
-            output = graph.run(
+            business_context = BusinessContext(
+                collection_id=str(document_collection_id),
+                document_id=str(document_id) if document_id else None,
+            )
+            tool_context = context.model_copy(update={"business": business_context})
+            meta["business_context"] = business_context.model_dump(
+                mode="json", exclude_none=True
+            )
+            meta["tool_context"] = tool_context.model_dump(
+                mode="json", exclude_none=True
+            )
+
+            output = run_framework_analysis(
+                context=tool_context,
                 input_params=input_params,
-                tenant_id=tenant_id,
-                tenant_schema=tenant_schema,
-                trace_id=trace_id,
             )
 
             logger.info(

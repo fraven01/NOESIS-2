@@ -38,6 +38,8 @@ from documents.contracts import InlineBlob, NormalizedDocument
 from documents.normalization import canonical_hash, normalize_url
 
 from ai_core.contracts.crawler_runner import (
+    CrawlerControlState,
+    CrawlerGraphState,
     CrawlerRunContext,
     CrawlerRunError,
     CrawlerStateBundle,
@@ -358,39 +360,19 @@ def build_crawler_state(
             snapshot_path = None
             snapshot_sha256 = None
 
-        state: dict[str, object] = {
-            "tenant_id": scope_meta.tenant_id,
-            "case_id": business_meta.case_id,  # BREAKING CHANGE (Option A): from business_context
-            "workflow_id": workflow_id,
-            "external_id": source.external_id,
-            "origin_uri": source.canonical_source,
-            "provider": source.provider,
-            "frontier": frontier_data.model_dump(mode="json"),
-            "fetch": fetch_payload.model_dump(mode="json"),
-            "guardrails": guardrail_payload.model_dump(mode="json"),
-            "document_id": document_id,
-            "collection_id": request_data.collection_id,
-            "normalized_document_input": normalized_document_input.model_dump(
-                mode="json"
-            ),
-        }
-        control: dict[str, object] = {
-            "snapshot": snapshot_requested,
-            "snapshot_label": snapshot_label,
-            "fetch": fetch_used,
-            "tags": list(tags),
-            "shadow_mode": bool(request_data.shadow_mode or dry_run),
-            "dry_run": dry_run,
-            "mode": request_data.mode,
-        }
-        if review:
-            control["review"] = review
-            control["manual_review"] = review
-        if request_data.force_retire:
-            control["force_retire"] = True
-        if request_data.recompute_delta:
-            control["recompute_delta"] = True
-        state["control"] = control
+        control = CrawlerControlState(
+            snapshot=snapshot_requested,
+            snapshot_label=snapshot_label,
+            fetch=fetch_used,
+            tags=tags,
+            shadow_mode=bool(request_data.shadow_mode or dry_run),
+            dry_run=dry_run,
+            mode=request_data.mode,
+            review=review or None,
+            manual_review=review or None,
+            force_retire=True if request_data.force_retire else None,
+            recompute_delta=True if request_data.recompute_delta else None,
+        )
 
         baseline_data, previous_status = _load_baseline_context(
             scope_meta.tenant_id,
@@ -399,9 +381,23 @@ def build_crawler_state(
             repository,
             lifecycle_store,
         )
-        state["baseline"] = baseline_data
-        if previous_status:
-            state["previous_status"] = previous_status
+        state = CrawlerGraphState(
+            tenant_id=scope_meta.tenant_id,
+            case_id=business_meta.case_id,  # BREAKING CHANGE (Option A): from business_context
+            workflow_id=workflow_id,
+            external_id=source.external_id,
+            origin_uri=source.canonical_source,
+            provider=source.provider,
+            frontier=frontier_data.model_dump(mode="json"),
+            fetch=fetch_payload.model_dump(mode="json"),
+            guardrails=guardrail_payload.model_dump(mode="json"),
+            document_id=document_id,
+            collection_id=request_data.collection_id,
+            normalized_document_input=normalized_document_input.model_dump(mode="json"),
+            control=control,
+            baseline=baseline_data,
+            previous_status=previous_status,
+        )
 
         builds.append(
             CrawlerStateBundle(

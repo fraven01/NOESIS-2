@@ -97,7 +97,7 @@ Diese Kommandos greifen auf das `docs/rag/schema.sql` zurück und benötigen ein
 
 ## 7. Weiterführende Dokumentation
 Nach dem ersten Setup sollten folgende Dokumente gelesen werden:
-- **Architekturüberblick:** [`docs/architektur/overview.md`](../architektur/overview.md)
+- **Architekturüberblick:** [`docs/architecture/overview.md`](../architecture/overview.md)
 - **Agenten & LangGraph:** [`docs/agents/overview.md`](../agents/overview.md)
 - **RAG & Ingestion:** [`docs/rag/overview.md`](../rag/overview.md) und [`docs/rag/ingestion.md`](../rag/ingestion.md)
 - **Mandantenfähigkeit:** [`docs/multi-tenancy.md`](../multi-tenancy.md) & [`docs/tenant-management.md`](../tenant-management.md)
