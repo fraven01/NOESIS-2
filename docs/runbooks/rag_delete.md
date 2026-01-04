@@ -4,7 +4,7 @@ Kurzleitfaden für die Entfernung von RAG-Dokumenten in Produktions-tenants. All
 
 > **Neu:** Die zuvor manuelle Hard-Delete-Prozedur ist jetzt als Celery-Task `rag.hard_delete` verfügbar. Der Task kapselt SQL-Löschung, Audit-Log und Cache-Vacuumierung. Die untenstehende SQL-Variante bleibt als Fallback dokumentiert.
 >
-> **Worker-Hinweis:** Die Queue `rag_delete` wird von den Standard-Workern verarbeitet (`celery -A noesis2 worker -l info -Q celery,rag_delete`). Prüfe vor einem Lauf, dass der Worker aktiv ist.
+> **Worker-Hinweis:** Die Queue `rag_delete` wird von den Standard-Workern verarbeitet (`celery -A noesis2 worker -l info -Q agents-high,agents-low,crawler,celery,ingestion,ingestion-bulk,dead_letter,rag_delete`). Prüfe vor einem Lauf, dass der Worker aktiv ist.
 
 ## E1 Soft-Delete (Standardweg)
 1. **Dokumente markieren:**

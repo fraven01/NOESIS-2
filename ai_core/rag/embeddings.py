@@ -9,6 +9,7 @@ import os
 from django.conf import settings
 
 from ai_core.infra.config import get_config
+from ai_core.infra.circuit_breaker import get_litellm_circuit_breaker
 from common.logging import get_log_context, get_logger
 from ai_core.infra.observability import observe_span, report_generation_usage
 from ai_core.infra.usage import Usage
@@ -212,6 +213,9 @@ class EmbeddingClient:
         cfg,
         timeout_s: float | None,
     ) -> Tuple[List[List[float]], Usage]:
+        breaker = get_litellm_circuit_breaker()
+        if not breaker.allow_request():
+            raise EmbeddingClientError("LiteLLM circuit breaker open")
         # Use OpenAI SDK to communicate with LiteLLM proxy
         # This is the recommended approach for LiteLLM proxy usage
         if OpenAI is None:
@@ -234,7 +238,13 @@ class EmbeddingClient:
             )
             return response
 
-        response = self._execute_with_timeout(_call, timeout_s)
+        try:
+            response = self._execute_with_timeout(_call, timeout_s)
+        except Exception:
+            breaker.record_failure(reason="embedding_error")
+            raise
+        else:
+            breaker.record_success()
 
         if not response.data:
             return [], Usage()

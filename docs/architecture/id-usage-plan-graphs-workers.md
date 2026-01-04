@@ -19,7 +19,7 @@ Each service/worker should use a consistent `service_id`:
 | Service | service_id | Queue | Entry Point |
 |---------|------------|-------|-------------|
 | Ingestion Worker | `celery-ingestion-worker` | `ingestion` | `ai_core/tasks.py:run_ingestion_graph` |
-| Agents Worker | `celery-agents-worker` | `agents` | `llm_worker/tasks.py:run_graph` |
+| Agents Worker | `celery-agents-worker` | `agents-high` (default), `agents-low` (background) | `llm_worker/tasks.py:run_graph` |
 | Crawler Worker | `crawler-worker` | `ingestion` | `crawler/worker.py` |
 | Document Processing | `document-processor` | `ingestion` | (embedded in graphs) |
 
@@ -189,6 +189,12 @@ def run_ingestion_graph(
     # Execute with proper scope
     ...
 ```
+
+Idempotency and cache guards (Redis-only):
+- `chunk`: cache key derived from `tenant_id` + `content_hash` (+ `embedding_profile` when provided), TTL 1h.
+- `embed`: cache key derived from `tenant_id` + `chunks_path` + `embedding_profile`, TTL 24h, plus dedupe key `task:dedupe:{task_name}:{idempotency_key}`.
+- `upsert`: dedupe key derived from `tenant_id` + `vector_space_id` + `content_hash` + `embedding_profile`, TTL 24h.
+- Cache hits emit structured logs and Langfuse events for tracing.
 
 ### Crawler Worker
 

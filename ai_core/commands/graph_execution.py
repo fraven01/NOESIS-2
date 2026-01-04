@@ -303,7 +303,7 @@ class GraphExecutionCommand:
                             "ledger_identifier": ledger_identifier,
                             "initial_cost_total": initial_cost_total,
                         },
-                        queue="agents",
+                        queue="agents-high",
                     )
                     scope = {
                         "tenant_id": context.tenant_id,

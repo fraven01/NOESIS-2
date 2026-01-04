@@ -23,16 +23,16 @@
 **Problem**: Keine Task hat Retry-Konfiguration → LiteLLM/DB-Fehler führen zu sofortigem Failure
 
 **Tasks**:
-- [ ] `RetryableTask` Base-Klasse in `common/celery.py` erstellen
+- [x] `RetryableTask` Base-Klasse in `common/celery.py` erstellen
   - Standard: `autoretry_for`, `max_retries=3`, `retry_backoff=True`
   - Konfigurierbare Error-Klassen (Transient vs Permanent)
   - Jitter für Retry-Delays
-- [ ] Error-Hierarchie in `ai_core/tools/errors.py` erweitern:
+- [x] Error-Hierarchie in `ai_core/tools/errors.py` erweitern:
   - `TransientError` (should retry)
   - `PermanentError` (should not retry)
   - `RateLimitedError` (retry with backoff)
   - `UpstreamError` (external service failures)
-- [ ] Migration auf `RetryableTask` für alle Tasks:
+- [x] Migration auf `RetryableTask` für alle Tasks:
   - `llm_worker/tasks.py:run_graph`
   - `ai_core/tasks.py:embed`
   - `ai_core/tasks.py:upsert`
@@ -54,15 +54,15 @@
 **Problem**: `run_graph` kann unbegrenzt hängen, keine Hard-Timeouts
 
 **Tasks**:
-- [ ] Timeouts für alle Tasks definieren:
+- [x] Timeouts für alle Tasks definieren:
   - `run_graph`: `time_limit=600s`, `soft_time_limit=540s`
   - `embed`: `time_limit=300s`, `soft_time_limit=270s`
   - `run_ingestion_graph`: `time_limit=900s`, `soft_time_limit=840s`
-- [ ] Circuit Breaker für LiteLLM-Client:
+- [x] Circuit Breaker für LiteLLM-Client:
   - Pausiert Requests nach 5 konsekutiven Failures
   - Exponential Backoff für Recovery
   - Metrics: `circuit_breaker.state` (open/half_open/closed)
-- [ ] Dead Letter Queue (DLQ) für finale Failures:
+- [x] Dead Letter Queue (DLQ) für finale Failures (queue/ttl/alerting done, Redis-only logs+Langfuse):
   - Queue: `dead_letter`
   - TTL: 7 Tage
   - Alerting bei DLQ-Threshold (> 10 Msgs)
@@ -71,7 +71,7 @@
 - Hängende LLM-Calls werden nach 9min abgebrochen
 - Nach 5 LiteLLM-Failures pausiert System für 60s
 - DLQ-Messages sind in Kibana sichtbar
-- Prometheus Alert bei DLQ > 10
+- Structured log + Langfuse event bei DLQ > 10 (Redis)
 
 **Dependencies**: 1.1
 
@@ -83,17 +83,17 @@
 **Problem**: Inkonsistente Queue-Zuordnung (manche Tasks nutzen `default`)
 
 **Tasks**:
-- [ ] Explizite Queue für ALLE Tasks:
+- [x] Explizite Queue für ALLE Tasks:
   - `agents`: `run_graph` (LLM-intensive)
   - `ingestion`: `embed`, `upsert`, `run_ingestion_graph`, `ingest_raw`, `extract_text`, `pii_mask`
   - `default`: Leichtgewichtige Admin-Tasks
-- [ ] Queue-Priority-Levels:
+- [x] Queue-Priority-Levels:
   - `agents-high`: User-facing Queries (Priorität)
   - `agents-low`: Background-Analysen
   - `ingestion-bulk`: Bulk-Uploads (niedrige Prio)
-- [ ] Task-Routing-Rules in `common/celery.py`:
-  - Route by `case_id` für Tenant-Isolation
-  - Rate-Limiting per Tenant (z.B. 100 req/min)
+- [x] Task-Routing-Rules in `common/celery.py`:
+  - Priority routing for agents/ingestion queues
+  - Tenant Rate-Limiting (z.B. 100 req/min)
 
 **Acceptance Criteria**:
 - Alle Tasks haben explizite Queue
@@ -106,18 +106,18 @@
 ---
 
 ### 1.4 Task Idempotenz & Deduplication
-**Priorität**: P1 | **Aufwand**: M | **Status**: 🟢 Ready
+**Priorität**: P1 | **Aufwand**: M | **Status**: ✅ Done
 
 **Problem**: Retry kann zu Duplikaten führen (z.B. doppelte Embeddings)
 
 **Tasks**:
-- [ ] Idempotency-Keys für alle Write-Operations:
-  - `upsert`: Hash aus `(tenant_id, content_hash, embedding_profile)`
+- [x] Idempotency-Keys für alle Write-Operations:
+  - `upsert`: Hash aus `(tenant_id, vector_space_id, content_hash, embedding_profile)`
   - `embed`: Hash aus `(tenant_id, chunks_path, embedding_profile)`
-- [ ] Redis-basierte Deduplication:
+- [x] Redis-basierte Deduplication:
   - TTL: 24h
   - Key-Format: `task:dedupe:{task_name}:{idempotency_key}`
-- [ ] Result-Caching für teure Operationen:
+- [x] Result-Caching für teure Operationen:
   - `chunk`: Cache für 1h (falls gleicher Content)
   - `embed`: Cache für 24h (Model + Text = deterministic)
 

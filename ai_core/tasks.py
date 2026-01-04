@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import math
 import os
 import re
@@ -41,20 +42,24 @@ from documents.api import normalize_from_raw
 from documents.contracts import NormalizedDocument, NormalizedDocumentInputV1
 from ai_core.infra import observability as observability_helpers
 from ai_core.infra.observability import (
+    emit_event,
     observe_span,
     record_span,
     tracing_enabled,
     update_observation,
 )
+from ai_core.infra.config import get_config
 from ai_core.ingestion_orchestration import (
     IngestionContextBuilder,
     ObservabilityWrapper,
 )
-from common.celery import ScopedTask
+from ai_core.tools.errors import RateLimitedError
+from common.celery import RetryableTask, ScopedTask
 from common.logging import get_logger
 from django.conf import settings
 from django.utils import timezone
 from pydantic import ValidationError
+from redis import Redis
 
 from .infra import object_store, pii
 from .infra.serialization import to_jsonable
@@ -111,6 +116,248 @@ def _normalise_embedding(values: Sequence[float] | None) -> List[float] | None:
 
 
 logger = get_logger(__name__)
+
+_DEDUPE_TTL_SECONDS = 24 * 60 * 60
+_CACHE_TTL_CHUNK_SECONDS = 60 * 60
+_CACHE_TTL_EMBED_SECONDS = 24 * 60 * 60
+
+
+def _coerce_cache_part(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+    else:
+        try:
+            candidate = str(value).strip()
+        except Exception:
+            return None
+    return candidate or None
+
+
+def _hash_parts(*parts: Any) -> Optional[str]:
+    text_parts: List[str] = []
+    for part in parts:
+        candidate = _coerce_cache_part(part)
+        if not candidate:
+            return None
+        text_parts.append(candidate)
+    payload = "|".join(text_parts).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _resolve_embedding_profile_id(
+    meta: Mapping[str, Any], *, allow_default: bool
+) -> Optional[str]:
+    profile_id = _coerce_cache_part(meta.get("embedding_profile"))
+    if profile_id:
+        return profile_id
+    if not allow_default:
+        return None
+    return _coerce_cache_part(getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", None))
+
+
+def _resolve_redis_url() -> Optional[str]:
+    try:
+        url = get_config().redis_url
+    except Exception:
+        url = getattr(settings, "REDIS_URL", None) or getattr(
+            settings, "CELERY_BROKER_URL", None
+        )
+    return _coerce_cache_part(url)
+
+
+def _redis_client() -> Optional[Redis]:
+    url = _resolve_redis_url()
+    if not url:
+        return None
+    try:
+        client = Redis.from_url(url, decode_responses=True)
+        client.ping()
+        return client
+    except Exception as exc:
+        logger.warning("task.redis.unavailable", extra={"error": str(exc)})
+        return None
+
+
+def _cache_key(task_name: str, idempotency_key: str) -> str:
+    return f"task:cache:{task_name}:{idempotency_key}"
+
+
+def _dedupe_key(task_name: str, idempotency_key: str) -> str:
+    return f"task:dedupe:{task_name}:{idempotency_key}"
+
+
+def _cache_get(client: Redis, key: str) -> Optional[str]:
+    try:
+        value = client.get(key)
+    except Exception:
+        return None
+    return _coerce_cache_part(value)
+
+
+def _cache_set(client: Redis, key: str, value: str, ttl_seconds: int) -> None:
+    try:
+        client.set(key, value, ex=int(ttl_seconds))
+    except Exception:
+        return None
+
+
+def _cache_delete(client: Redis, key: str) -> None:
+    try:
+        client.delete(key)
+    except Exception:
+        return None
+
+
+def _dedupe_status(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    if value.startswith("done:"):
+        return "done"
+    if value.startswith("inflight:"):
+        return "inflight"
+    return "inflight"
+
+
+def _acquire_dedupe_lock(client: Redis, key: str, ttl_seconds: int, token: str) -> bool:
+    try:
+        return bool(client.set(key, f"inflight:{token}", nx=True, ex=int(ttl_seconds)))
+    except Exception:
+        return False
+
+
+def _mark_dedupe_done(client: Redis, key: str, ttl_seconds: int, token: str) -> None:
+    try:
+        client.set(key, f"done:{token}", ex=int(ttl_seconds))
+    except Exception:
+        return None
+
+
+def _release_dedupe_lock(client: Redis, key: str, token: str) -> None:
+    try:
+        current = client.get(key)
+    except Exception:
+        return None
+    if current == f"inflight:{token}":
+        try:
+            client.delete(key)
+        except Exception:
+            return None
+
+
+def _object_store_path_exists(path: str) -> bool:
+    try:
+        return (object_store.BASE_PATH / path).exists()
+    except Exception:
+        return False
+
+
+def _task_context_payload(meta: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(meta, MappingABC):
+        return {}
+    try:
+        context = tool_context_from_meta(meta)
+    except Exception:
+        return {}
+    payload: Dict[str, Any] = {
+        "tenant_id": context.scope.tenant_id,
+        "case_id": context.business.case_id,
+        "trace_id": context.scope.trace_id,
+    }
+    if context.scope.run_id:
+        payload["run_id"] = context.scope.run_id
+    if context.scope.ingestion_run_id:
+        payload["ingestion_run_id"] = context.scope.ingestion_run_id
+    return payload
+
+
+def _log_cache_hit(
+    *,
+    task_name: str,
+    idempotency_key: str,
+    cache_key: str,
+    cached_path: str,
+    meta: Optional[Mapping[str, Any]],
+) -> None:
+    payload = {
+        "task_name": task_name,
+        "idempotency_key": idempotency_key,
+        "cache_key": cache_key,
+        "path": cached_path,
+        "cache_hit": True,
+        **_task_context_payload(meta),
+    }
+    logger.info("task.cache.hit", extra=payload)
+    emit_event("task.cache.hit", payload)
+
+
+def _log_dedupe_hit(
+    *,
+    task_name: str,
+    idempotency_key: str,
+    dedupe_key: str,
+    status: str,
+    meta: Optional[Mapping[str, Any]],
+) -> None:
+    payload = {
+        "task_name": task_name,
+        "idempotency_key": idempotency_key,
+        "dedupe_key": dedupe_key,
+        "dedupe_status": status,
+        **_task_context_payload(meta),
+    }
+    logger.info("task.dedupe.hit", extra=payload)
+    emit_event("task.dedupe.hit", payload)
+
+
+def _extract_chunk_meta_value(chunks: Iterable[Any], key: str) -> Optional[str]:
+    for entry in chunks:
+        if not isinstance(entry, MappingABC):
+            continue
+        meta = entry.get("meta")
+        if not isinstance(meta, MappingABC):
+            continue
+        value = _coerce_cache_part(meta.get(key))
+        if value:
+            return value
+    return None
+
+
+def _resolve_upsert_content_hash(
+    meta: Optional[Mapping[str, Any]],
+    chunks: Iterable[Any],
+) -> Optional[str]:
+    if isinstance(meta, MappingABC):
+        value = _coerce_cache_part(meta.get("content_hash"))
+        if value:
+            return value
+    return _extract_chunk_meta_value(chunks, "content_hash")
+
+
+def _resolve_upsert_vector_space_id(
+    meta: Optional[Mapping[str, Any]],
+    chunks: Iterable[Any],
+) -> Optional[str]:
+    if isinstance(meta, MappingABC):
+        value = _coerce_cache_part(meta.get("vector_space_id"))
+        if value:
+            return value
+    return _extract_chunk_meta_value(chunks, "vector_space_id")
+
+
+def _resolve_upsert_embedding_profile(
+    meta: Optional[Mapping[str, Any]],
+    chunks: Iterable[Any],
+) -> Optional[str]:
+    if isinstance(meta, MappingABC):
+        value = _coerce_cache_part(meta.get("embedding_profile"))
+        if value:
+            return value
+    value = _extract_chunk_meta_value(chunks, "embedding_profile")
+    if value:
+        return value
+    return _coerce_cache_part(getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", None))
 
 
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
@@ -351,7 +598,7 @@ def log_ingestion_run_end(
         )
 
 
-@shared_task(base=ScopedTask, accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
 def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     """Persist raw document bytes."""
     external_id = meta.get("external_id")
@@ -365,7 +612,7 @@ def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     return {"path": path, "content_hash": content_hash}
 
 
-@shared_task(base=ScopedTask, accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
 def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
     """Decode bytes to text and store."""
     full = object_store.BASE_PATH / raw_path
@@ -375,7 +622,7 @@ def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask, accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
 def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     """Mask PII in text."""
     full = object_store.BASE_PATH / text_path
@@ -393,7 +640,7 @@ def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask, accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
 def _split_sentences(text: str) -> List[str]:
     """Best-effort sentence segmentation that retains punctuation."""
 
@@ -742,6 +989,30 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     external_id = meta.get("external_id")
     if not external_id:
         raise ValueError("external_id required for chunk")
+
+    cache_client = _redis_client()
+    cache_key = None
+    if cache_client is not None:
+        context = tool_context_from_meta(meta)
+        profile_key = _coerce_cache_part(meta.get("embedding_profile"))
+        parts = [context.scope.tenant_id, content_hash]
+        if profile_key:
+            parts.append(profile_key)
+        idempotency_key = _hash_parts(*parts)
+        if idempotency_key:
+            cache_key = _cache_key("chunk", idempotency_key)
+            cached_path = _cache_get(cache_client, cache_key)
+            if cached_path:
+                if _object_store_path_exists(cached_path):
+                    _log_cache_hit(
+                        task_name="chunk",
+                        idempotency_key=idempotency_key,
+                        cache_key=cache_key,
+                        cached_path=cached_path,
+                        meta=meta,
+                    )
+                    return {"path": cached_path}
+                _cache_delete(cache_client, cache_key)
 
     target_tokens = int(getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450))
     profile_limit: Optional[int] = None
@@ -1217,13 +1488,106 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     chunk_filename = _resolve_artifact_filename(meta, "chunks")
     out_path = _build_path(meta, "embeddings", chunk_filename)
     object_store.write_json(out_path, payload)
+    if cache_client is not None and cache_key:
+        _cache_set(cache_client, cache_key, out_path, _CACHE_TTL_CHUNK_SECONDS)
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask, accepts_scope=True)
+@shared_task(
+    base=RetryableTask,
+    queue="ingestion",
+    accepts_scope=True,
+    time_limit=300,
+    soft_time_limit=270,
+)
 @observe_span(name="ingestion.embed")
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     """Generate embedding vectors for chunks via LiteLLM."""
+
+    cache_client = _redis_client()
+    cache_key = None
+    dedupe_key = None
+    dedupe_token = None
+    idempotency_key = None
+    if cache_client is not None:
+        context = tool_context_from_meta(meta)
+        profile_key = _resolve_embedding_profile_id(meta, allow_default=True)
+        idempotency_key = _hash_parts(
+            context.scope.tenant_id,
+            chunks_path,
+            profile_key,
+        )
+        if idempotency_key:
+            cache_key = _cache_key("embed", idempotency_key)
+            cached_path = _cache_get(cache_client, cache_key)
+            if cached_path:
+                if _object_store_path_exists(cached_path):
+                    _log_cache_hit(
+                        task_name="embed",
+                        idempotency_key=idempotency_key,
+                        cache_key=cache_key,
+                        cached_path=cached_path,
+                        meta=meta,
+                    )
+                    return {"path": cached_path}
+                _cache_delete(cache_client, cache_key)
+            dedupe_key = _dedupe_key("embed", idempotency_key)
+            status = _dedupe_status(_cache_get(cache_client, dedupe_key))
+            if status == "done":
+                logger.warning(
+                    "task.cache.missing",
+                    extra={
+                        "task_name": "embed",
+                        "idempotency_key": idempotency_key,
+                        "dedupe_key": dedupe_key,
+                        **_task_context_payload(meta),
+                    },
+                )
+                _cache_delete(cache_client, dedupe_key)
+                status = None
+            if status == "inflight":
+                _log_dedupe_hit(
+                    task_name="embed",
+                    idempotency_key=idempotency_key,
+                    dedupe_key=dedupe_key,
+                    status=status,
+                    meta=meta,
+                )
+                raise RateLimitedError(
+                    code="dedupe_inflight",
+                    message="Embed already running for idempotency key",
+                )
+            token = uuid.uuid4().hex
+            if _acquire_dedupe_lock(
+                cache_client, dedupe_key, _DEDUPE_TTL_SECONDS, token
+            ):
+                dedupe_token = token
+            else:
+                status = (
+                    _dedupe_status(_cache_get(cache_client, dedupe_key)) or "inflight"
+                )
+                if status == "done":
+                    cached_path = _cache_get(cache_client, cache_key)
+                    if cached_path and _object_store_path_exists(cached_path):
+                        _log_cache_hit(
+                            task_name="embed",
+                            idempotency_key=idempotency_key,
+                            cache_key=cache_key,
+                            cached_path=cached_path,
+                            meta=meta,
+                        )
+                        return {"path": cached_path}
+                _log_dedupe_hit(
+                    task_name="embed",
+                    idempotency_key=idempotency_key,
+                    dedupe_key=dedupe_key,
+                    status=status,
+                    meta=meta,
+                )
+                raise RateLimitedError(
+                    code="dedupe_inflight",
+                    message="Embed already running for idempotency key",
+                )
 
     chunks: List[Dict[str, Any]] = []
     parents: Dict[str, Any] = {}
@@ -1410,8 +1774,16 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
             write_metrics.set("chunks_count", len(embeddings))
             if isinstance(parents, dict) and parents:
                 write_metrics.set("parents_count", len(parents))
+        if cache_client is not None and cache_key and idempotency_key:
+            _cache_set(cache_client, cache_key, out_path, _CACHE_TTL_EMBED_SECONDS)
+        if cache_client is not None and dedupe_key and dedupe_token:
+            _mark_dedupe_done(
+                cache_client, dedupe_key, _DEDUPE_TTL_SECONDS, dedupe_token
+            )
         return {"path": out_path}
     except Exception:
+        if cache_client is not None and dedupe_key and dedupe_token:
+            _release_dedupe_lock(cache_client, dedupe_key, dedupe_token)
         failed_chunks_count = len(prepared) if prepared else len(chunks)
         if not failed_chunks_count:
             failed_chunks_count = len(embeddings)
@@ -1429,7 +1801,7 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
         raise
 
 
-@shared_task(base=ScopedTask, accepts_scope=True)
+@shared_task(base=RetryableTask, queue="ingestion", accepts_scope=True)
 def upsert(
     meta: Dict[str, str],
     embeddings_path: str,
@@ -1448,69 +1820,158 @@ def upsert(
             parents = parents_payload
     else:
         data = list(raw_data or [])
-    # Debug visibility for parents presence in upsert input and parsed payload
-    context = tool_context_from_meta(meta) if meta else None
-    try:
-        logger.warning(
-            "ingestion.upsert.parents_loaded",
-            extra={
-                "event": "DEBUG.TASKS.UPSERT.PARENTS_LOADED",
-                "tenant_id": context.scope.tenant_id if context else None,
-                "case_id": context.business.case_id if context else None,
-                "parents_present": bool(parents),
-                "parents_count": (len(parents) if isinstance(parents, dict) else None),
-            },
+
+    cache_client = _redis_client()
+    dedupe_key = None
+    dedupe_token = None
+    idempotency_key = None
+    if cache_client is not None:
+        context = tool_context_from_meta(meta) if meta else None
+        tenant_id = context.scope.tenant_id if context else None
+        content_hash = _resolve_upsert_content_hash(meta, data)
+        vector_space_id = _resolve_upsert_vector_space_id(meta, data)
+        profile_key = _resolve_upsert_embedding_profile(meta, data)
+        idempotency_key = _hash_parts(
+            tenant_id,
+            vector_space_id,
+            content_hash,
+            profile_key,
         )
-    except Exception:
-        pass
-    chunk_objs = []
-    for index, ch in enumerate(data):
-        vector = ch.get("embedding")
-        embedding = [float(v) for v in vector] if vector is not None else None
-        if embedding is not None and _should_normalise_embeddings():
-            normalised = _normalise_embedding(embedding)
-            if normalised is not None:
-                embedding = normalised
-        raw_meta = ch.get("meta", {})
+        if idempotency_key:
+            dedupe_key = _dedupe_key("upsert", idempotency_key)
+            status = _dedupe_status(_cache_get(cache_client, dedupe_key))
+            if status == "done":
+                _log_dedupe_hit(
+                    task_name="upsert",
+                    idempotency_key=idempotency_key,
+                    dedupe_key=dedupe_key,
+                    status=status,
+                    meta=meta,
+                )
+                return 0
+            if status == "inflight":
+                _log_dedupe_hit(
+                    task_name="upsert",
+                    idempotency_key=idempotency_key,
+                    dedupe_key=dedupe_key,
+                    status=status,
+                    meta=meta,
+                )
+                raise RateLimitedError(
+                    code="dedupe_inflight",
+                    message="Upsert already running for idempotency key",
+                )
+            token = uuid.uuid4().hex
+            if _acquire_dedupe_lock(
+                cache_client, dedupe_key, _DEDUPE_TTL_SECONDS, token
+            ):
+                dedupe_token = token
+            else:
+                status = (
+                    _dedupe_status(_cache_get(cache_client, dedupe_key)) or "inflight"
+                )
+                if status == "done":
+                    _log_dedupe_hit(
+                        task_name="upsert",
+                        idempotency_key=idempotency_key,
+                        dedupe_key=dedupe_key,
+                        status=status,
+                        meta=meta,
+                    )
+                    return 0
+                _log_dedupe_hit(
+                    task_name="upsert",
+                    idempotency_key=idempotency_key,
+                    dedupe_key=dedupe_key,
+                    status=status,
+                    meta=meta,
+                )
+                raise RateLimitedError(
+                    code="dedupe_inflight",
+                    message="Upsert already running for idempotency key",
+                )
+    try:
+        # Debug visibility for parents presence in upsert input and parsed payload
+        context = tool_context_from_meta(meta) if meta else None
         try:
-            meta_model = ChunkMeta.model_validate(raw_meta)
-        except ValidationError:
-            context = tool_context_from_meta(meta) if meta else None
-            logger.error(
-                "ingestion.chunk.meta.invalid",
+            logger.warning(
+                "ingestion.upsert.parents_loaded",
                 extra={
+                    "event": "DEBUG.TASKS.UPSERT.PARENTS_LOADED",
                     "tenant_id": context.scope.tenant_id if context else None,
                     "case_id": context.business.case_id if context else None,
-                    "chunk_index": index,
-                    "keys": (
-                        sorted(raw_meta.keys()) if isinstance(raw_meta, dict) else None
+                    "parents_present": bool(parents),
+                    "parents_count": (
+                        len(parents) if isinstance(parents, dict) else None
                     ),
                 },
             )
-            # Be tolerant for minimal test/scaffold inputs: fall back to a
-            # permissive metadata dict when strict validation fails.
-            # This preserves routing behaviour (tenant forwarding) and lets
-            # dimension checks run even with partial metadata.
-            fallback_meta: Dict[str, object] = {}
-            if isinstance(raw_meta, dict):
-                # Always forward tenant_id if present
-                if raw_meta.get("tenant_id") is not None:
-                    fallback_meta["tenant_id"] = str(raw_meta.get("tenant_id"))
-                # Include commonly provided optional fields when available
-                for key in (
-                    "case_id",
-                    "external_id",
-                    "source",
-                    "hash",
-                    "content_hash",
-                    "embedding_profile",
-                    "vector_space_id",
-                    "process",
-                    "collection_id",
-                    "workflow_id",
-                ):
-                    if raw_meta.get(key) is not None:
-                        fallback_meta[key] = raw_meta.get(key)
+        except Exception:
+            pass
+        chunk_objs = []
+        for index, ch in enumerate(data):
+            vector = ch.get("embedding")
+            embedding = [float(v) for v in vector] if vector is not None else None
+            if embedding is not None and _should_normalise_embeddings():
+                normalised = _normalise_embedding(embedding)
+                if normalised is not None:
+                    embedding = normalised
+            raw_meta = ch.get("meta", {})
+            try:
+                meta_model = ChunkMeta.model_validate(raw_meta)
+            except ValidationError:
+                context = tool_context_from_meta(meta) if meta else None
+                logger.error(
+                    "ingestion.chunk.meta.invalid",
+                    extra={
+                        "tenant_id": context.scope.tenant_id if context else None,
+                        "case_id": context.business.case_id if context else None,
+                        "chunk_index": index,
+                        "keys": (
+                            sorted(raw_meta.keys())
+                            if isinstance(raw_meta, dict)
+                            else None
+                        ),
+                    },
+                )
+                # Be tolerant for minimal test/scaffold inputs: fall back to a
+                # permissive metadata dict when strict validation fails.
+                # This preserves routing behaviour (tenant forwarding) and lets
+                # dimension checks run even with partial metadata.
+                fallback_meta: Dict[str, object] = {}
+                if isinstance(raw_meta, dict):
+                    # Always forward tenant_id if present
+                    if raw_meta.get("tenant_id") is not None:
+                        fallback_meta["tenant_id"] = str(raw_meta.get("tenant_id"))
+                    # Include commonly provided optional fields when available
+                    for key in (
+                        "case_id",
+                        "external_id",
+                        "source",
+                        "hash",
+                        "content_hash",
+                        "embedding_profile",
+                        "vector_space_id",
+                        "process",
+                        "collection_id",
+                        "workflow_id",
+                    ):
+                        if raw_meta.get(key) is not None:
+                            fallback_meta[key] = raw_meta.get(key)
+                parents_map = parents
+                if isinstance(ch.get("parents"), dict):
+                    local_parents = ch.get("parents")
+                    parents_map = local_parents if local_parents else parents_map
+                chunk_objs.append(
+                    Chunk(
+                        content=ch["content"],
+                        meta=fallback_meta,
+                        embedding=embedding,
+                        parents=parents_map,
+                    )
+                )
+                continue
+            # Strict path: validated metadata
             parents_map = parents
             if isinstance(ch.get("parents"), dict):
                 local_parents = ch.get("parents")
@@ -1518,85 +1979,79 @@ def upsert(
             chunk_objs.append(
                 Chunk(
                     content=ch["content"],
-                    meta=fallback_meta,
+                    meta=meta_model.model_dump(exclude_none=True),
                     embedding=embedding,
                     parents=parents_map,
                 )
             )
-            continue
-        # Strict path: validated metadata
-        parents_map = parents
-        if isinstance(ch.get("parents"), dict):
-            local_parents = ch.get("parents")
-            parents_map = local_parents if local_parents else parents_map
-        chunk_objs.append(
-            Chunk(
-                content=ch["content"],
-                meta=meta_model.model_dump(exclude_none=True),
-                embedding=embedding,
-                parents=parents_map,
+
+        context = tool_context_from_meta(meta) if meta else None
+        tenant_id: Optional[str] = context.scope.tenant_id if context else None
+        if not tenant_id:
+            tenant_id = next(
+                (
+                    str(chunk.meta.get("tenant_id"))
+                    for chunk in chunk_objs
+                    if chunk.meta and chunk.meta.get("tenant_id")
+                ),
+                None,
             )
-        )
+        if not tenant_id:
+            raise ValueError("tenant_id required for upsert")
 
-    context = tool_context_from_meta(meta) if meta else None
-    tenant_id: Optional[str] = context.scope.tenant_id if context else None
-    if not tenant_id:
-        tenant_id = next(
-            (
-                str(chunk.meta.get("tenant_id"))
-                for chunk in chunk_objs
-                if chunk.meta and chunk.meta.get("tenant_id")
-            ),
-            None,
-        )
-    if not tenant_id:
-        raise ValueError("tenant_id required for upsert")
+        for chunk in chunk_objs:
+            chunk_tenant = chunk.meta.get("tenant_id") if chunk.meta else None
+            if chunk_tenant and str(chunk_tenant) != tenant_id:
+                raise ValueError("chunk tenant mismatch")
 
-    for chunk in chunk_objs:
-        chunk_tenant = chunk.meta.get("tenant_id") if chunk.meta else None
-        if chunk_tenant and str(chunk_tenant) != tenant_id:
-            raise ValueError("chunk tenant mismatch")
-
-    expected_dimension_value = meta.get("vector_space_dimension") if meta else None
-    expected_dimension: Optional[int] = None
-    if expected_dimension_value is not None:
-        try:
-            expected_dimension = int(expected_dimension_value)
-        except (TypeError, ValueError):
-            expected_dimension = None
-
-    # BREAKING CHANGE (Option A): workflow_id from business_context
-    business_context = context.business if context else None
-    ensure_embedding_dimensions(
-        chunk_objs,
-        expected_dimension,
-        tenant_id=tenant_id,
-        process=meta.get("process") if meta else None,
-        workflow_id=business_context.workflow_id if business_context else None,
-        embedding_profile=meta.get("embedding_profile") if meta else None,
-        vector_space_id=meta.get("vector_space_id") if meta else None,
-    )
-
-    schema = tenant_schema or (meta.get("tenant_schema") if meta else None)
-
-    tenant_client = vector_client
-    if tenant_client is None and callable(vector_client_factory):
-        candidate = vector_client_factory()
-        if candidate is None:
-            tenant_client = None
-        else:
-            tenant_client = candidate
-    if tenant_client is None:
-        router = get_default_router()
-        tenant_client = router
-        for_tenant = getattr(router, "for_tenant", None)
-        if callable(for_tenant):
+        expected_dimension_value = meta.get("vector_space_dimension") if meta else None
+        expected_dimension: Optional[int] = None
+        if expected_dimension_value is not None:
             try:
-                tenant_client = for_tenant(tenant_id, schema)
-            except TypeError:
-                tenant_client = for_tenant(tenant_id)
-    written = tenant_client.upsert_chunks(chunk_objs)
-    return written
+                expected_dimension = int(expected_dimension_value)
+            except (TypeError, ValueError):
+                expected_dimension = None
+
+        # BREAKING CHANGE (Option A): workflow_id from business_context
+        business_context = context.business if context else None
+        ensure_embedding_dimensions(
+            chunk_objs,
+            expected_dimension,
+            tenant_id=tenant_id,
+            process=meta.get("process") if meta else None,
+            workflow_id=business_context.workflow_id if business_context else None,
+            embedding_profile=meta.get("embedding_profile") if meta else None,
+            vector_space_id=meta.get("vector_space_id") if meta else None,
+        )
+
+        schema = tenant_schema or (meta.get("tenant_schema") if meta else None)
+
+        tenant_client = vector_client
+        if tenant_client is None and callable(vector_client_factory):
+            candidate = vector_client_factory()
+            if candidate is None:
+                tenant_client = None
+            else:
+                tenant_client = candidate
+        if tenant_client is None:
+            router = get_default_router()
+            tenant_client = router
+            for_tenant = getattr(router, "for_tenant", None)
+            if callable(for_tenant):
+                try:
+                    tenant_client = for_tenant(tenant_id, schema)
+                except TypeError:
+                    tenant_client = for_tenant(tenant_id)
+        written = tenant_client.upsert_chunks(chunk_objs)
+        if cache_client is not None and dedupe_key and dedupe_token:
+            _mark_dedupe_done(
+                cache_client, dedupe_key, _DEDUPE_TTL_SECONDS, dedupe_token
+            )
+        return written
+    except Exception:
+        if cache_client is not None and dedupe_key and dedupe_token:
+            _release_dedupe_lock(cache_client, dedupe_key, dedupe_token)
+        raise
 
 
 @shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
@@ -1624,6 +2079,196 @@ def ingestion_run(
         },
     )
     return {"status": "queued", "queued_at": queued_at}
+
+
+def _is_redis_broker(url: str) -> bool:
+    return url.startswith("redis://") or url.startswith("rediss://")
+
+
+def _resolve_dlq_queue_key(queue_name: str) -> str:
+    prefix = getattr(settings, "CELERY_REDIS_QUEUE_PREFIX", "") or ""
+    return f"{prefix}{queue_name}"
+
+
+def _decode_dlq_message(raw: bytes) -> Dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except Exception:
+        return None
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _extract_dead_lettered_at(payload: Mapping[str, Any]) -> Optional[float]:
+    args: Any = None
+    body = payload.get("body")
+    if isinstance(body, (list, tuple)) and body:
+        args = body[0]
+    elif isinstance(body, Mapping):
+        args = body.get("args")
+    if args is None:
+        args = payload.get("args")
+
+    candidate: Any = None
+    if isinstance(args, (list, tuple)) and args:
+        candidate = args[0]
+    elif isinstance(args, Mapping):
+        candidate = args
+
+    if not isinstance(candidate, Mapping):
+        return None
+    timestamp = candidate.get("dead_lettered_at")
+    if timestamp is None:
+        return None
+    try:
+        return float(timestamp)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_dlq_message_expired(raw: bytes, cutoff_ts: float) -> bool:
+    payload = _decode_dlq_message(raw)
+    if payload is None:
+        return False
+    dead_lettered_at = _extract_dead_lettered_at(payload)
+    if dead_lettered_at is None:
+        return False
+    return dead_lettered_at < cutoff_ts
+
+
+@shared_task(
+    base=ScopedTask,
+    queue="default",
+    name="ai_core.tasks.cleanup_dead_letter",
+)
+def cleanup_dead_letter_queue(
+    *,
+    max_messages: int = 1000,
+    ttl_ms: Optional[int] = None,
+    queue_name: str = "dead_letter",
+) -> Dict[str, int | str]:
+    """Purge expired dead-letter tasks from a Redis-backed queue."""
+
+    broker_url = str(getattr(settings, "CELERY_BROKER_URL", "") or "")
+    if not _is_redis_broker(broker_url):
+        return {"status": "skipped", "reason": "non_redis_broker"}
+
+    effective_ttl = ttl_ms
+    if effective_ttl is None:
+        effective_ttl = getattr(settings, "CELERY_DLQ_TTL_MS", 0)
+    try:
+        ttl_value = int(effective_ttl) if effective_ttl is not None else 0
+    except (TypeError, ValueError):
+        ttl_value = 0
+    if ttl_value <= 0:
+        return {"status": "skipped", "reason": "ttl_disabled"}
+
+    cutoff_ts = time.time() - (ttl_value / 1000.0)
+    queue_key = _resolve_dlq_queue_key(queue_name)
+
+    removed = 0
+    kept = 0
+    scanned = 0
+
+    client = Redis.from_url(broker_url)
+    scan_limit = max(0, int(max_messages))
+    try:
+        queue_length = int(client.llen(queue_key))
+    except Exception:
+        queue_length = 0
+    if queue_length:
+        scan_limit = min(scan_limit, queue_length)
+    for _ in range(scan_limit):
+        raw = client.lpop(queue_key)
+        if raw is None:
+            break
+        scanned += 1
+        if _is_dlq_message_expired(raw, cutoff_ts):
+            removed += 1
+            continue
+        client.rpush(queue_key, raw)
+        kept += 1
+
+    logger.info(
+        "dlq.cleanup.completed",
+        extra={
+            "queue": queue_name,
+            "scanned": scanned,
+            "removed": removed,
+            "kept": kept,
+            "ttl_ms": ttl_value,
+        },
+    )
+    return {
+        "status": "ok",
+        "scanned": scanned,
+        "removed": removed,
+        "kept": kept,
+    }
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        return default
+    return candidate if candidate > 0 else default
+
+
+@shared_task(
+    base=ScopedTask,
+    queue="default",
+    name="ai_core.tasks.alert_dead_letter",
+)
+def alert_dead_letter_queue(
+    *,
+    threshold: Optional[int] = None,
+    queue_name: str = "dead_letter",
+) -> Dict[str, int | str | bool]:
+    """Emit a structured alert when the Redis DLQ exceeds the threshold."""
+
+    broker_url = str(getattr(settings, "CELERY_BROKER_URL", "") or "")
+    if not _is_redis_broker(broker_url):
+        return {"status": "skipped", "reason": "non_redis_broker"}
+
+    threshold_value = threshold
+    if threshold_value is None:
+        threshold_value = getattr(settings, "CELERY_DLQ_ALERT_THRESHOLD", 10)
+    threshold_value = _coerce_positive_int(threshold_value, 10)
+    if threshold_value <= 0:
+        return {"status": "skipped", "reason": "threshold_disabled"}
+
+    queue_key = _resolve_dlq_queue_key(queue_name)
+    client = Redis.from_url(broker_url)
+    try:
+        queue_length = int(client.llen(queue_key))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "dlq.alert.redis_error",
+            extra={"queue": queue_name, "error": str(exc)},
+        )
+        return {"status": "error", "reason": "redis_error"}
+
+    payload = {
+        "queue": queue_name,
+        "queue_length": queue_length,
+        "threshold": threshold_value,
+    }
+    if queue_length > threshold_value:
+        emit_event("dlq.threshold_exceeded", payload)
+        logger.warning("dlq.threshold_exceeded", extra=payload)
+
+    return {
+        "status": "ok",
+        "queue_length": queue_length,
+        "threshold": threshold_value,
+        "alerted": queue_length > threshold_value,
+    }
 
 
 def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
@@ -1958,10 +2603,12 @@ def _ensure_ingestion_phase_spans(
 
 
 @shared_task(
-    base=ScopedTask,
+    base=RetryableTask,
     queue="ingestion",
     accepts_scope=True,
     name="ai_core.tasks.run_ingestion_graph",
+    time_limit=900,
+    soft_time_limit=840,
 )
 def run_ingestion_graph(
     state: Mapping[str, Any],

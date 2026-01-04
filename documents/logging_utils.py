@@ -59,6 +59,9 @@ def suppress_logging() -> Iterable[None]:
     swapped: list[tuple[logging.StreamHandler, object]] = []
     previous_raise: bool = logging.raiseExceptions
     logging.raiseExceptions = False
+    previous_stderr = sys.stderr
+    stderr_buffer = io.StringIO()
+    sys.stderr = stderr_buffer
     for handler in root_logger.handlers:
         if not isinstance(handler, logging.StreamHandler):
             continue
@@ -77,6 +80,7 @@ def suppress_logging() -> Iterable[None]:
     try:
         yield
     finally:
+        sys.stderr = previous_stderr
         logging.raiseExceptions = previous_raise
         for handler, stream in swapped:
             try:

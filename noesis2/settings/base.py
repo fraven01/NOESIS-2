@@ -4,12 +4,14 @@ import logging
 import os
 from pathlib import Path
 from typing import Dict, List
+from datetime import timedelta
 
 import environ
 
 from noesis2.api import schema as api_schema
 
 from common.logging import configure_logging
+from kombu import Queue
 
 
 logger = logging.getLogger(__name__)
@@ -381,6 +383,73 @@ if TESTING:
 # Wenn Result-Backend fehlt, fungiert Web-Pfad automatisch als 202-Fallback ohne .get()-Ergebnis.
 GRAPH_WORKER_TIMEOUT_S = env.int("GRAPH_WORKER_TIMEOUT_S", default=45)
 
+CELERY_TASK_DEFAULT_QUEUE = "default"
+CELERY_TASK_DEFAULT_EXCHANGE = "default"
+CELERY_TASK_DEFAULT_ROUTING_KEY = "default"
+
+_QUEUE_MAX_PRIORITY = env.int("CELERY_QUEUE_MAX_PRIORITY", default=10)
+_DLQ_TTL_MS = env.int("CELERY_DLQ_TTL_MS", default=7 * 24 * 60 * 60 * 1000)
+CELERY_DLQ_CLEANUP_S = env.int("CELERY_DLQ_CLEANUP_S", default=3600)
+CELERY_DLQ_ALERT_S = env.int("CELERY_DLQ_ALERT_S", default=300)
+CELERY_DLQ_ALERT_THRESHOLD = env.int("CELERY_DLQ_ALERT_THRESHOLD", default=10)
+CELERY_TENANT_RATE_LIMIT_ENABLED = env.bool(
+    "CELERY_TENANT_RATE_LIMIT_ENABLED", default=True
+)
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+
+CELERY_TASK_QUEUES = (
+    Queue(
+        "default",
+        routing_key="default",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "agents-high",
+        routing_key="agents-high",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "agents-low",
+        routing_key="agents-low",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "ingestion",
+        routing_key="ingestion",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "ingestion-bulk",
+        routing_key="ingestion-bulk",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "dead_letter",
+        routing_key="dead_letter",
+        queue_arguments={"x-message-ttl": _DLQ_TTL_MS},
+    ),
+    Queue(
+        "rag_delete",
+        routing_key="rag_delete",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+)
+
+CELERY_TASK_ROUTES = ("common.celery.route_task",)
+
+CELERY_BEAT_SCHEDULE = {
+    "dlq-cleanup": {
+        "task": "ai_core.tasks.cleanup_dead_letter",
+        "schedule": timedelta(seconds=CELERY_DLQ_CLEANUP_S),
+        "options": {"queue": "default"},
+    },
+    "dlq-alert": {
+        "task": "ai_core.tasks.alert_dead_letter",
+        "schedule": timedelta(seconds=CELERY_DLQ_ALERT_S),
+        "options": {"queue": "default"},
+    },
+}
+
 
 ADMINS = [
     (
@@ -521,8 +590,23 @@ LANGFUSE_PUBLIC_KEY = env("LANGFUSE_PUBLIC_KEY", default="")
 LANGFUSE_SECRET_KEY = env("LANGFUSE_SECRET_KEY", default="")
 LANGFUSE_SAMPLE_RATE = float(env("LANGFUSE_SAMPLE_RATE", default=1.0))
 AI_CORE_RATE_LIMIT_QUOTA = int(env("AI_CORE_RATE_LIMIT_QUOTA", default=60))
+AI_CORE_RATE_LIMIT_AGENTS_QUOTA = int(
+    env("AI_CORE_RATE_LIMIT_AGENTS_QUOTA", default=100)
+)
+AI_CORE_RATE_LIMIT_INGESTION_QUOTA = int(
+    env("AI_CORE_RATE_LIMIT_INGESTION_QUOTA", default=500)
+)
 RERANK_MODEL_PRESET = env("RERANK_MODEL_PRESET", default="fast")
 RERANK_CACHE_TTL_SECONDS = int(env("RERANK_CACHE_TTL_SECONDS", default=900))
+LITELLM_CIRCUIT_FAILURE_THRESHOLD = env.int(
+    "LITELLM_CIRCUIT_FAILURE_THRESHOLD", default=5
+)
+LITELLM_CIRCUIT_BASE_BACKOFF_S = env.float(
+    "LITELLM_CIRCUIT_BASE_BACKOFF_S", default=60.0
+)
+LITELLM_CIRCUIT_MAX_BACKOFF_S = env.float(
+    "LITELLM_CIRCUIT_MAX_BACKOFF_S", default=600.0
+)
 
 # Google Custom Search (for ExternalKnowledgeGraph)
 GOOGLE_CUSTOM_SEARCH_API_KEY = env("GOOGLE_CUSTOM_SEARCH_API_KEY", default=None)

@@ -95,7 +95,7 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 
 ## Observability / operations
 
-- [ ] Review queue + retry handling across `agents`/`ingestion` (`llm_worker/tasks.py`, `ai_core/tasks.py`, `common/celery.py`)
+- [x] Review queue + retry handling across `agents`/`ingestion` (`llm_worker/tasks.py`, `ai_core/tasks.py`, `common/celery.py`; done: RetryableTask, queue routing, DLQ, circuit breaker, cleanup task)
 
 ## Agent navigation (docs-only drift)
 

@@ -11,11 +11,17 @@ from ai_core.ids.http_scope import normalize_task_context
 from ai_core.infra.observability import emit_event
 from ai_core.tool_contracts.base import tool_context_from_meta
 from cases.integration import emit_case_lifecycle_for_collection_search
-from common.celery import ScopedTask
+from common.celery import RetryableTask
 from llm_worker.graphs import run_score_results
 
 
-@shared_task(base=ScopedTask, queue="agents", accepts_scope=True)
+@shared_task(
+    base=RetryableTask,
+    queue="agents-high",
+    accepts_scope=True,
+    time_limit=600,
+    soft_time_limit=540,
+)
 def run_graph(  # type: ignore[no-untyped-def]
     *,
     graph_name: str,

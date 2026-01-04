@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+import os
+import time
 from collections.abc import Mapping
 from typing import Any, Mapping as TypingMapping
 
 from celery import Task
 from celery.canvas import Signature
+from celery.exceptions import SoftTimeLimitExceeded
+from pydantic import ValidationError
 
 from .constants import HEADER_CANDIDATE_MAP
 from .logging import bind_log_context, clear_log_context
@@ -13,12 +18,48 @@ from ai_core.infra.pii_flags import (
     load_tenant_pii_config,
     set_pii_config,
 )
+from ai_core.infra.observability import emit_event, update_observation
+from ai_core.infra import rate_limit as tenant_rate_limit
 from ai_core.infra.policy import (
     clear_session_scope,
     set_session_scope,
     get_session_scope,
 )
+from ai_core.metrics.task_metrics import record_task_retry
 from ai_core.tool_contracts.base import tool_context_from_meta
+from ai_core.tools.errors import (
+    InputError,
+    PermanentError,
+    RateLimitedError,
+    TransientError,
+    UpstreamError,
+)
+
+try:  # pragma: no cover - defensive import when Django isn't available
+    from django.db import DatabaseError, OperationalError
+except Exception:  # pragma: no cover - optional for tests
+    DatabaseError = None  # type: ignore[assignment]
+    OperationalError = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    from ai_core.rag.embeddings import (
+        EmbeddingClientError,
+        EmbeddingProviderUnavailable,
+        EmbeddingTimeoutError,
+    )
+except Exception:  # pragma: no cover - optional dependency
+    EmbeddingClientError = None  # type: ignore[assignment]
+    EmbeddingProviderUnavailable = None  # type: ignore[assignment]
+    EmbeddingTimeoutError = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    from ai_core.llm.client import LlmUpstreamError, RateLimitError as LlmRateLimitError
+except Exception:  # pragma: no cover - optional dependency
+    LlmUpstreamError = None  # type: ignore[assignment]
+    LlmRateLimitError = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
 
 
 try:
@@ -326,10 +367,303 @@ class ScopedTask(ContextTask):
                 call_kwargs.setdefault("session_scope", explicit_scope)
 
         try:
+            pre_execute = getattr(self, "_pre_execute", None)
+            if callable(pre_execute):
+                pre_execute(args, call_kwargs)
             return super().__call__(*args, **call_kwargs)
         finally:
             clear_pii_config()
             clear_session_scope()
+
+
+def _filter_retry_classes(*classes: Any) -> tuple[type[BaseException], ...]:
+    return tuple(candidate for candidate in classes if isinstance(candidate, type))
+
+
+_RETRYABLE_EXCEPTIONS = _filter_retry_classes(
+    TransientError,
+    RateLimitedError,
+    UpstreamError,
+    EmbeddingTimeoutError,
+    EmbeddingClientError,
+    LlmUpstreamError,
+    LlmRateLimitError,
+    TimeoutError,
+    SoftTimeLimitExceeded,
+    ConnectionError,
+    OperationalError,
+    DatabaseError,
+)
+
+_NON_RETRYABLE_EXCEPTIONS = _filter_retry_classes(
+    InputError,
+    PermanentError,
+    ValidationError,
+    EmbeddingProviderUnavailable,
+)
+
+
+def _is_instance(
+    exc: BaseException, candidates: tuple[type[BaseException], ...]
+) -> bool:
+    for candidate in candidates:
+        if isinstance(exc, candidate):
+            return True
+    return False
+
+
+def _retry_reason_category(exc: BaseException) -> str:
+    if _is_instance(exc, _filter_retry_classes(RateLimitedError, LlmRateLimitError)):
+        return "rate_limit"
+    if _is_instance(
+        exc,
+        _filter_retry_classes(
+            EmbeddingTimeoutError,
+            TimeoutError,
+            SoftTimeLimitExceeded,
+        ),
+    ):
+        return "timeout"
+    if _is_instance(exc, _filter_retry_classes(OperationalError, DatabaseError)):
+        return "db_error"
+    if _is_instance(
+        exc,
+        _filter_retry_classes(UpstreamError, EmbeddingClientError, LlmUpstreamError),
+    ):
+        return "api_error"
+    if _is_instance(exc, _filter_retry_classes(ConnectionError)):
+        return "network"
+    if _is_instance(exc, _filter_retry_classes(TransientError)):
+        return "transient"
+    return "unknown"
+
+
+def _resolve_agent_id(task: Task, kwargs: dict[str, Any]) -> str:
+    graph_name = kwargs.get("graph_name")
+    if graph_name:
+        return str(graph_name)
+    task_name = getattr(task, "name", None)
+    return str(task_name) if task_name else "unknown"
+
+
+def _resolve_priority(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip().lower()
+    except Exception:
+        return None
+    return text or None
+
+
+def _resolve_priority_from_kwargs(kwargs: dict[str, Any]) -> str | None:
+    for key in ("priority", "task_priority"):
+        value = _resolve_priority(kwargs.get(key))
+        if value:
+            return value
+    meta = kwargs.get("meta")
+    if isinstance(meta, Mapping):
+        for key in ("priority", "task_priority"):
+            value = _resolve_priority(meta.get(key))
+            if value:
+                return value
+    return None
+
+
+def _resolve_task_queue(task: Task, kwargs: dict[str, Any]) -> str | None:
+    delivery_info = getattr(task.request, "delivery_info", None)
+    if isinstance(delivery_info, Mapping):
+        queue = (
+            delivery_info.get("routing_key")
+            or delivery_info.get("queue")
+            or delivery_info.get("exchange")
+        )
+        if queue:
+            return str(queue)
+
+    task_name = getattr(task, "name", None) or ""
+    return _select_queue_for_task(task_name, _resolve_priority_from_kwargs(kwargs))
+
+
+def _resolve_rate_limit_scope(queue: str | None) -> str | None:
+    if not queue:
+        return None
+    if queue == "ingestion-bulk":
+        return None
+    if queue.startswith("agents-"):
+        return "agents"
+    if queue == "ingestion":
+        return "ingestion"
+    return None
+
+
+def _select_queue_for_task(task_name: str, priority: str | None) -> str | None:
+    if task_name == "llm_worker.tasks.run_graph":
+        if priority in {"low", "background", "bulk"}:
+            return "agents-low"
+        return "agents-high"
+    if task_name.startswith("ai_core.tasks.") or task_name.startswith(
+        "ai_core.ingestion."
+    ):
+        if priority in {"low", "background", "bulk"}:
+            return "ingestion-bulk"
+        return "ingestion"
+    return None
+
+
+def route_task(  # noqa: D401
+    name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    options: dict[str, Any],
+    task: Any = None,
+    **_other: Any,
+) -> dict[str, Any] | None:
+    """Route tasks to queues based on declared priority."""
+
+    if options.get("queue"):
+        return None
+
+    queue = _select_queue_for_task(name, _resolve_priority_from_kwargs(kwargs))
+    if not queue:
+        return None
+
+    return {"queue": queue, "routing_key": queue}
+
+
+class RetryableTask(ScopedTask):
+    """ScopedTask with centralized retry handling and observability hooks."""
+
+    abstract = True
+    autoretry_for = _RETRYABLE_EXCEPTIONS
+    dont_autoretry_for = _NON_RETRYABLE_EXCEPTIONS
+    max_retries = 3
+    retry_backoff = True
+    retry_backoff_max = 300
+    retry_jitter = True
+
+    def _pre_execute(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        if not _rate_limit_enabled():
+            return
+        context = self._gather_context(args, kwargs)
+        tenant_id = context.get("tenant_id") or context.get("tenant")
+        if not tenant_id:
+            return
+        queue = _resolve_task_queue(self, kwargs)
+        scope = _resolve_rate_limit_scope(queue)
+        if not scope:
+            return
+        if tenant_rate_limit.check_scoped(str(tenant_id), scope):
+            return
+        retry_after_ms = _compute_retry_after_ms()
+        raise RateLimitedError(
+            code="rate_limit",
+            message="Tenant rate limit exceeded",
+            context={
+                "tenant_id": str(tenant_id),
+                "rate_limit_scope": scope,
+                "queue": queue,
+            },
+            retry_after_ms=retry_after_ms,
+        )
+
+    def on_retry(  # noqa: D401
+        self,
+        exc: BaseException,
+        task_id: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        einfo: Any,
+    ) -> None:
+        reason_category = _retry_reason_category(exc)
+        retry_count = int(getattr(self.request, "retries", 0))
+        attempt = retry_count + 1
+        agent_id = _resolve_agent_id(self, kwargs)
+        context = self._gather_context(args, kwargs)
+        if "tenant" in context and "tenant_id" not in context:
+            context["tenant_id"] = context["tenant"]
+
+        payload: dict[str, Any] = {
+            "task_id": task_id,
+            "task_name": getattr(self, "name", None),
+            "agent_id": agent_id,
+            "retry_count": retry_count,
+            "attempt": attempt,
+            "max_retries": getattr(self, "max_retries", None),
+            "reason_category": reason_category,
+            "exc_type": exc.__class__.__name__,
+            "exc_message": str(exc),
+            **context,
+        }
+
+        delivery_info = getattr(self.request, "delivery_info", None)
+        if isinstance(delivery_info, Mapping):
+            payload["queue"] = delivery_info.get("routing_key") or delivery_info.get(
+                "exchange"
+            )
+
+        retry_after_ms = getattr(exc, "retry_after_ms", None)
+        if retry_after_ms is not None:
+            payload["retry_after_ms"] = retry_after_ms
+
+        upstream_status = getattr(exc, "upstream_status", None)
+        if upstream_status is not None:
+            payload["upstream_status"] = upstream_status
+
+        if einfo is not None:
+            traceback = getattr(einfo, "traceback", None)
+            if traceback:
+                payload["traceback"] = str(traceback)
+
+        try:
+            record_task_retry(agent_id=agent_id, reason_category=reason_category)
+        except Exception:
+            logger.debug("task.retry.metrics_failed", exc_info=True)
+
+        try:
+            update_observation(
+                tags=["task", "retry"],
+                metadata={
+                    "task.retry.count": retry_count,
+                    "task.retry.attempt": attempt,
+                    "task.retry.reason": reason_category,
+                    "task.retry.exception": exc.__class__.__name__,
+                    "task.name": getattr(self, "name", None),
+                },
+            )
+        except Exception:
+            logger.debug("task.retry.span_failed", exc_info=True)
+
+        try:
+            emit_event("task.retry", payload)
+        except Exception:
+            logger.debug("task.retry.event_failed", exc_info=True)
+
+        logger.warning("celery.task.retry", extra=payload)
+        return super().on_retry(exc, task_id, args, kwargs, einfo)
+
+
+def _rate_limit_enabled() -> bool:
+    env_value = os.getenv("CELERY_TENANT_RATE_LIMIT_ENABLED")
+    if env_value is not None:
+        lowered = env_value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    try:  # pragma: no cover - optional settings
+        from django.conf import settings
+
+        return bool(getattr(settings, "CELERY_TENANT_RATE_LIMIT_ENABLED", False))
+    except Exception:
+        return False
+
+
+def _compute_retry_after_ms(now: float | None = None) -> int:
+    timestamp = now if now is not None else time.time()
+    window_start = int(timestamp) - (int(timestamp) % 60)
+    ttl = 60 - (timestamp - window_start)
+    return max(0, int(ttl * 1000))
 
 
 _SCOPE_KWARG_KEYS = ("tenant_id", "case_id", "trace_id", "session_salt")

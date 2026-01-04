@@ -439,7 +439,7 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
                 continue
 
             # Exempt known system identifiers from heuristic redaction
-            if key in _CONTEXT_FIELDS:
+            if key in _CONTEXT_FIELDS or key in {"sha256_prefix", "checksum_prefix"}:
                 continue
 
             # Always try structured masking for JSON-like strings to ensure keys such as

@@ -1167,6 +1167,7 @@ def _dispatch_dead_letters(
         "trace_id": trace_id,
         "error": str(failure),
     }
+    payload["dead_lettered_at"] = time.time()
     if embedding_profile:
         payload["embedding_profile"] = embedding_profile
     if vector_space_id:
@@ -1192,7 +1193,7 @@ def _dispatch_dead_letters(
         message = {**payload, "document_id": document_id}
         record_dead_letter.apply_async(
             args=[message],
-            queue=dead_letter_queue if dead_letter_queue else "ingestion_dead_letter",
+            queue=dead_letter_queue if dead_letter_queue else "dead_letter",
         )
 
 
@@ -1243,7 +1244,7 @@ def _safe_dispatch_dead_letters(
 
 @shared_task(
     base=ScopedTask,
-    queue="ingestion_dead_letter",
+    queue="dead_letter",
     name="ai_core.ingestion.dead_letter",
     accepts_scope=True,
 )

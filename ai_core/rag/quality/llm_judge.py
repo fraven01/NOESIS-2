@@ -183,6 +183,8 @@ class ChunkQualityEvaluator:
         context: Any = None,
     ) -> ChunkQualityScore:
         """Evaluate a single chunk."""
+        from ai_core.infra.circuit_breaker import get_litellm_circuit_breaker
+        from ai_core.llm.client import LlmUpstreamError
         from litellm import completion
 
         # Build prompt
@@ -192,12 +194,25 @@ class ChunkQualityEvaluator:
         )
 
         # Call LLM
-        response = completion(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            timeout=self.timeout,
-        )
+        breaker = get_litellm_circuit_breaker()
+        if not breaker.allow_request():
+            raise LlmUpstreamError(
+                "LiteLLM circuit breaker open",
+                status=503,
+                code="circuit_open",
+            )
+        try:
+            response = completion(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                timeout=self.timeout,
+            )
+        except Exception:
+            breaker.record_failure(reason="litellm_completion")
+            raise
+        else:
+            breaker.record_success()
 
         # Parse JSON response
         result = json.loads(response.choices[0].message.content)

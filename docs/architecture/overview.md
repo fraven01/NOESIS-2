@@ -9,9 +9,9 @@ Die Architekturübersicht schafft ein gemeinsames Verständnis für alle Contain
 Die Plattform besteht aus einer Django-Anwendung mit Mehrmandantenfähigkeit, unterstützt von Celery für asynchrone Aufgaben, einem RAG-Stack und LiteLLM als Proxy für Sprachmodelle. Die Hauptkomponenten sind:
 
 - **Web-Service**: Django via Gunicorn für HTTP-Traffic und Admin-Interface.
-- **Worker-Service**: Celery Worker für Standardaufgaben (`celery` Queue).
-- **Ingestion-Worker**: Dedizierte Celery Queue (`ingestion`) für Datenaufnahme und Embedding-Erstellung, siehe [RAG-Ingestion](../rag/ingestion.md).
-- **Agents-Worker**: Dedizierte Celery Queue (`agents`) für LangGraph-Agenten, orchestriert Retrieval und Aktionen, beschrieben in [Agenten-Übersicht](../agents/overview.md).
+- **Worker-Service**: Celery Worker für Standardaufgaben (`celery`, `rag_delete`, `dead_letter` Queues).
+- **Ingestion-Worker**: Queues `ingestion` und `ingestion-bulk` für Datenaufnahme und Embedding-Erstellung, siehe [RAG-Ingestion](../rag/ingestion.md).
+- **Agents-Worker**: Queues `agents-high` und `agents-low` für LangGraph-Agenten, orchestriert Retrieval und Aktionen, beschrieben in [Agenten-Übersicht](../agents/overview.md).
 - **Beat-Service (optional)**: Celery Beat oder Scheduler für periodische Jobs (in Dev/Prod optional).
 - **Migrate-Job**: Separater Containerlauf, führt `manage.py migrate_schemas --shared` und `--tenant` aus.
 - **LiteLLM-Service**: Proxy mit Admin-GUI, gesichert über Master Key laut [`config/litellm-config.yaml`](../../config/litellm-config.yaml).
@@ -21,7 +21,7 @@ Die Plattform besteht aus einer Django-Anwendung mit Mehrmandantenfähigkeit, un
 
 | Umgebung | Bereitstellungspfad | Netzpfad |
 | --- | --- | --- |
-| Dev lokal | `docker-compose.dev.yml` startet Web, Worker, Agents-Worker, Ingestion-Worker, LiteLLM, Postgres, Redis | Docker-Bridge, direkte Container-Kommunikation |
+| Dev lokal | `docker-compose.dev.yml` startet Web und Worker (Queues: `agents-high`, `agents-low`, `ingestion`, `ingestion-bulk`, `dead_letter`, `celery`, `rag_delete`, `crawler`), LiteLLM, Postgres, Redis | Docker-Bridge, direkte Container-Kommunikation |
 | Staging GCP | CI veröffentlicht Images nach Artifact Registry und deployt Cloud Run Dienste laut [Pipeline](../cicd/pipeline.md) | Öffentliche Cloud Run Endpunkte, Cloud SQL Connector (Public IP), Serverless VPC Access zu Memorystore |
 | Prod GCP | Genehmigter Release nutzt Traffic-Split auf Cloud Run | Interne Cloud Run Dienste hinter HTTPS Load Balancer, Private Service Connect zu Cloud SQL, Serverless VPC Access |
 
@@ -119,7 +119,7 @@ sequenceDiagram
     Apr->>Prod: Traffic auf 100% erhöhen
     Note over Dev,Prod: Nach Traffic-Shift beginnt der RAG-Aufruf
     Prod->>Web: HTTP Request eines Tenants
-    Web->>Worker: Celery Task (Queue agents)
+    Web->>Worker: Celery Task (Queue agents-high)
     Worker->>Agent: LangGraph Flow starten
     Agent->>Retriever: Vektor-Suche in PGVector
     Retriever->>LLM: Prompt mit Kontext via LiteLLM

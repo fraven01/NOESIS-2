@@ -128,8 +128,8 @@ services:
       PYTEST_ADDOPTS: ${PYTEST_ADDOPTS:-}
 
   # Unified worker for all queues (WSL-optimized)
-  # Queue order: agents → crawler → celery → ingestion → rag_delete
-  # Prioritizes latency-sensitive tasks (agents, crawler) over batch jobs
+  # Queue order: agents-high → agents-low → crawler → celery → default → ingestion → ingestion-bulk → dead_letter → rag_delete
+  # Prioritizes latency-sensitive tasks (agents-high, crawler) over batch jobs
   worker:
     build:
       context: .
@@ -137,7 +137,7 @@ services:
     container_name: noesis2_worker
     command: >-
       opentelemetry-instrument celery -A noesis2 worker
-      -Q agents,crawler,celery,ingestion,rag_delete
+      -Q agents-high,agents-low,crawler,celery,default,ingestion,ingestion-bulk,dead_letter,rag_delete
       --concurrency=2
       --prefetch-multiplier=1
       --max-tasks-per-child=300
@@ -168,6 +168,30 @@ services:
       LOGGING_OTEL_INSTRUMENT: "true"
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
       OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: noesis2_beat
+    command: >-
+      celery -A noesis2 beat -l info
+    volumes:
+      - .:/app
+      - ${APP_LOG_PATH:-./logs/app}:/app/logs
+    env_file:
+      - .env
+      - .env.docker
+    depends_on:
+      redis:
+        condition: service_started
+      toxiproxy:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
+      APP_LOG_DIR: /app/logs
 
   rag-schema:
     build:
