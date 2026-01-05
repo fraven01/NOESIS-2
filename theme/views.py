@@ -6,7 +6,7 @@ from opentelemetry.trace import format_trace_id
 
 from django.conf import settings
 from django.core.cache import cache
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
 from structlog.stdlib import get_logger
@@ -117,6 +117,22 @@ def _json_error_response(
         details=details,
     )
     return JsonResponse(payload, status=status_code)
+
+
+def _rag_tools_allowed() -> bool:
+    return bool(
+        settings.DEBUG
+        or getattr(settings, "TESTING", False)
+        or getattr(settings, "RAG_TOOLS_ENABLED", False)
+    )
+
+
+def _rag_tools_gate(*, json_response: bool) -> JsonResponse | HttpResponse | None:
+    if _rag_tools_allowed():
+        return None
+    if json_response:
+        return _json_error_response("Not found.", status_code=404, code="not_found")
+    return HttpResponse("Not found.", status=404)
 
 
 def _resolve_manual_collection(

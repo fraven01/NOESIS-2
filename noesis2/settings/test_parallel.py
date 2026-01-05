@@ -5,6 +5,9 @@ import re
 
 from .development import *  # noqa: F403
 
+# Enable TESTING flag for test-specific behavior (e.g., RAG tools access)
+TESTING = True
+
 
 def _worker_suffix(name: str | None, worker: str | None) -> str | None:
     if not name or not worker:

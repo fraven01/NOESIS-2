@@ -143,7 +143,7 @@
             <form id="form-acq-search" hx-post="{% url 'web-search' %}" hx-target="#acquisition-results"
               hx-swap="innerHTML" class="space-y-4 rounded-lg bg-white p-6 shadow-sm border border-slate-200">
               {% csrf_token %}
-              <input type="hidden" name="search_type" value="external_knowledge">
+              <input type="hidden" name="search_type" value="web_acquisition">
 
               <div>
                 <label class="block text-sm font-medium text-slate-700">Query</label>

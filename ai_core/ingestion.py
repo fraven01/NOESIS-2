@@ -32,6 +32,7 @@ from documents import (
 from . import tasks as pipe
 from .case_events import emit_ingestion_case_event
 from .infra import object_store
+from .infra.reembed_progress import increment_reembed_progress
 from .ingestion_status import (
     mark_ingestion_run_completed,
     mark_ingestion_run_running,
@@ -588,6 +589,7 @@ def process_document(
     **kwargs,
 ) -> Dict[str, object]:
     kwargs.pop("session_salt", None)
+    reembed_progress_key = kwargs.pop("reembed_progress_key", None)
     started = time.perf_counter()
 
     # Graph Migration: Load minimal state primarily for error tracking
@@ -661,9 +663,9 @@ def process_document(
             parser = create_default_parser_dispatcher()
 
             # Chunker
-            from documents.cli import SimpleDocumentChunker
+            from ai_core.rag.chunking import RoutingAwareChunker
 
-            chunker = SimpleDocumentChunker()
+            chunker = RoutingAwareChunker()
 
             # 3. Build Graph
             graph = build_document_processing_graph(
@@ -747,6 +749,13 @@ def process_document(
                     "embedding_profile": embedding_profile,
                 },
             )
+
+            if reembed_progress_key:
+                increment_reembed_progress(
+                    reembed_progress_key,
+                    processed_documents=1,
+                    processed_chunks=chunks_generated,
+                )
 
             # Clean up state on success
             state["completed_at"] = time.time()

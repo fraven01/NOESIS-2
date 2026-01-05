@@ -1,5 +1,8 @@
 from .base import *  # noqa: F403
 
+# Enable TESTING flag for test-specific behavior (e.g., RAG tools access)
+TESTING = True
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",

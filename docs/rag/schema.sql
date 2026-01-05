@@ -177,6 +177,12 @@ ALTER TABLE {{SCHEMA_NAME}}.chunks
     ADD COLUMN IF NOT EXISTS text_norm TEXT
         GENERATED ALWAYS AS (lower(regexp_replace(text, '\s+', ' ', 'g'))) STORED;
 
+ALTER TABLE {{SCHEMA_NAME}}.chunks
+    ADD COLUMN IF NOT EXISTS text_tsv tsvector
+        GENERATED ALWAYS AS (
+            to_tsvector('simple', lower(regexp_replace(text, '\s+', ' ', 'g')))
+        ) STORED;
+
 ALTER TABLE {{SCHEMA_NAME}}.chunks ADD COLUMN IF NOT EXISTS tenant_id UUID;
 
 ALTER TABLE {{SCHEMA_NAME}}.chunks ADD COLUMN IF NOT EXISTS collection_id UUID;
@@ -193,6 +199,9 @@ CREATE INDEX IF NOT EXISTS chunks_metadata_case_idx
 
 CREATE INDEX IF NOT EXISTS chunks_text_norm_trgm_idx
     ON {{SCHEMA_NAME}}.chunks USING GIN (text_norm gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS chunks_text_tsv_idx
+    ON {{SCHEMA_NAME}}.chunks USING GIN (text_tsv);
 
 CREATE INDEX IF NOT EXISTS chunks_document_collection_idx
     ON {{SCHEMA_NAME}}.chunks (document_id, collection_id);
@@ -233,6 +242,18 @@ CREATE INDEX IF NOT EXISTS embeddings_collection_idx
 
 CREATE INDEX IF NOT EXISTS embeddings_tenant_collection_idx
     ON {{SCHEMA_NAME}}.embeddings (tenant_id, collection_id);
+
+CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.embedding_cache (
+    text_hash TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    embedding vector({{VECTOR_DIM}}) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT (NOW() + INTERVAL '90 days'),
+    PRIMARY KEY (text_hash, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS embedding_cache_expires_idx
+    ON {{SCHEMA_NAME}}.embedding_cache (expires_at);
 
 DO $$
 BEGIN

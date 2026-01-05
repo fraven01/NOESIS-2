@@ -42,6 +42,7 @@ def _configure_embeddings(settings) -> None:
     settings.RAG_EMBEDDING_PROFILES = {
         "standard": {
             "model": "oai-embed-large",
+            "model_version": "v1",
             "dimension": 1536,
             "vector_space": "global",
             "chunk_hard_limit": 512,
@@ -87,7 +88,7 @@ def test_resolve_ingestion_profile_success(settings) -> None:
     _configure_embeddings(settings)
     result = resolve_ingestion_profile(" standard ")
     assert result.profile_id == "standard"
-    assert result.resolution.vector_space.id == "global"
+    assert result.resolution.vector_space.id == "rag/standard@v1"
 
 
 def test_resolve_ingestion_profile_requires_value(settings) -> None:
@@ -141,7 +142,7 @@ def test_ensure_embedding_dimensions_allows_matching_vectors() -> None:
         process="review",
         workflow_id="flow-a",
         embedding_profile="standard",
-        vector_space_id="global",
+        vector_space_id="rag/standard@v1",
     )
 
 
@@ -156,7 +157,7 @@ def test_ensure_embedding_dimensions_raises_on_mismatch() -> None:
             process="review",
             workflow_id="flow-a",
             embedding_profile="standard",
-            vector_space_id="global",
+            vector_space_id="rag/standard@v1",
         )
 
     error = excinfo.value
@@ -165,7 +166,7 @@ def test_ensure_embedding_dimensions_raises_on_mismatch() -> None:
     assert error.context["process"] == "review"
     assert error.context["workflow_id"] == "flow-a"
     assert error.context["embedding_profile"] == "standard"
-    assert error.context["vector_space_id"] == "global"
+    assert error.context["vector_space_id"] == "rag/standard@v1"
     assert error.context["expected_dimension"] == 2
     assert error.context["observed_dimension"] == 1
     assert error.context["chunk_index"] == 0

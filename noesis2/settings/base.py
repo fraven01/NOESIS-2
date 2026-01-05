@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List
 from datetime import timedelta
@@ -36,8 +37,12 @@ DEMO_EMBEDDING_DIMENSION = env.int(
 EMBEDDINGS_PROVIDER = env("EMBEDDINGS_PROVIDER", default="litellm")
 EMBEDDINGS_MODEL_PRIMARY = env("EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-small")
 EMBEDDINGS_MODEL_FALLBACK = env("EMBEDDINGS_MODEL_FALLBACK", default="oai-embed-small")
+EMBEDDINGS_MODEL_VERSION = env("EMBEDDINGS_MODEL_VERSION", default="v1")
 # Demo uses the same embedding model as standard by default
 DEMO_EMBEDDINGS_MODEL = env("DEMO_EMBEDDINGS_MODEL", default=EMBEDDINGS_MODEL_PRIMARY)
+DEMO_EMBEDDINGS_MODEL_VERSION = env(
+    "DEMO_EMBEDDINGS_MODEL_VERSION", default=EMBEDDINGS_MODEL_VERSION
+)
 EMBEDDINGS_BATCH_SIZE = env.int("EMBEDDINGS_BATCH_SIZE", default=64)
 EMBEDDINGS_TIMEOUT_SECONDS = env.float("EMBEDDINGS_TIMEOUT_SECONDS", default=20.0)
 AUTO_CREATE_CASES = env.bool("AUTO_CREATE_CASES", default=True)
@@ -85,7 +90,12 @@ RAG_IVF_LISTS = env.int("RAG_IVF_LISTS", default=2048)
 RAG_IVF_PROBES = env.int("RAG_IVF_PROBES", default=64)
 RAG_MIN_SIM = env.float("RAG_MIN_SIM", default=0.15)
 RAG_TRGM_LIMIT = env.float("RAG_TRGM_LIMIT", default=0.1)
+RAG_LEXICAL_MODE = env("RAG_LEXICAL_MODE", default="trgm")
+RAG_HYDE_ENABLED = env.bool("RAG_HYDE_ENABLED", default=False)
+RAG_HYDE_MODEL_LABEL = env("RAG_HYDE_MODEL_LABEL", default="simple-query")
+RAG_HYDE_MAX_CHARS = env.int("RAG_HYDE_MAX_CHARS", default=2000)
 RAG_HYBRID_ALPHA = env.float("RAG_HYBRID_ALPHA", default=0.7)
+RAG_RRF_K = env.int("RAG_RRF_K", default=60)
 RAG_MAX_CANDIDATES = env.int("RAG_MAX_CANDIDATES", default=200)
 RAG_CANDIDATE_POLICY = env("RAG_CANDIDATE_POLICY", default="error")
 RAG_CHUNK_TARGET_TOKENS = env.int("RAG_CHUNK_TARGET_TOKENS", default=450)
@@ -119,12 +129,14 @@ if "RAG_EMBEDDING_PROFILES" not in globals():
     RAG_EMBEDDING_PROFILES = {
         "standard": {
             "model": EMBEDDINGS_MODEL_PRIMARY,
+            "model_version": EMBEDDINGS_MODEL_VERSION,
             "dimension": DEFAULT_EMBEDDING_DIMENSION,
             "vector_space": "global",
             "chunk_hard_limit": 512,
         },
         "demo": {
             "model": DEMO_EMBEDDINGS_MODEL,
+            "model_version": DEMO_EMBEDDINGS_MODEL_VERSION,
             "dimension": DEMO_EMBEDDING_DIMENSION,
             "vector_space": "demo",
             "chunk_hard_limit": 1024,
@@ -183,8 +195,13 @@ ALLOWED_HOSTS = env.list(
     default=["example.com", "localhost", ".localhost", "testserver"],
 )
 
-# Testing flag (auto-detected for pytest)
-TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+# Testing flag (auto-detected for pytest, even before PYTEST_CURRENT_TEST exists)
+TESTING = bool(
+    os.environ.get("PYTEST_CURRENT_TEST")
+    or os.environ.get("PYTEST_XDIST_WORKER")
+    or os.environ.get("PYTEST_RUNNING")
+    or ("pytest" in sys.modules)
+)
 
 # PII configuration defaults
 PII_MODE = os.getenv("PII_MODE", "industrial")

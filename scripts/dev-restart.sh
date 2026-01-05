@@ -4,11 +4,11 @@ set -euo
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
 
-# Allow passing service names, defaults to web and worker
+# Allow passing service names, defaults to all Django services (web, worker, beat)
 if [ "$#" -gt 0 ]; then
   SERVICES=("$@")
 else
-  SERVICES=(web worker)
+  SERVICES=(web worker beat)
 fi
 
 echo "[dev-restart] Restarting: ${SERVICES[*]}"

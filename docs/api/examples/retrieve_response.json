@@ -14,7 +14,7 @@
     "took_ms": 42,
     "routing": {
       "profile": "standard",
-      "vector_space_id": "rag/global"
+      "vector_space_id": "rag/standard@v1"
     }
   },
   "snippets": [

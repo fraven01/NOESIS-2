@@ -131,6 +131,45 @@ npm run test           # Vitest
 npm run e2e            # Playwright E2E
 ```
 
+**Chaos Tests** (2026-01-05 Contract Migration):
+
+Fault-injection tests für Redis, SQL, Rate Limits und Netzwerk-Issues. Validiert System-Resilience und Observability unter Fehlerbedingungen.
+
+```bash
+# Alle Chaos-Tests
+npm run test:py -- tests/chaos/ -v
+
+# Spezifische Test-Suite
+npm run test:py:single -- tests/chaos/test_tool_context_contracts.py
+
+# Mit Fault-Injection
+REDIS_DOWN=1 npm run test:py -- tests/chaos/redis_faults.py -v
+SQL_DOWN=1 npm run test:py -- tests/chaos/sql_faults.py -v
+```
+
+**Neue Meta-Struktur** (ScopeContext + BusinessContext):
+```python
+from tests.chaos.conftest import _build_chaos_meta
+
+meta = _build_chaos_meta(
+    tenant_id="tenant-001",
+    trace_id="trace-001",
+    case_id="case-001",      # Optional business context
+    run_id="run-001",        # XOR ingestion_run_id
+)
+```
+
+**Test-Dateien**:
+- `ingestion_faults.py` - Rate Limits, Deduplication, Dead Letter
+- `sql_faults.py` - SQL Downtime, Idempotency
+- `redis_faults.py` - Broker Downtime, Task Backoff
+- `test_tool_context_contracts.py` - ✨ **NEU**: ToolContext Validierung
+- `test_graph_io_contracts.py` - ✨ **NEU**: Graph I/O Specs (`schema_id`/`schema_version`)
+- `test_chunker_routing.py` - ✨ **NEU**: Chunker Routing
+- `test_observability_contracts.py` - ✨ **NEU**: Langfuse Tag Propagation
+
+**Siehe**: [tests/chaos/README.md](tests/chaos/README.md) für vollständige Migration-Guide.
+
 **Test-Marker**:
 - `@pytest.mark.slow`: DB-intensive Tests (Tenant-Operationen, Schema-Erstellung)
 - `@pytest.mark.gold`: PII-Tests mit `PII_MODE=gold`

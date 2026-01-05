@@ -29,6 +29,9 @@ def _views():
 def rag_tools(request):
     """Render a minimal interface to exercise the RAG endpoints manually."""
     views = _views()
+    blocked = views._rag_tools_gate(json_response=False)
+    if blocked is not None:
+        return blocked
     try:
         tenant_id, tenant_schema = views._tenant_context_from_request(request)
     except TenantRequiredError as exc:
@@ -173,6 +176,9 @@ def start_rerank_workflow(request):
     to run in the background. Results will appear in the /dev-hitl/ queue for HITL review.
     """
     views = _views()
+    blocked = views._rag_tools_gate(json_response=True)
+    if blocked is not None:
+        return blocked
     try:
         data = json.loads(request.body)
         query = data.get("query", "").strip()
@@ -320,6 +326,9 @@ def start_rerank_workflow(request):
 def workbench_index(request):
     """Main container for the RAG Command Center."""
     views = _views()
+    blocked = views._rag_tools_gate(json_response=False)
+    if blocked is not None:
+        return blocked
     try:
         tenant_id, tenant_schema = views._tenant_context_from_request(request)
     except TenantRequiredError:
@@ -340,29 +349,49 @@ def workbench_index(request):
 
 def tool_search(request):
     """Render the Search & Retrieval workspace partial."""
+    views = _views()
+    blocked = views._rag_tools_gate(json_response=False)
+    if blocked is not None:
+        return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
     return render(request, "theme/partials/tool_search.html", {"case_id": case_id})
 
 
 def tool_ingestion(request):
     """Render the Ingestion Pipeline workspace partial."""
+    views = _views()
+    blocked = views._rag_tools_gate(json_response=False)
+    if blocked is not None:
+        return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
     return render(request, "theme/partials/tool_ingestion.html", {"case_id": case_id})
 
 
 def tool_crawler(request):
     """Render the Crawler workspace partial."""
+    views = _views()
+    blocked = views._rag_tools_gate(json_response=False)
+    if blocked is not None:
+        return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
     return render(request, "theme/partials/tool_crawler.html", {"case_id": case_id})
 
 
 def tool_framework(request):
     """Render the Framework Analysis workspace partial."""
+    views = _views()
+    blocked = views._rag_tools_gate(json_response=False)
+    if blocked is not None:
+        return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
     return render(request, "theme/partials/tool_framework.html", {"case_id": case_id})
 
 
 def tool_chat(request):
     """Render the RAG Chat workspace partial."""
+    views = _views()
+    blocked = views._rag_tools_gate(json_response=False)
+    if blocked is not None:
+        return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
     return render(request, "theme/partials/tool_chat.html", {"case_id": case_id})

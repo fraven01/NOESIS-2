@@ -56,6 +56,9 @@ def test_simulated_user_middleware_switches_identity(client, settings, monkeypat
 def test_simulated_user_middleware_ignored_in_production(client, settings, monkeypatch):
     settings.DEBUG = False
     settings.RAG_TOOLS_ENABLED = False
+    settings.TESTING = (
+        True  # Allow view access, but middleware should still be disabled
+    )
 
     # Patch tenant resolution to avoid needing full tenant setup
     monkeypatch.setattr(

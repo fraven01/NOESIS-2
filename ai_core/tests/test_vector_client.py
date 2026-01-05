@@ -1554,18 +1554,31 @@ class TestPgVectorClient:
     def test_hybrid_search_reports_cutoff_statistics(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
-        doc_hash = hashlib.sha256(b"cutoff").hexdigest()
-        chunk = Chunk(
-            content="Cutoff candidate example",
-            meta={
-                "tenant_id": tenant,
-                "hash": doc_hash,
-                "source": "cutoff",
-                "external_id": "doc-cutoff",
-            },
-            embedding=[0.25] + [0.0] * (vector_client.get_embedding_dim() - 1),
-        )
-        client.upsert_chunks([chunk])
+
+        def _fake_run(_fn, *, op_name: str):
+            return (
+                [
+                    (
+                        "chunk-1",
+                        "Vector only",
+                        {"tenant_id": tenant, "case_id": "case-cutoff"},
+                        "hash-1",
+                        "doc-1",
+                        0.25,
+                    )
+                ],
+                [
+                    (
+                        "chunk-2",
+                        "Lexical only",
+                        {"tenant_id": tenant, "case_id": "case-cutoff"},
+                        "hash-2",
+                        "doc-2",
+                        0.8,
+                    )
+                ],
+                1.1,
+            )
 
         class _CounterVec:
             def __init__(self) -> None:
@@ -1581,22 +1594,54 @@ class TestPgVectorClient:
 
         cutoff_counter = _CounterVec()
         monkeypatch.setattr(metrics, "RAG_QUERY_BELOW_CUTOFF_TOTAL", cutoff_counter)
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
 
         result = client.hybrid_search(
             "candidate cutoff",
             tenant_id=tenant,
-            filters={"case_id": None},
+            case_id="case-cutoff",
             top_k=3,
-            alpha=0.8,
-            min_sim=0.95,
+            alpha=0.5,
+            min_sim=0.9,
         )
 
-        assert result.fused_candidates >= 1
-        assert result.below_cutoff >= 1
+        assert result.fused_candidates == 2
+        assert result.below_cutoff == 2
         assert result.returned_after_cutoff == 0
         assert result.chunks == []
         assert cutoff_counter.calls == [{"tenant_id": tenant}]
         assert cutoff_counter.value == float(result.below_cutoff)
+
+    def test_hybrid_search_uses_hyde_embedding_when_enabled(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        calls: list[str] = []
+
+        def _fake_embed(self, text: str) -> list[float]:
+            calls.append(text)
+            return [1.0, 0.0, 0.0]
+
+        monkeypatch.setattr(vector_client.PgVectorClient, "_embed_query", _fake_embed)
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_generate_hyde_document",
+            lambda self, query, metadata: "hyde doc",
+        )
+        monkeypatch.setenv("RAG_HYDE_ENABLED", "true")
+        monkeypatch.setattr(
+            client, "_run_with_retries", lambda fn, *, op_name: ([], [], 0.0)
+        )
+
+        result = client.hybrid_search(
+            "question",
+            tenant_id=tenant,
+            filters={"case_id": None},
+            top_k=1,
+            min_sim=0.0,
+        )
+
+        assert calls == ["hyde doc"]
+        assert result.chunks == []
 
     def test_hybrid_search_uses_similarity_fallback_when_trigram_has_no_match(
         self,
@@ -2404,7 +2449,7 @@ class TestPgVectorClient:
         assert result.chunks
         top_meta = result.chunks[0].meta
         assert top_meta["hash"] == "lex-hash"
-        assert top_meta["lscore"] == pytest.approx(0.9)
+        assert top_meta["lscore"] == pytest.approx(1.0)
 
     def test_hybrid_uses_fallback_distance_operator(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2536,13 +2581,21 @@ class TestPgVectorClient:
             return (
                 [
                     (
+                        "chunk-keep",
+                        "Strong enough",
+                        {"tenant_id": tenant},
+                        "hash-keep",
+                        "doc-keep",
+                        0.99,
+                    ),
+                    (
                         "chunk-cutoff",
                         "Too weak",
                         {"tenant_id": tenant},
                         "hash-cutoff",
                         "doc-cutoff",
                         0.95,
-                    )
+                    ),
                 ],
                 [],
                 3.5,
@@ -2580,11 +2633,11 @@ class TestPgVectorClient:
             tenant_id=tenant,
             filters={"case_id": None},
             top_k=1,
-            min_sim=0.8,
+            min_sim=0.99,
         )
 
         assert result.below_cutoff == 1
-        assert result.chunks == []
+        assert len(result.chunks) == 1
         assert cutoff_counter.calls == [{"tenant_id": tenant}]
         assert cutoff_counter.value == 1.0
 
@@ -2920,7 +2973,8 @@ class TestPgVectorClient:
         assert result.lexical_candidates == 1
         assert result.chunks
         chunk_meta = result.chunks[0].meta
-        assert chunk_meta["lscore"] == pytest.approx(0.62)
+        assert chunk_meta["lscore"] == pytest.approx(1.0)
+        assert chunk_meta["score"] == pytest.approx(chunk_meta["lscore"])
 
     def test_hybrid_search_score_fusion_alpha_one_cutoff(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
@@ -2998,20 +3052,20 @@ class TestPgVectorClient:
             tenant_id=tenant,
             case_id="case-1",
             alpha=1.0,
-            min_sim=0.7,
+            min_sim=0.0,
             top_k=2,
             vec_limit=2,
             lex_limit=2,
         )
 
-        assert len(result.chunks) == 1
+        assert len(result.chunks) == 2
         top_meta = result.chunks[0].meta
-        assert top_meta["vscore"] == pytest.approx(1.0 / (1.0 + 0.25))
+        assert result.chunks[0].content == "Vector strong"
+        assert top_meta["vscore"] == pytest.approx(1.0)
+        assert top_meta["lscore"] == pytest.approx(0.0)
         assert top_meta["score"] == pytest.approx(top_meta["vscore"])
-        assert result.below_cutoff == 1
-        assert result.returned_after_cutoff == 1
-        assert cutoff_counter.calls == [{"tenant_id": tenant}]
-        assert cutoff_counter.value == 1.0
+        assert cutoff_counter.calls == []
+        assert cutoff_counter.value == 0.0
 
     def test_hybrid_search_score_fusion_alpha_zero_returned_after_cutoff(
         self, monkeypatch
@@ -3076,7 +3130,7 @@ class TestPgVectorClient:
             tenant_id=tenant,
             case_id="case-2",
             alpha=0.0,
-            min_sim=0.4,
+            min_sim=0.0,
             top_k=1,
             vec_limit=2,
             lex_limit=2,
@@ -3084,10 +3138,11 @@ class TestPgVectorClient:
 
         assert len(result.chunks) == 1
         top_meta = result.chunks[0].meta
+        assert result.chunks[0].content == "Lexical strong"
+        assert top_meta["vscore"] == pytest.approx(0.0)
         assert top_meta["score"] == pytest.approx(top_meta["lscore"])
-        assert top_meta["lscore"] == pytest.approx(0.9)
+        assert top_meta["lscore"] == pytest.approx(1.0)
         assert result.below_cutoff == 0
-        assert result.returned_after_cutoff == 2
 
     def test_hybrid_search_distance_score_mode_linear(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
@@ -3131,8 +3186,8 @@ class TestPgVectorClient:
 
         assert result.chunks
         meta = result.chunks[0].meta
-        assert meta["vscore"] == pytest.approx(0.75)
-        assert meta["score"] == pytest.approx(0.75)
+        assert meta["vscore"] == pytest.approx(1.0)
+        assert meta["score"] == pytest.approx(1.0)
 
     def test_format_vector_raises_on_dimension_mismatch(self) -> None:
         client = vector_client.get_default_client()

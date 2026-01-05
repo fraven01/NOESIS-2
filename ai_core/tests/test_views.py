@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from django.db import connection
 from django.test import RequestFactory
+from django.core.files.uploadedfile import SimpleUploadedFile
 
 from ai_core import services, views
 from ai_core.contracts.crawler_runner import CrawlerRunContext
@@ -140,6 +141,39 @@ def test_missing_case_header_defaults_case_id(
     payload = resp.json()
     assert payload["tenant_id"] == test_tenant_schema_name
     assert payload["case_id"] == "general"
+
+
+@pytest.mark.django_db
+def test_rag_upload_allows_unauthenticated_client_in_tests(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
+
+    def _fake_handle(upload, metadata_raw, meta, idempotency_key):
+        return Response(
+            {
+                "status": "accepted",
+                "document_id": "doc-1",
+                "trace_id": meta["scope_context"]["trace_id"],
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    monkeypatch.setattr(services, "handle_document_upload", _fake_handle)
+
+    upload = SimpleUploadedFile("sample.txt", b"hello", content_type="text/plain")
+    response = client.post(
+        "/ai/rag/documents/upload/",
+        data={"file": upload},
+        **{
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "upload",
+        },
+    )
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["document_id"] == "doc-1"
 
 
 @pytest.mark.django_db
@@ -500,7 +534,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
         "took_ms": 42,
         "routing": {
             "profile": "standard",
-            "vector_space_id": "rag/global",
+            "vector_space_id": "rag/standard@v1",
         },
     }
     snippets_payload = [
@@ -588,7 +622,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
     assert retrieval["visibility_effective"] == "active"
     assert retrieval["took_ms"] == 42
     assert retrieval["routing"]["profile"] == "standard"
-    assert retrieval["routing"]["vector_space_id"] == "rag/global"
+    assert retrieval["routing"]["vector_space_id"] == "rag/standard@v1"
     snippet = payload["snippets"][0]
     assert isinstance(snippet["score"], float)
     assert snippet["text"]
@@ -622,7 +656,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
     assert retrieval_state["visibility_effective"] == "active"
     assert retrieval_state["took_ms"] == 42
     assert retrieval_state["routing"]["profile"] == "standard"
-    assert retrieval_state["routing"]["vector_space_id"] == "rag/global"
+    assert retrieval_state["routing"]["vector_space_id"] == "rag/standard@v1"
     snippet_state = final_state["snippets"][0]
     assert isinstance(snippet_state["score"], float)
     assert snippet_state["text"]
@@ -705,7 +739,7 @@ def test_rag_query_endpoint_allows_blank_answer(
         "deleted_matches_blocked": 0,
         "visibility_effective": "active",
         "took_ms": 42,
-        "routing": {"profile": "standard", "vector_space_id": "rag/global"},
+        "routing": {"profile": "standard", "vector_space_id": "rag/standard@v1"},
     }
     snippets_payload = [
         {
@@ -782,7 +816,7 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
         "deleted_matches_blocked": 0,
         "visibility_effective": "active",
         "took_ms": 17,
-        "routing": {"profile": "standard", "vector_space_id": "rag/global"},
+        "routing": {"profile": "standard", "vector_space_id": "rag/standard@v1"},
     }
     snippets_payload = [
         {
@@ -861,7 +895,7 @@ def test_rag_query_endpoint_normalises_numeric_types(
         "deleted_matches_blocked": "1",
         "visibility_effective": "active",
         "took_ms": "21",
-        "routing": {"profile": "standard", "vector_space_id": "rag/global"},
+        "routing": {"profile": "standard", "vector_space_id": "rag/standard@v1"},
     }
     snippets_payload = [
         {
@@ -1086,7 +1120,7 @@ def test_rag_query_endpoint_surfaces_diagnostics(
         "took_ms": 21,
         "routing": {
             "profile": "standard",
-            "vector_space_id": "rag/global",
+            "vector_space_id": "rag/standard@v1",
             "mode": "fallback",
         },
         "lexical_variant": "fallback",
@@ -1255,7 +1289,7 @@ def test_rag_query_endpoint_populates_query_from_question(
             "took_ms": 30,
             "routing": {
                 "profile": "standard",
-                "vector_space_id": "rag/global",
+                "vector_space_id": "rag/standard@v1",
             },
         }
         snippets_payload = [
@@ -1314,7 +1348,7 @@ def test_rag_query_endpoint_populates_query_from_question(
     assert retrieval["visibility_effective"] == "tenant"
     assert retrieval["took_ms"] == 30
     assert retrieval["routing"]["profile"] == "standard"
-    assert retrieval["routing"]["vector_space_id"] == "rag/global"
+    assert retrieval["routing"]["vector_space_id"] == "rag/standard@v1"
     snippet = payload["snippets"][0]
     assert isinstance(snippet["score"], float)
     assert snippet["text"]

@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 import warnings
+from datetime import datetime
 from contextlib import contextmanager, nullcontext
 from collections.abc import Mapping as MappingABC
 from pathlib import Path
@@ -40,6 +41,13 @@ from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.ids.http_scope import normalize_task_context
 from documents.api import normalize_from_raw
 from documents.contracts import NormalizedDocument, NormalizedDocumentInputV1
+from documents.pipeline import (
+    DocumentPipelineConfig,
+    DocumentProcessingContext,
+    DocumentProcessingMetadata,
+    ParsedResult,
+    ParsedTextBlock,
+)
 from ai_core.infra import observability as observability_helpers
 from ai_core.infra.observability import (
     emit_event,
@@ -66,12 +74,22 @@ from .infra.serialization import to_jsonable
 from .infra.pii_flags import get_pii_config
 from .segmentation import segment_markdown_blocks
 from .rag import metrics
-from .rag.embedding_config import get_embedding_profile
+from .rag.embedding_config import (
+    build_embedding_model_version,
+    build_vector_space_id,
+    get_embedding_profile,
+)
+from .rag.embedding_cache import (
+    compute_text_hash,
+    fetch_cached_embeddings,
+    store_cached_embeddings,
+)
 from .rag.semantic_chunker import SectionChunkPlan, SemanticChunker, SemanticTextBlock
 from .rag.parents import limit_parent_payload
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
 from .rag.ingestion_contracts import ChunkMeta, ensure_embedding_dimensions
+from .rag.chunking import RoutingAwareChunker
 from .rag.embeddings import (
     EmbeddingBatchResult,
     EmbeddingClientError,
@@ -79,6 +97,8 @@ from .rag.embeddings import (
 )
 from .rag.pricing import calculate_embedding_cost
 from .rag.vector_store import get_default_router
+from .rag.vector_space_resolver import resolve_vector_space_full
+from .rag.vector_client import get_client_for_schema, get_default_schema
 
 _ZERO_EPSILON = 1e-12
 _FAILED_CHUNK_ID_LIMIT = 10
@@ -155,6 +175,39 @@ def _resolve_embedding_profile_id(
     if not allow_default:
         return None
     return _coerce_cache_part(getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", None))
+
+
+def _resolve_embedding_model_version(meta: Mapping[str, Any]) -> Optional[str]:
+    profile_id = _resolve_embedding_profile_id(meta, allow_default=True)
+    if not profile_id:
+        return None
+    try:
+        profile = get_embedding_profile(profile_id)
+    except Exception:
+        return None
+    return build_embedding_model_version(profile)
+
+
+def _resolve_vector_space_id(meta: Mapping[str, Any]) -> Optional[str]:
+    profile_id = _resolve_embedding_profile_id(meta, allow_default=True)
+    if not profile_id:
+        return None
+    try:
+        profile = get_embedding_profile(profile_id)
+    except Exception:
+        return None
+    return build_vector_space_id(profile.id, profile.model_version)
+
+
+def _resolve_vector_space_schema(meta: Mapping[str, Any]) -> Optional[str]:
+    profile_id = _resolve_embedding_profile_id(meta, allow_default=True)
+    if not profile_id:
+        return None
+    try:
+        resolution = resolve_vector_space_full(profile_id)
+    except Exception:
+        return None
+    return resolution.vector_space.schema
 
 
 def _resolve_redis_url() -> Optional[str]:
@@ -290,6 +343,26 @@ def _log_cache_hit(
     }
     logger.info("task.cache.hit", extra=payload)
     emit_event("task.cache.hit", payload)
+
+
+def _log_embedding_cache_hit(
+    *,
+    task_name: str,
+    model_version: str,
+    hit_count: int,
+    total_chunks: int,
+    meta: Optional[Mapping[str, Any]],
+) -> None:
+    payload = {
+        "task_name": task_name,
+        "model_version": model_version,
+        "cache_hit_count": hit_count,
+        "chunks_total": total_chunks,
+        "cache_hit": True,
+        **_task_context_payload(meta),
+    }
+    logger.info("rag.embedding_cache.hit", extra=payload)
+    emit_event("rag.embedding_cache.hit", payload)
 
 
 def _log_dedupe_hit(
@@ -977,6 +1050,170 @@ def _resolve_parent_capture_max_bytes() -> int:
     return byte_limit if byte_limit > 0 else 0
 
 
+_PARSED_BLOCK_KINDS = {
+    "paragraph",
+    "heading",
+    "list",
+    "table_summary",
+    "slide",
+    "note",
+    "code",
+    "other",
+}
+
+
+def _coerce_block_kind(value: object) -> str:
+    if value is None:
+        return "paragraph"
+    candidate = str(value).strip().lower()
+    return candidate if candidate in _PARSED_BLOCK_KINDS else "paragraph"
+
+
+def _coerce_section_path(value: object) -> Optional[Tuple[str, ...]]:
+    if isinstance(value, (list, tuple)):
+        path = tuple(str(part).strip() for part in value if str(part).strip())
+        return path or None
+    return None
+
+
+def _build_parsed_blocks(
+    *,
+    text: str,
+    structured_blocks: Sequence[Mapping[str, object]],
+    mask_fn: Callable[[str], str],
+) -> List[ParsedTextBlock]:
+    blocks: List[ParsedTextBlock] = []
+    if structured_blocks:
+        for block in structured_blocks:
+            text_value = block.get("text") if isinstance(block, Mapping) else None
+            if text_value is None:
+                continue
+            text_str = str(text_value).strip()
+            if not text_str:
+                continue
+            kind = _coerce_block_kind(block.get("kind"))
+            section_path = _coerce_section_path(block.get("section_path"))
+            page_index = None
+            raw_page = block.get("page_index")
+            if raw_page is not None:
+                try:
+                    page_index = int(raw_page)
+                except (TypeError, ValueError):
+                    page_index = None
+            table_meta = None
+            raw_table = block.get("table_meta")
+            if isinstance(raw_table, Mapping):
+                table_meta = raw_table
+            language = None
+            raw_language = block.get("language")
+            if isinstance(raw_language, str) and raw_language.strip():
+                language = raw_language.strip()
+            try:
+                blocks.append(
+                    ParsedTextBlock(
+                        text=mask_fn(text_str),
+                        kind=kind,
+                        section_path=section_path,
+                        page_index=page_index,
+                        table_meta=table_meta,
+                        language=language,
+                    )
+                )
+            except ValueError:
+                continue
+        return blocks
+
+    heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
+    current_path: List[str] = []
+    for segment in segment_markdown_blocks(text):
+        stripped = segment.strip()
+        if not stripped:
+            continue
+        heading_match = heading_pattern.match(stripped)
+        if heading_match:
+            hashes, heading_title = heading_match.groups()
+            level = len(hashes)
+            title = heading_title.strip()
+            if not title:
+                continue
+            while len(current_path) >= level:
+                current_path.pop()
+            current_path.append(title)
+            try:
+                blocks.append(
+                    ParsedTextBlock(
+                        text=mask_fn(title),
+                        kind="heading",
+                        section_path=tuple(current_path),
+                    )
+                )
+            except ValueError:
+                continue
+            continue
+        try:
+            blocks.append(
+                ParsedTextBlock(
+                    text=mask_fn(stripped),
+                    kind="paragraph",
+                    section_path=tuple(current_path) if current_path else None,
+                )
+            )
+        except ValueError:
+            continue
+
+    if not blocks and text.strip():
+        try:
+            blocks.append(ParsedTextBlock(text=mask_fn(text.strip()), kind="paragraph"))
+        except ValueError:
+            pass
+    return blocks
+
+
+def _build_processing_context(
+    *,
+    meta: Mapping[str, object],
+    tool_context: Any,
+) -> Optional[DocumentProcessingContext]:
+    workflow_id = meta.get("workflow_id") or getattr(
+        tool_context.business, "workflow_id", None
+    )
+    if workflow_id is None or str(workflow_id).strip() == "":
+        return None
+    document_id = meta.get("document_id") or getattr(
+        tool_context.business, "document_id", None
+    )
+    if document_id is None or str(document_id).strip() == "":
+        return None
+    try:
+        document_uuid = uuid.UUID(str(document_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+    metadata = DocumentProcessingMetadata(
+        tenant_id=str(tool_context.scope.tenant_id),
+        collection_id=getattr(tool_context.business, "collection_id", None),
+        case_id=getattr(tool_context.business, "case_id", None),
+        workflow_id=str(workflow_id),
+        document_id=document_uuid,
+        source=str(meta.get("source")) if meta.get("source") else None,
+        created_at=timezone.now(),
+        trace_id=getattr(tool_context.scope, "trace_id", None),
+    )
+    return DocumentProcessingContext(
+        metadata=metadata,
+        trace_id=metadata.trace_id,
+        span_id=metadata.span_id,
+    )
+
+
+@shared_task(
+    base=RetryableTask,
+    queue="ingestion",
+    accepts_scope=True,
+    time_limit=600,
+    soft_time_limit=540,
+)
+@observe_span(name="ingestion.chunk")
 def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     """Split text into overlapping chunks for embeddings and capture parents."""
 
@@ -990,10 +1227,16 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     if not external_id:
         raise ValueError("external_id required for chunk")
 
+    context = tool_context_from_meta(meta)
+    embedding_model_version = _resolve_embedding_model_version(meta)
+    embedding_created_at = timezone.now().isoformat()
+    resolved_vector_space_id = meta.get("vector_space_id") or _resolve_vector_space_id(
+        meta
+    )
+
     cache_client = _redis_client()
     cache_key = None
     if cache_client is not None:
-        context = tool_context_from_meta(meta)
         profile_key = _coerce_cache_part(meta.get("embedding_profile"))
         parts = [context.scope.tenant_id, content_hash]
         if profile_key:
@@ -1038,6 +1281,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
     blocks_path_value = meta.get("parsed_blocks_path")
     structured_blocks: List[Dict[str, object]] = []
+    block_stats: Dict[str, object] = {}
     if blocks_path_value:
         try:
             payload = object_store.read_json(str(blocks_path_value))
@@ -1060,6 +1304,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 structured_blocks = [
                     entry for entry in raw_blocks if isinstance(entry, dict)
                 ]
+            stats_value = payload.get("statistics")
+            if isinstance(stats_value, Mapping):
+                block_stats = dict(stats_value)
 
     mask_enabled = bool(getattr(settings, "INGESTION_PII_MASK_ENABLED", True))
 
@@ -1074,6 +1321,118 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             if mode != "off" and policy != "off":
                 masked_value = re.sub(r"\d", "X", value)
         return masked_value
+
+    processing_context = _build_processing_context(meta=meta, tool_context=context)
+    if processing_context is not None:
+        parsed_blocks = _build_parsed_blocks(
+            text=text,
+            structured_blocks=structured_blocks,
+            mask_fn=_mask_for_chunk,
+        )
+        parsed_result = ParsedResult(
+            text_blocks=parsed_blocks,
+            assets=(),
+            statistics=block_stats,
+        )
+        chunker = RoutingAwareChunker()
+        pipeline_config = DocumentPipelineConfig()
+        chunk_entries, _stats = chunker.chunk(
+            None,
+            parsed_result,
+            context=processing_context,
+            config=pipeline_config,
+        )
+
+        document_id = str(processing_context.metadata.document_id)
+        parent_nodes: Dict[str, Dict[str, object]] = {}
+        doc_title = str(meta.get("title") or external_id or "").strip()
+        root_id = f"{document_id}#doc"
+        parent_nodes[root_id] = {
+            "id": root_id,
+            "type": "document",
+            "title": doc_title or None,
+            "level": 0,
+            "order": 0,
+            "document_id": document_id,
+        }
+        parent_order = 0
+        chunks: List[Dict[str, object]] = []
+        for index, entry in enumerate(chunk_entries):
+            chunk_text = str(entry.get("text") or "")
+            if not chunk_text.strip():
+                continue
+            parent_ref = entry.get("parent_ref")
+            parent_ids = [root_id]
+            if parent_ref:
+                parent_id = str(parent_ref)
+                parent_ids.append(parent_id)
+                if parent_id not in parent_nodes:
+                    parent_order += 1
+                    section_path = entry.get("section_path")
+                    title = None
+                    level = 1
+                    if isinstance(section_path, Sequence) and not isinstance(
+                        section_path, (str, bytes, bytearray)
+                    ):
+                        path_parts = [str(part) for part in section_path if part]
+                        if path_parts:
+                            title = path_parts[-1]
+                            level = len(path_parts)
+                    parent_nodes[parent_id] = {
+                        "id": parent_id,
+                        "type": "section",
+                        "title": title,
+                        "level": level,
+                        "order": parent_order,
+                        "document_id": document_id,
+                    }
+
+            chunk_hash = entry.get("chunk_id")
+            if not chunk_hash:
+                chunk_hash_input = f"{content_hash}:{index}".encode("utf-8")
+                chunk_hash = hashlib.sha256(chunk_hash_input).hexdigest()
+            chunk_meta = {
+                "tenant_id": context.scope.tenant_id,
+                "case_id": context.business.case_id,
+                "source": text_path,
+                "hash": str(chunk_hash),
+                "external_id": str(external_id),
+                "content_hash": str(content_hash),
+                "parent_ids": parent_ids,
+                "document_id": document_id,
+            }
+            if embedding_model_version:
+                chunk_meta["embedding_model_version"] = embedding_model_version
+                chunk_meta["embedding_created_at"] = embedding_created_at
+            if meta.get("embedding_profile"):
+                chunk_meta["embedding_profile"] = meta["embedding_profile"]
+            if resolved_vector_space_id:
+                chunk_meta["vector_space_id"] = resolved_vector_space_id
+            if meta.get("process"):
+                chunk_meta["process"] = meta["process"]
+            if context.business.collection_id:
+                chunk_meta["collection_id"] = context.business.collection_id
+            if context.business.workflow_id:
+                chunk_meta["workflow_id"] = context.business.workflow_id
+            if meta.get("lifecycle_state"):
+                chunk_meta["lifecycle_state"] = meta["lifecycle_state"]
+
+            chunks.append(
+                {
+                    "content": chunk_text,
+                    "normalized": normalise_text(chunk_text),
+                    "meta": chunk_meta,
+                }
+            )
+
+        limited_parents = limit_parent_payload(parent_nodes)
+        payload = {"chunks": chunks, "parents": limited_parents}
+        chunk_filename = _resolve_artifact_filename(meta, "chunks")
+        out_path = _build_path(meta, "embeddings", chunk_filename)
+        object_store.write_json(out_path, payload)
+        if cache_client is not None and cache_key:
+            _cache_set(cache_client, cache_key, out_path, _CACHE_TTL_CHUNK_SECONDS)
+        return {"path": out_path}
 
     fallback_segments: List[str] = []
     if not structured_blocks:
@@ -1385,7 +1744,6 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 _append_parent_text(root_id, fallback_text, 0)
         chunk_candidates.append((text, unique_fallback_ids or [root_id], ""))
 
-    context = tool_context_from_meta(meta)
     chunks: List[Dict[str, object]] = []
     chunk_index = 0
     for body, parent_ids, heading_prefix in chunk_candidates:
@@ -1437,11 +1795,14 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 # Provide per-chunk parent lineage for compatibility with existing tests
                 "parent_ids": parent_ids,
             }
+            if embedding_model_version:
+                chunk_meta["embedding_model_version"] = embedding_model_version
+                chunk_meta["embedding_created_at"] = embedding_created_at
 
             if meta.get("embedding_profile"):
                 chunk_meta["embedding_profile"] = meta["embedding_profile"]
-            if meta.get("vector_space_id"):
-                chunk_meta["vector_space_id"] = meta["vector_space_id"]
+            if resolved_vector_space_id:
+                chunk_meta["vector_space_id"] = resolved_vector_space_id
             # BREAKING CHANGE (Option A): Business IDs from business_context
             if context.business.collection_id:
                 chunk_meta["collection_id"] = context.business.collection_id
@@ -1611,6 +1972,13 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
             if isinstance(parents, dict) and parents:
                 load_metrics.set("parents_count", len(parents))
 
+        embedding_model_version = _resolve_embedding_model_version(meta)
+        embedding_created_at_value = timezone.now()
+        embedding_created_at = embedding_created_at_value.isoformat()
+        resolved_vector_space_id = meta.get(
+            "vector_space_id"
+        ) or _resolve_vector_space_id(meta)
+
         context = tool_context_from_meta(meta)
         try:
             update_observation(
@@ -1623,7 +1991,8 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                 ),
                 metadata={
                     "embedding_profile": meta.get("embedding_profile"),
-                    "vector_space_id": meta.get("vector_space_id"),
+                    "vector_space_id": resolved_vector_space_id,
+                    "embedding_model_version": embedding_model_version,
                     "collection_id": context.business.collection_id,
                 },
             )
@@ -1641,7 +2010,28 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                     ch.get("content", "")
                 )
                 text = normalised or ""
-                prepared.append({**ch, "normalized": text})
+                meta_payload: Dict[str, Any] = {}
+                raw_meta = ch.get("meta")
+                if isinstance(raw_meta, MappingABC):
+                    meta_payload = dict(raw_meta)
+                if embedding_model_version:
+                    meta_payload["embedding_model_version"] = embedding_model_version
+                    meta_payload["embedding_created_at"] = embedding_created_at
+                if resolved_vector_space_id:
+                    meta_payload.setdefault("vector_space_id", resolved_vector_space_id)
+                if meta.get("embedding_profile"):
+                    meta_payload.setdefault(
+                        "embedding_profile", meta["embedding_profile"]
+                    )
+                text_hash = compute_text_hash(text)
+                prepared.append(
+                    {
+                        **ch,
+                        "normalized": text,
+                        "meta": meta_payload,
+                        "_text_hash": text_hash,
+                    }
+                )
                 token_count = _token_count(text)
                 token_counts.append(token_count)
                 identifier = _extract_chunk_identifier(ch)
@@ -1651,6 +2041,64 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
             chunk_metrics.set("token_count", sum(token_counts))
 
         total_chunks = len(prepared)
+        vector_space_schema = _resolve_vector_space_schema(meta)
+        cache_db_client = None
+        cached_embeddings: Dict[str, Tuple[List[float], datetime]] = {}
+        cache_hit_count = 0
+        embedding_results: List[Dict[str, Any] | None] = [None] * total_chunks
+        pending_entries: List[Dict[str, Any]] = []
+        pending_indices: List[int] = []
+        pending_token_counts: List[int] = []
+        if embedding_model_version and vector_space_schema:
+            try:
+                cache_db_client = get_client_for_schema(vector_space_schema)
+                cached_embeddings = fetch_cached_embeddings(
+                    cache_db_client,
+                    [entry.get("_text_hash", "") for entry in prepared],
+                    model_version=embedding_model_version,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "rag.embedding_cache.read_failed",
+                    extra={
+                        "error": str(exc),
+                        "model_version": embedding_model_version,
+                        "schema": vector_space_schema,
+                        **_task_context_payload(meta),
+                    },
+                )
+                cache_db_client = None
+                cached_embeddings = {}
+
+        for index, entry in enumerate(prepared):
+            text_hash = entry.get("_text_hash")
+            cached = cached_embeddings.get(text_hash) if text_hash else None
+            if cached is not None:
+                vector, cached_created_at = cached
+                meta_payload = entry.get("meta")
+                if isinstance(meta_payload, MappingABC):
+                    meta_payload = dict(meta_payload)
+                else:
+                    meta_payload = {}
+                meta_payload["embedding_model_version"] = embedding_model_version
+                meta_payload["embedding_created_at"] = (
+                    cached_created_at.isoformat()
+                    if isinstance(cached_created_at, datetime)
+                    else embedding_created_at
+                )
+                if resolved_vector_space_id:
+                    meta_payload.setdefault("vector_space_id", resolved_vector_space_id)
+                entry["meta"] = meta_payload
+                embedding_results[index] = {
+                    **entry,
+                    "embedding": list(vector),
+                    "vector_dim": len(vector),
+                }
+                cache_hit_count += 1
+            else:
+                pending_entries.append(entry)
+                pending_indices.append(index)
+                pending_token_counts.append(token_counts[index])
         expected_dim: Optional[int] = None
         batches = 0
         total_retry_count = 0
@@ -1660,10 +2108,15 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
 
         with _observed_embed_section("embed") as embed_metrics:
             embed_metrics.set("batch_size", batch_size)
-            for start in range(0, total_chunks, batch_size):
-                batch = prepared[start : start + batch_size]
+            embed_metrics.set("cache.hit_count", cache_hit_count)
+            embed_metrics.set("cache.miss_count", len(pending_entries))
+            pending_total = len(pending_entries)
+            new_cache_entries: Dict[str, Sequence[float]] = {}
+            for start in range(0, pending_total, batch_size):
+                batch = pending_entries[start : start + batch_size]
                 if not batch:
                     continue
+                batch_indices = pending_indices[start : start + len(batch)]
                 batches += 1
                 inputs = [str(entry.get("normalized", "")) for entry in batch]
                 batch_started = time.perf_counter()
@@ -1692,7 +2145,7 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                     total_backoff_ms += float(sum(retry_delays)) * 1000.0
 
                 batch_token_count = sum(
-                    token_counts[start + index] for index in range(len(batch))
+                    pending_token_counts[start + index] for index in range(len(batch))
                 )
                 if batch_token_count:
                     total_cost += calculate_embedding_cost(
@@ -1725,16 +2178,49 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                 if len(result.vectors) != len(batch):
                     raise ValueError("Embedding batch size mismatch")
 
-                for entry, vector in zip(batch, result.vectors):
+                for entry, vector, target_index in zip(
+                    batch, result.vectors, batch_indices
+                ):
                     if expected_dim is not None and len(vector) != expected_dim:
                         raise ValueError("Embedding dimension mismatch")
-                    embeddings.append(
-                        {
-                            **entry,
-                            "embedding": list(vector),
-                            "vector_dim": len(vector),
-                        }
+                    embedding_results[target_index] = {
+                        **entry,
+                        "embedding": list(vector),
+                        "vector_dim": len(vector),
+                    }
+                    text_hash = entry.get("_text_hash")
+                    if text_hash:
+                        new_cache_entries[str(text_hash)] = vector
+
+            embeddings = [entry for entry in embedding_results if entry is not None]
+            if embedding_model is None and embedding_model_version:
+                embedding_model = embedding_model_version
+            if cache_db_client and embedding_model_version and new_cache_entries:
+                try:
+                    store_cached_embeddings(
+                        cache_db_client,
+                        embeddings=new_cache_entries,
+                        model_version=embedding_model_version,
+                        created_at=embedding_created_at_value,
                     )
+                except Exception as exc:
+                    logger.warning(
+                        "rag.embedding_cache.write_failed",
+                        extra={
+                            "error": str(exc),
+                            "model_version": embedding_model_version,
+                            "schema": vector_space_schema,
+                            **_task_context_payload(meta),
+                        },
+                    )
+            if embedding_model_version and cache_hit_count:
+                _log_embedding_cache_hit(
+                    task_name="embed",
+                    model_version=embedding_model_version,
+                    hit_count=cache_hit_count,
+                    total_chunks=total_chunks,
+                    meta=meta,
+                )
 
             embed_metrics.set("chunks_count", len(embeddings))
             if embedding_model:
@@ -1951,6 +2437,8 @@ def upsert(
                         "hash",
                         "content_hash",
                         "embedding_profile",
+                        "embedding_model_version",
+                        "embedding_created_at",
                         "vector_space_id",
                         "process",
                         "collection_id",
@@ -2025,6 +2513,7 @@ def upsert(
         )
 
         schema = tenant_schema or (meta.get("tenant_schema") if meta else None)
+        vector_space_schema = _resolve_vector_space_schema(meta) if meta else None
 
         tenant_client = vector_client
         if tenant_client is None and callable(vector_client_factory):
@@ -2034,14 +2523,18 @@ def upsert(
             else:
                 tenant_client = candidate
         if tenant_client is None:
-            router = get_default_router()
-            tenant_client = router
-            for_tenant = getattr(router, "for_tenant", None)
-            if callable(for_tenant):
-                try:
-                    tenant_client = for_tenant(tenant_id, schema)
-                except TypeError:
-                    tenant_client = for_tenant(tenant_id)
+            default_schema = get_default_schema()
+            if vector_space_schema and vector_space_schema != default_schema:
+                tenant_client = get_client_for_schema(vector_space_schema)
+            else:
+                router = get_default_router()
+                tenant_client = router
+                for_tenant = getattr(router, "for_tenant", None)
+                if callable(for_tenant):
+                    try:
+                        tenant_client = for_tenant(tenant_id, schema)
+                    except TypeError:
+                        tenant_client = for_tenant(tenant_id)
         written = tenant_client.upsert_chunks(chunk_objs)
         if cache_client is not None and dedupe_key and dedupe_token:
             _mark_dedupe_done(

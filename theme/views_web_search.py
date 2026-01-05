@@ -36,6 +36,9 @@ def _views():
 def web_search(request):
     """Execute the external knowledge graph for manual RAG searches."""
     views = _views()
+    blocked = views._rag_tools_gate(json_response=True)
+    if blocked is not None:
+        return blocked
     try:
         if request.headers.get("HX-Request"):
             # HTMX sends form-encoded data by default unless configured for JSON
@@ -109,7 +112,9 @@ def web_search(request):
         manual_collection_id=manual_collection_id,
     )
 
-    search_type = str(data.get("search_type") or "external_knowledge").strip()
+    search_type = str(data.get("search_type") or "web_acquisition").strip().lower()
+    if search_type in {"external_knowledge", "external-knowledge"}:
+        search_type = "web_acquisition"
     quality_params = SearchQualityParams.model_validate(data)
 
     if search_type == "collection_search":
@@ -356,6 +361,9 @@ def web_search(request):
 def web_search_ingest_selected(request):
     """Ingest user-selected URLs from web search results via crawler service."""
     views = _views()
+    blocked = views._rag_tools_gate(json_response=True)
+    if blocked is not None:
+        return blocked
     try:
         if request.headers.get("HX-Request"):
             if request.content_type == "application/json":

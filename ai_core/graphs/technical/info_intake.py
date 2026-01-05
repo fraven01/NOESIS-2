@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict, Tuple
 
 from ai_core.tool_contracts.base import tool_context_from_meta
+
+logger = logging.getLogger(__name__)
 
 
 def run(state: Dict, meta: Dict) -> Tuple[Dict, Dict]:
@@ -27,6 +30,13 @@ def run(state: Dict, meta: Dict) -> Tuple[Dict, Dict]:
     new_state = dict(state)
     new_state.setdefault("meta", meta)
     context = tool_context_from_meta(meta)
+    logger.warning(
+        "graph.info_intake.deprecated",
+        extra={
+            "tenant_id": context.scope.tenant_id,
+            "case_id": context.business.case_id,
+        },
+    )
 
     result = {
         "received": True,

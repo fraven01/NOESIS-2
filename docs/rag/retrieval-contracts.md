@@ -51,7 +51,7 @@ Jede Normalisierung wird zurück in den `state` geschrieben (`HybridParameters.a
 | Feld | Beschreibung |
 | --- | --- |
 | `profile` | Aufgelöstes Embedding-Profil via `resolve_embedding_profile`. |
-| `vector_space_id` | Zugehöriger Vector-Space (z. B. `rag/global`). |
+| `vector_space_id` | Zugehöriger Vector-Space (z. B. `rag/standard@v1`). |
 | `process`, `doc_class`, `collection_id`, `workflow_id` | Normalisierte Selektoren, `None` wenn nicht gesetzt. |
 
 ## RetrieveMeta
@@ -130,7 +130,7 @@ Jede Normalisierung wird zurück in den `state` geschrieben (`HybridParameters.a
   "meta": {
     "routing": {
       "profile": "standard",
-      "vector_space_id": "rag/global",
+      "vector_space_id": "rag/standard@v1",
       "process": "review",
       "doc_class": "policy",
       "collection_id": "hr",

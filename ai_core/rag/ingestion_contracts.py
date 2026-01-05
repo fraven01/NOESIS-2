@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-
 from typing import Iterable, Mapping, MutableMapping
 from types import MappingProxyType
+
+from django.utils import timezone
 
 from common.logging import get_log_context, get_logger
 
@@ -28,6 +29,7 @@ from .vector_space_resolver import (
     VectorSpaceResolverErrorCode,
     resolve_vector_space_full,
 )
+from .embedding_config import build_embedding_model_version
 
 
 logger = get_logger(__name__)
@@ -68,6 +70,8 @@ class ChunkMeta(BaseModel):
     external_id: str
     content_hash: str
     embedding_profile: str | None = None
+    embedding_model_version: str | None = None
+    embedding_created_at: str | None = None
     vector_space_id: str | None = None
     process: str | None = None
     workflow_id: str | None = None
@@ -271,14 +275,22 @@ def build_crawler_ingestion_payload(
 
     profile_id: str | None
     vector_space_id: str | None
+    embedding_model_version: str | None
+    embedding_created_at: str | None
 
     if action is IngestionAction.RETIRE:
         profile_id = _coerce_optional_string(embedding_profile)
         vector_space_id = None
+        embedding_model_version = None
+        embedding_created_at = None
     else:
         profile_binding = _resolve_embedding_profile(embedding_profile)
         profile_id = profile_binding.profile_id
         vector_space_id = profile_binding.resolution.vector_space.id
+        embedding_model_version = build_embedding_model_version(
+            profile_binding.resolution.profile
+        )
+        embedding_created_at = timezone.now().isoformat()
 
     provider = parse_provider_reference(document.meta)
 
@@ -297,6 +309,8 @@ def build_crawler_ingestion_payload(
         external_id=provider.external_id,
         content_hash=signatures.content_hash,
         embedding_profile=profile_id,
+        embedding_model_version=embedding_model_version,
+        embedding_created_at=embedding_created_at,
         vector_space_id=vector_space_id,
         process=resolved_process,
         workflow_id=document.ref.workflow_id,

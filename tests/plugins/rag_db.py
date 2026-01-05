@@ -123,6 +123,24 @@ def _extract_dbname(dsn: str) -> str | None:
     return str(name) if name else None
 
 
+def _with_worker_db(dsn: str) -> str:
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker:
+        return dsn
+    parsed = _parse_dsn_components(dsn)
+    if not parsed:
+        return dsn
+    name = parsed.get("dbname") or parsed.get("database")
+    if not name:
+        return dsn
+    parsed["dbname"] = f"{name}_{worker}"
+    parsed.pop("database", None)
+    try:
+        return make_dsn(**parsed)
+    except Exception:
+        return dsn
+
+
 def _derive_admin_dsn(dsn: str, *, fallback_db: str = "postgres") -> str | None:
     parsed = _parse_dsn_components(dsn)
     if not parsed:
@@ -139,7 +157,7 @@ def _ensure_pristine_test_database(dsn: str) -> None:
     dbname = _extract_dbname(dsn)
     if not dbname:
         return
-    if not dbname.lower().endswith("_test"):
+    if "_test" not in dbname.lower():
         return
 
     admin_dsn = _derive_admin_dsn(dsn)
@@ -243,6 +261,7 @@ def rag_test_dsn() -> Iterator[str]:
         "AI_CORE_TEST_DATABASE_URL",
         "postgresql://postgres:postgres@localhost:5432/postgres",
     )
+    dsn = _with_worker_db(dsn)
     _ensure_pristine_test_database(dsn)
     try:
         conn = psycopg2.connect(dsn)

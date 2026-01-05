@@ -53,6 +53,7 @@ def test_embed_emits_span_metadata(monkeypatch):
 
     monkeypatch.setattr(tasks.object_store, "read_json", lambda _: raw_chunks)
     monkeypatch.setattr(tasks.settings, "EMBEDDINGS_BATCH_SIZE", 2, raising=False)
+    monkeypatch.setattr(tasks, "_redis_client", lambda: None)
 
     written: Dict[str, Any] = {}
 
@@ -174,6 +175,7 @@ def test_embed_error_updates_observation(monkeypatch):
     monkeypatch.setattr(tasks.object_store, "read_json", lambda _: chunks)
     monkeypatch.setattr(tasks.object_store, "write_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(tasks.settings, "EMBEDDINGS_BATCH_SIZE", 3, raising=False)
+    monkeypatch.setattr(tasks, "_redis_client", lambda: None)
 
     class _FailingClient:
         batch_size = 3

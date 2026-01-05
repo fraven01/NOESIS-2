@@ -40,7 +40,7 @@ class Command(BaseCommand):
                     )
                     continue
 
-                for table in ("documents", "chunks", "embeddings"):
+                for table in ("documents", "chunks", "embeddings", "embedding_cache"):
                     identifier = sql.Identifier(space.schema, table)
                     try:
                         cursor.execute(

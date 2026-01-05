@@ -8,8 +8,8 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 - [x] Drift #3: crawler ingestion persistence parity with upload path (pointers: `docs/architecture/drift3-critical-finding.md`, `crawler/worker.py`, `ai_core/tasks.py:run_ingestion_graph`, `ai_core/graphs/technical/universal_ingestion_graph.py`; acceptance: crawler path can persist/create document without relying on "parallel registration" in `crawler/worker.py`)
 - [x] Workbench exception: allow UI/views to trigger technical graphs only in `DEBUG` (explicit guard at endpoint level; e.g. `ai_core/views.py:_GraphView`, `ai_core/views.py:CrawlerIngestionRunnerView`)
-- [ ] Graph convergence: refactor `retrieval_augmented_generation.py` to real `langgraph` and migrate module-level singleton to factory (inventory `ai_core/graphs/technical/retrieval_augmented_generation.py`)
-- [ ] Deprecation plan: `info_intake` graph + intake endpoint (`ai_core/graphs/technical/info_intake.py`, `ai_core/views.py:IntakeViewV1`, `docs/api/reference.md`)
+- [x] Graph convergence: refactor `retrieval_augmented_generation.py` to real `langgraph` and migrate module-level singleton to factory (inventory `ai_core/graphs/technical/retrieval_augmented_generation.py`)
+- [x] Deprecation plan: `info_intake` graph + intake endpoint (`ai_core/graphs/technical/info_intake.py`, `ai_core/views.py:IntakeViewV1`, `docs/api/reference.md`)
 - [ ] Review later: framework analysis graph convergence (`ai_core/graphs/business/framework_analysis_graph.py`)
 
 ## Code Quality & Architecture Cleanup (Pre-MVP Refactoring)
@@ -74,9 +74,9 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 
 ## Layering / boundaries
 
-- [ ] Remove legacy graph shims after call sites are migrated (pointers: `ai_core/graphs/info_intake.py`, `ai_core/graphs/__init__.py`, `ai_core/views.py`; note: coordinate with the `info_intake` deprecation plan)
+- [x] Remove legacy graph shims after call sites are migrated (pointers: `ai_core/graphs/info_intake.py`, `ai_core/graphs/__init__.py`, `ai_core/views.py`; note: coordinate with the `info_intake` deprecation plan)
 - [x] Enforce import direction (business -> technical) via a lightweight repo test (no new dependencies)
-- [ ] Dev Workbench: review UI capability boundary for web acquisition search (pointers: `theme/views_web_search.py`, `theme/views_rag_tools.py`, `ai_core/graphs/web_acquisition_graph.py`, `crawler/manager.py`; acceptance: explicit capability vs graph boundary and consistent naming in rag-tools UI)
+- [x] Dev Workbench: review UI capability boundary for web acquisition search (pointers: `theme/views_web_search.py`, `theme/views_rag_tools.py`, `ai_core/graphs/web_acquisition_graph.py`, `crawler/manager.py`; acceptance: explicit capability vs graph boundary and consistent naming in rag-tools UI)
 - [ ] Capability-first: framework analysis graph extractions (pointers: `ai_core/graphs/business/framework_analysis_graph.py`, `roadmap/capability-first-todos.md`; acceptance: extracted capabilities for gremium normalization, ToC extraction, LLM JSON parsing, component validation, persistence adapter)
 - [ ] Capability-first: collection search graph extractions (pointers: `ai_core/graphs/technical/collection_search.py`, `roadmap/capability-first-todos.md`; acceptance: scoring/strategy/HITL/auto-ingest logic moved to nodes/tools/services)
 - [ ] Capability-first: universal ingestion graph extractions (pointers: `ai_core/graphs/technical/universal_ingestion_graph.py`, `roadmap/capability-first-todos.md`; acceptance: selection and normalization logic moved to capabilities, DI root optionally in factory)

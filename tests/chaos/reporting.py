@@ -72,6 +72,7 @@ def pytest_runtest_logreport(report: TestReport) -> None:
         payload["longrepr"] = getattr(report, "longreprtext", str(report.longrepr))
 
     path = CHAOS_LOG_ROOT / _build_filename(report.nodeid)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, sort_keys=True, indent=2)
 

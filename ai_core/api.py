@@ -23,6 +23,8 @@ from ai_core.rag.guardrails import (
     QuotaUsage,
 )
 from ai_core.rag.ingestion_contracts import ChunkMeta, resolve_ingestion_profile
+from ai_core.rag.embedding_config import build_embedding_model_version
+from django.utils import timezone
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import PgVectorClient, get_default_client
 from ai_core.rag.delta import DeltaDecision, evaluate_delta
@@ -442,6 +444,10 @@ def trigger_embedding(
         embedding_profile or getattr(config, "embedding_profile", None) or "standard"
     )
     profile_resolution = resolve_ingestion_profile(profile_key)
+    embedding_model_version = build_embedding_model_version(
+        profile_resolution.resolution.profile
+    )
+    embedding_created_at = timezone.now().isoformat()
 
     chunk_meta = ChunkMeta(
         tenant_id=tenant,
@@ -453,6 +459,8 @@ def trigger_embedding(
         ),
         content_hash=document.checksum,
         embedding_profile=profile_resolution.profile_id,
+        embedding_model_version=embedding_model_version,
+        embedding_created_at=embedding_created_at,
         vector_space_id=profile_resolution.resolution.vector_space.id,
         workflow_id=document.ref.workflow_id,
         document_id=str(document.ref.document_id),
@@ -529,6 +537,8 @@ def trigger_embedding(
                     "external_id": chunk_meta.external_id,
                     "content_hash": chunk_meta.content_hash,
                     "embedding_profile": chunk_meta.embedding_profile,
+                    "embedding_model_version": chunk_meta.embedding_model_version,
+                    "embedding_created_at": chunk_meta.embedding_created_at,
                     "vector_space_id": chunk_meta.vector_space_id,
                     "workflow_id": chunk_meta.workflow_id,
                     "document_id": chunk_meta.document_id,

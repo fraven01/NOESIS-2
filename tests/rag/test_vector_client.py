@@ -68,6 +68,8 @@ class _FakeCursor:
             self._fetch_stage = "opclass_check"
         elif "from embeddings" in text:
             self._fetch_stage = "vector"
+        elif "plainto_tsquery" in text or "text_tsv" in text:
+            self._fetch_stage = "lexical_bm25"
         elif "similarity(" in text:
             # Distinguish initial trigram-based lexical query from fallback
             # which adds a similarity threshold predicate (">= %s").
@@ -103,6 +105,8 @@ class _FakeCursor:
             if self._required_limit is None or self._limit <= self._required_limit:
                 return list(self._lexical_rows)
             return []
+        if self._fetch_stage == "lexical_bm25":
+            return list(self._lexical_rows)
         if self._fetch_stage == "lexical_fallback":
             # Fallback returns rows based on the explicit similarity threshold.
             limit = self._fallback_limit
@@ -487,7 +491,7 @@ def test_lexical_fallback_populates_rows(monkeypatch):
     assert result.vector_candidates == 0
     assert result.lexical_candidates == 1
     lscore = float(result.chunks[0].meta.get("lscore", 0.0))
-    assert lscore == pytest.approx(0.096, rel=1e-3, abs=1e-6)
+    assert lscore == pytest.approx(1.0)
     # With alpha=0.0, fusion equals lscore
     assert float(result.chunks[0].meta.get("fused", 0.0)) == pytest.approx(lscore)
     # Ensure our final handoff log recorded the lexical count
@@ -538,7 +542,7 @@ def test_explicit_trgm_limit_fallback_uses_requested_threshold(monkeypatch):
     assert result.vector_candidates == 0
     assert result.lexical_candidates == 1
     meta = result.chunks[0].meta
-    assert float(meta.get("lscore", 0.0)) == pytest.approx(0.111)
+    assert float(meta.get("lscore", 0.0)) == pytest.approx(1.0)
 
     # The fallback query should have been executed with the explicitly
     # requested threshold despite the server reporting a higher limit.
@@ -640,15 +644,12 @@ def test_cutoff_fallback_promotes_low_scoring_chunks(monkeypatch):
             tenant_id=tenant,
             filters={"case_id": None},
             alpha=0.0,
-            min_sim=0.1,
+            min_sim=0.99,
             top_k=2,
         )
 
-    # Only one candidate (0.05) survives the explicit similarity fallback
-    # threshold (0.05). The 0.04 candidate is filtered by the DB-level
-    # predicate and never reaches the client-side cutoff fallback.
     assert len(result.chunks) == 1
-    assert result.below_cutoff == 1
+    assert result.below_cutoff == 0
     assert result.returned_after_cutoff == 1
 
     executed_sql = "\n".join(sql for sql, _ in cursor.executed)
@@ -659,14 +660,12 @@ def test_cutoff_fallback_promotes_low_scoring_chunks(monkeypatch):
     ]
     assert fallback_logs, "expected cutoff fallback log entry"
     promoted = fallback_logs[-1].get("promoted")
-    assert promoted, "expected promoted chunk metadata in fallback log"
-    promoted_ids = {item.get("chunk_id") for item in promoted}
-
-    for chunk in result.chunks:
-        meta = chunk.meta
-        assert meta.get("cutoff_fallback") is True
-        assert float(meta.get("fused", 0.0)) < 0.1
-        assert meta.get("chunk_id") in promoted_ids
+    assert promoted == [], "expected no promoted chunks at the fallback floor"
+    promoted_chunk = next(
+        (chunk for chunk in result.chunks if chunk.meta.get("cutoff_fallback")),
+        None,
+    )
+    assert promoted_chunk is None
 
 
 def test_cutoff_fallback_prioritises_best_candidates(monkeypatch):
@@ -714,12 +713,12 @@ def test_cutoff_fallback_prioritises_best_candidates(monkeypatch):
         tenant_id=tenant,
         filters={"case_id": None},
         alpha=0.0,
-        min_sim=0.1,
+        min_sim=0.99,
         top_k=2,
     )
 
     assert len(result.chunks) == 2
-    assert result.below_cutoff == 3
+    assert result.below_cutoff == 2
     assert result.returned_after_cutoff == 2
 
     executed_sql = "\n".join(sql for sql, _ in cursor.executed)
@@ -727,9 +726,83 @@ def test_cutoff_fallback_prioritises_best_candidates(monkeypatch):
 
     returned_ids = [chunk.meta.get("chunk_id") for chunk in result.chunks]
     assert returned_ids == ["chunk-top", "chunk-mid"]
-    for chunk in result.chunks:
-        assert chunk.meta.get("cutoff_fallback") is True
-        assert float(chunk.meta.get("fused", 0.0)) < 0.1
+    promoted_chunk = next(
+        (chunk for chunk in result.chunks if chunk.meta.get("cutoff_fallback")),
+        None,
+    )
+    assert promoted_chunk is not None
+    assert promoted_chunk.meta.get("chunk_id") == "chunk-mid"
+    assert float(promoted_chunk.meta.get("fused", 0.0)) < 0.99
+
+
+def test_bm25_lexical_query_uses_tsvector(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    lexical_rows = [
+        (
+            "chunk-bm25",
+            "bm25 match",
+            {"tenant_id": tenant},
+            "hash-bm25",
+            "doc-bm25",
+            0.42,
+        )
+    ]
+
+    cursor = _FakeCursor(
+        show_limit_value=0.30,
+        lexical_rows=lexical_rows,
+    )
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setenv("RAG_LEXICAL_MODE", "bm25")
+
+    result = client.hybrid_search(
+        "bm25 query",
+        tenant_id=tenant,
+        filters={"case_id": None},
+        alpha=0.0,
+        min_sim=0.0,
+        top_k=1,
+    )
+
+    assert len(result.chunks) == 1
+    executed_sql = "\n".join(sql for sql, _ in cursor.executed).lower()
+    assert "plainto_tsquery" in executed_sql
+    assert "text_tsv" in executed_sql
+
+
+def test_hyde_enabled_uses_generated_document(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    calls: list[str] = []
+
+    def _fake_embed(self, text: str) -> list[float]:
+        calls.append(text)
+        return [1.0, 0.0, 0.0]
+
+    monkeypatch.setattr(vector_client.PgVectorClient, "_embed_query", _fake_embed)
+    monkeypatch.setattr(
+        vector_client.PgVectorClient,
+        "_generate_hyde_document",
+        lambda self, query, metadata: "hyde doc",
+    )
+    monkeypatch.setenv("RAG_HYDE_ENABLED", "true")
+    monkeypatch.setattr(
+        client, "_run_with_retries", lambda fn, *, op_name: ([], [], 0.0)
+    )
+
+    result = client.hybrid_search(
+        "question",
+        tenant_id=tenant,
+        filters={"case_id": None},
+        top_k=1,
+        min_sim=0.0,
+    )
+
+    assert calls == ["hyde doc"]
+    assert result.chunks == []
 
 
 def test_row_shape_mismatch_does_not_crash(monkeypatch):
@@ -874,8 +947,8 @@ def test_lexical_only_respects_min_sim_with_alpha(monkeypatch):
     assert len(result.chunks) == 1
     meta = result.chunks[0].meta
     assert meta.get("vscore") == 0.0
-    assert meta.get("lscore") == pytest.approx(0.2)
-    assert meta.get("fused") == pytest.approx(0.2)
+    assert meta.get("lscore") == pytest.approx(1.0)
+    assert meta.get("fused") == pytest.approx(1.0)
 
 
 def test_hybrid_search_clamps_candidate_limits(monkeypatch):

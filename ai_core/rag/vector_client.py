@@ -62,6 +62,12 @@ logger.info(
 _HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _NEAR_DUPLICATE_TOKEN_RE = re.compile(r"\w+")
 _PRIMARY_TEXT_HASH_KEYS = {"sha256": "crawler.primary_text_hash_sha256"}
+_HYDE_PROMPT_TEMPLATE = (
+    "Write a short, factual passage that would answer the question. "
+    "Keep it concise and information-dense.\n\n"
+    "Question:\n{query}\n\n"
+    "Passage:"
+)
 
 LIFECYCLE_ACTIVE = "active"
 LIFECYCLE_RETIRED = "retired"
@@ -1707,7 +1713,44 @@ class PgVectorClient:
         lex_limit_value = min(max_candidates_value, max(top_k, lex_limit_requested))
         query_norm = normalise_text(query)
         query_db_norm = normalise_text_db(query)
-        raw_vec = self._embed_query(query_norm)
+        raw_vec: List[float] | None = None
+        hyde_enabled = _get_bool_setting("RAG_HYDE_ENABLED", False)
+        if hyde_enabled and query_norm:
+            context = get_log_context()
+            hyde_metadata = {
+                "tenant_id": tenant,
+                "case_id": case_value,
+                "trace_id": context.get("trace_id"),
+                "prompt_version": "hyde-v1",
+            }
+            key_alias = context.get("key_alias")
+            if key_alias:
+                hyde_metadata["key_alias"] = key_alias
+            hyde_text = self._generate_hyde_document(query_norm, hyde_metadata)
+            if hyde_text:
+                try:
+                    raw_vec = self._embed_query(hyde_text)
+                except EmbeddingClientError as exc:
+                    logger.warning(
+                        "rag.hyde.embedding_failed",
+                        extra={
+                            "tenant_id": tenant,
+                            "case_id": case_value,
+                            "error": str(exc),
+                        },
+                    )
+                    raw_vec = None
+                else:
+                    logger.info(
+                        "rag.hyde.applied",
+                        extra={
+                            "tenant_id": tenant,
+                            "case_id": case_value,
+                            "hyde_chars": len(hyde_text),
+                        },
+                    )
+        if raw_vec is None:
+            raw_vec = self._embed_query(query_norm)
         is_zero_vec = True
         if raw_vec is not None:
             for value in raw_vec:
@@ -1901,6 +1944,20 @@ class PgVectorClient:
             distance_operator_value = None
             lexical_query_variant = "none"
             lexical_fallback_limit_value = None
+            lexical_mode_raw = str(_get_setting("RAG_LEXICAL_MODE", "trgm")).strip()
+            lexical_mode = (
+                "bm25"
+                if lexical_mode_raw.lower() in {"bm25", "tsvector", "fulltext"}
+                else "trgm"
+            )
+            if lexical_mode == "bm25":
+                lexical_score_sql = (
+                    "ts_rank_cd(c.text_tsv, plainto_tsquery('simple', %s)) AS lscore"
+                )
+                lexical_match_clause = "c.text_tsv @@ plainto_tsquery('simple', %s)"
+            else:
+                lexical_score_sql = "similarity(c.text_norm, %s) AS lscore"
+                lexical_match_clause = "c.text_norm %% %s"
 
             def _build_vector_sql(
                 where_sql_value: str, select_columns: str, order_by_clause: str
@@ -1920,7 +1977,7 @@ class PgVectorClient:
                 """
 
             def _build_lexical_primary_sql(
-                where_sql_value: str, select_columns: str
+                where_sql_value: str, select_columns: str, match_clause: str
             ) -> str:
                 return f"""
                     SELECT
@@ -1928,7 +1985,7 @@ class PgVectorClient:
                     FROM chunks c
                     JOIN documents d ON c.document_id = d.id
                     WHERE {where_sql_value}
-                      AND c.text_norm %% %s
+                      AND {match_clause}
                     ORDER BY lscore DESC
                     LIMIT %s
                 """
@@ -2116,22 +2173,12 @@ class PgVectorClient:
 
                         lexical_rows_local: List[tuple] = []
                         fallback_requires_rollback = False
-                        lexical_sql = f"""
-                            SELECT
-                                c.id,
-                                c.text,
-                                c.metadata,
-                                d.hash,
-                                d.id,
-                                c.collection_id,
-                                similarity(c.text_norm, %s) AS lscore
-                            FROM chunks c
-                            JOIN documents d ON c.document_id = d.id
-                            WHERE {where_sql}
-                              AND c.text_norm %% %s
-                            ORDER BY lscore DESC
-                            LIMIT %s
-                        """
+                        lexical_sql = _build_lexical_primary_sql(
+                            where_sql,
+                            "c.id,\n                                c.text,\n                                c.metadata,\n                                d.hash,\n                                d.id,\n                                c.collection_id,\n                                "
+                            + lexical_score_sql,
+                            lexical_match_clause,
+                        )
                         fallback_requested = requested_trgm_limit is not None
                         should_run_fallback = False
                         if query_db_norm.strip():
@@ -2731,7 +2778,9 @@ class PgVectorClient:
                             if lexical_query_variant == "primary":
                                 lexical_count_sql = _build_lexical_primary_sql(
                                     where_sql_without_deleted,
-                                    "c.id,\n                                    similarity(c.text_norm, %s) AS lscore",
+                                    "c.id,\n                                    "
+                                    + lexical_score_sql,
+                                    lexical_match_clause,
                                 )
                                 count_selects.append(
                                     f"SELECT id FROM ({lexical_count_sql}) AS lexical_candidates"
@@ -2859,18 +2908,10 @@ class PgVectorClient:
         )
 
         candidates: Dict[str, Dict[str, object]] = {}
-        for row in vector_rows:
+        vector_ranks: Dict[str, int] = {}
+        lexical_ranks: Dict[str, int] = {}
+        for rank, row in enumerate(vector_rows, start=1):
             score_candidate = self._extract_score_from_row(row, kind="vector")
-            raw_value: float | None = None
-            if score_candidate is not None:
-                try:
-                    raw_value = float(score_candidate)
-                except (TypeError, ValueError):
-                    raw_value = None
-                else:
-                    if math.isnan(raw_value) or math.isinf(raw_value):
-                        raw_value = None
-            vector_score_missing = raw_value is None
             (
                 chunk_id,
                 text_value,
@@ -2880,6 +2921,17 @@ class PgVectorClient:
                 collection_id,
                 score_raw,
             ) = self._normalise_result_row(row, kind="vector")
+            score_source = score_candidate if score_candidate is not None else score_raw
+            raw_value: float | None = None
+            if score_source is not None:
+                try:
+                    raw_value = float(score_source)
+                except (TypeError, ValueError):
+                    raw_value = None
+                else:
+                    if math.isnan(raw_value) or math.isinf(raw_value):
+                        raw_value = None
+            vector_score_missing = raw_value is None
             text_value = text_value or ""
             key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
             chunk_identifier = chunk_id if chunk_id is not None else key
@@ -2912,13 +2964,7 @@ class PgVectorClient:
             if vector_score_missing:
                 entry["_allow_below_cutoff"] = True
             else:
-                distance_value = float(raw_value)
-                if distance_score_mode == "inverse":
-                    distance_value = max(0.0, distance_value)
-                    vscore = 1.0 / (1.0 + distance_value)
-                else:
-                    vscore = max(0.0, 1.0 - float(distance_value))
-                entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
+                vector_ranks.setdefault(key, rank)
 
         # Only mark candidates as allowed-below-cutoff for exceptional cases.
         # We no longer blanket-allow all lexical candidates when a trigram
@@ -2926,18 +2972,8 @@ class PgVectorClient:
         # dedicated cutoff fallback stage below which selects only the best
         # needed candidates up to top_k.
 
-        for row in lexical_rows:
+        for rank, row in enumerate(lexical_rows, start=1):
             score_candidate = self._extract_score_from_row(row, kind="lexical")
-            raw_value: float | None = None
-            if score_candidate is not None:
-                try:
-                    raw_value = float(score_candidate)
-                except (TypeError, ValueError):
-                    raw_value = None
-                else:
-                    if math.isnan(raw_value) or math.isinf(raw_value):
-                        raw_value = None
-            lexical_score_missing = raw_value is None
             (
                 chunk_id,
                 text_value,
@@ -2947,6 +2983,17 @@ class PgVectorClient:
                 collection_id,
                 score_raw,
             ) = self._normalise_result_row(row, kind="lexical")
+            score_source = score_candidate if score_candidate is not None else score_raw
+            raw_value: float | None = None
+            if score_source is not None:
+                try:
+                    raw_value = float(score_source)
+                except (TypeError, ValueError):
+                    raw_value = None
+                else:
+                    if math.isnan(raw_value) or math.isinf(raw_value):
+                        raw_value = None
+            lexical_score_missing = raw_value is None
             text_value = text_value or ""
             key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
             chunk_identifier = chunk_id if chunk_id is not None else key
@@ -2977,22 +3024,55 @@ class PgVectorClient:
             if entry.get("doc_hash") is None and doc_hash is not None:
                 entry["doc_hash"] = doc_hash
 
-            score_source = raw_value if raw_value is not None else score_raw
-            try:
-                lscore_value = float(score_source) if score_source is not None else 0.0
-            except (TypeError, ValueError):
-                lscore_value = 0.0
-            if math.isnan(lscore_value) or math.isinf(lscore_value):
-                lscore_value = 0.0
-            lscore_value = max(0.0, lscore_value)
-            entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
-
             # Permit bypassing the min_sim cutoff only when the lexical score is
             # structurally missing (row shape/NaN), not merely because a trigram
             # fallback happened. The proper promotion of below-cutoff items is
             # handled later by the cutoff fallback logic which respects top_k.
             if lexical_score_missing:
                 entry["_allow_below_cutoff"] = True
+            else:
+                lexical_ranks.setdefault(key, rank)
+
+        has_vector_signal = (
+            bool(vector_rows)
+            and (query_vec is not None)
+            and (not query_embedding_empty)
+        )
+        has_lexical_signal = bool(lexical_rows)
+        if has_vector_signal and has_lexical_signal:
+            dense_weight = alpha_value
+            lexical_weight = 1.0 - alpha_value
+        elif has_vector_signal:
+            dense_weight = 1.0
+            lexical_weight = 0.0
+        elif has_lexical_signal:
+            dense_weight = 0.0
+            lexical_weight = 1.0
+        else:
+            dense_weight = 0.0
+            lexical_weight = 0.0
+
+        rrf_k_raw = _get_setting("RAG_RRF_K", 60)
+        try:
+            rrf_k = int(rrf_k_raw)
+        except (TypeError, ValueError):
+            rrf_k = 60
+        rrf_k = max(1, rrf_k)
+        rrf_scale = float(rrf_k + 1)
+
+        def _rrf_component(rank_value: Optional[int], weight: float) -> float:
+            if rank_value is None or rank_value <= 0 or weight <= 0.0:
+                return 0.0
+            return weight / (rrf_k + rank_value)
+
+        for key, entry in candidates.items():
+            v_rank = vector_ranks.get(key)
+            l_rank = lexical_ranks.get(key)
+            vscore_raw = _rrf_component(v_rank, dense_weight)
+            lscore_raw = _rrf_component(l_rank, lexical_weight)
+            entry["vscore"] = vscore_raw * rrf_scale
+            entry["lscore"] = lscore_raw * rrf_scale
+            entry["fused"] = float(entry["vscore"]) + float(entry["lscore"])
 
         try:
             logger.debug(
@@ -3028,12 +3108,7 @@ class PgVectorClient:
             },
         )
         results: List[Tuple[Chunk, bool]] = []
-        has_vector_signal = (
-            bool(vector_rows)
-            and (query_vec is not None)
-            and (not query_embedding_empty)
-        )
-        for entry in candidates.values():
+        for key, entry in candidates.items():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
             raw_meta = dict(
                 cast(Mapping[str, object] | None, entry.get("metadata")) or {}
@@ -3059,19 +3134,11 @@ class PgVectorClient:
                 lexical_preview = 0.0
             if math.isnan(lexical_preview) or math.isinf(lexical_preview):
                 lexical_preview = 0.0
-            if query_embedding_empty:
-                fused_preview = max(0.0, min(1.0, lexical_preview))
-            elif has_vector_signal:
-                fused_preview = max(
-                    0.0,
-                    min(
-                        1.0,
-                        alpha_value * vector_preview
-                        + (1.0 - alpha_value) * lexical_preview,
-                    ),
-                )
-            else:
-                fused_preview = max(0.0, min(1.0, lexical_preview))
+            try:
+                fused_preview = float(entry.get("fused", 0.0))
+            except (TypeError, ValueError):
+                fused_preview = 0.0
+            fused_preview = max(0.0, min(1.0, fused_preview))
             if tenant is not None:
                 if candidate_tenant is None:
                     reasons.append("tenant_missing")
@@ -3127,22 +3194,19 @@ class PgVectorClient:
                 vscore = float(entry.get("vscore", 0.0))
             except (TypeError, ValueError):
                 vscore = 0.0
-            if not has_vector_signal:
+            if math.isnan(vscore) or math.isinf(vscore):
                 vscore = 0.0
             try:
                 lscore = float(entry.get("lscore", 0.0))
             except (TypeError, ValueError):
                 lscore = 0.0
-            lscore = max(0.0, lscore)
-            if query_embedding_empty:
-                fused = max(0.0, min(1.0, lscore))
-            elif has_vector_signal:
-                fused = max(
-                    0.0,
-                    min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore),
-                )
-            else:
-                fused = max(0.0, min(1.0, lscore))
+            if math.isnan(lscore) or math.isinf(lscore):
+                lscore = 0.0
+            try:
+                fused = float(entry.get("fused", 0.0))
+            except (TypeError, ValueError):
+                fused = 0.0
+            fused = max(0.0, min(1.0, fused))
             meta["vscore"] = vscore
             meta["lscore"] = lscore
             meta["fused"] = fused
@@ -5525,6 +5589,64 @@ class PgVectorClient:
         floats = [float(v) for v in values]
         return "[" + ",".join(f"{value:.6f}" for value in floats) + "]"
 
+    def _generate_hyde_document(
+        self, query: str, metadata: Mapping[str, Any]
+    ) -> str | None:
+        label = str(_get_setting("RAG_HYDE_MODEL_LABEL", "simple-query")).strip()
+        if not label:
+            label = "simple-query"
+        max_chars_setting = _get_setting("RAG_HYDE_MAX_CHARS", 2000)
+        try:
+            max_chars = int(max_chars_setting)
+        except (TypeError, ValueError):
+            max_chars = 2000
+        max_chars = max(0, max_chars)
+        prompt = _HYDE_PROMPT_TEMPLATE.format(query=query)
+        tenant_id = metadata.get("tenant_id")
+        case_id = metadata.get("case_id")
+        try:
+            from ai_core.llm.client import LlmClientError, call as llm_call
+        except Exception as exc:
+            logger.warning(
+                "rag.hyde.unavailable",
+                extra={
+                    "tenant_id": tenant_id,
+                    "case_id": case_id,
+                    "error": str(exc),
+                },
+            )
+            return None
+        try:
+            response = llm_call(label, prompt, dict(metadata))
+        except LlmClientError as exc:
+            logger.warning(
+                "rag.hyde.failed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "case_id": case_id,
+                    "error": str(exc),
+                },
+            )
+            return None
+        text = response.get("text") if isinstance(response, Mapping) else None
+        if not isinstance(text, str):
+            return None
+        candidate = text.strip()
+        if not candidate:
+            return None
+        if max_chars and len(candidate) > max_chars:
+            candidate = candidate[:max_chars]
+        logger.info(
+            "rag.hyde.generated",
+            extra={
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "model_label": label,
+                "chars": len(candidate),
+            },
+        )
+        return candidate
+
     def _embed_query(self, query: str) -> List[float]:
         client = get_embedding_client()
         normalised = normalise_text(query)
@@ -5795,6 +5917,7 @@ def _resolve_django_dsn_if_available(*, dsn: str) -> str | None:
 
 
 _DEFAULT_CLIENT: Optional[VectorStore] = None
+_SCHEMA_CLIENTS: Dict[str, PgVectorClient] = {}
 
 
 def _resolve_vector_schema() -> str:
@@ -5864,11 +5987,27 @@ def get_default_client() -> PgVectorClient:
     return cast(PgVectorClient, _DEFAULT_CLIENT)
 
 
+def get_client_for_schema(schema: str | None) -> PgVectorClient:
+    schema_value = str(schema or "").strip() or _resolve_vector_schema()
+    client = _SCHEMA_CLIENTS.get(schema_value)
+    if client is None:
+        client = PgVectorClient.from_env(schema=schema_value)
+        _SCHEMA_CLIENTS[schema_value] = client
+    return client
+
+
+def reset_schema_clients() -> None:
+    for client in _SCHEMA_CLIENTS.values():
+        client.close()
+    _SCHEMA_CLIENTS.clear()
+
+
 def reset_default_client() -> None:
     global _DEFAULT_CLIENT
     if _DEFAULT_CLIENT is not None:
         _DEFAULT_CLIENT.close()
     _DEFAULT_CLIENT = None
+    reset_schema_clients()
 
 
 atexit.register(reset_default_client)

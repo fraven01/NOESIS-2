@@ -6,18 +6,31 @@ from ai_core.contracts.business import BusinessContext
 from ai_core.contracts.scope import ScopeContext
 from ai_core.nodes import retrieve
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.embedding_config import EmbeddingProfileConfig, VectorSpaceConfig
 from ai_core.rag.vector_store import VectorStoreRouter
 from ai_core.tool_contracts import ContextError, ToolContext
 
 
-class _DummyProfile:
-    def __init__(self, vector_space: str) -> None:
-        self.vector_space = vector_space
-
-
 class _DummyConfig:
-    def __init__(self, profile: str, vector_space: str) -> None:
-        self.embedding_profiles = {profile: _DummyProfile(vector_space)}
+    def __init__(self, profile: str, model_version: str) -> None:
+        self.vector_spaces = {
+            "global": VectorSpaceConfig(
+                id="global",
+                backend="pgvector",
+                schema="rag",
+                dimension=1536,
+            )
+        }
+        self.embedding_profiles = {
+            profile: EmbeddingProfileConfig(
+                id=profile,
+                model="dummy-model",
+                model_version=model_version,
+                dimension=1536,
+                vector_space="global",
+                chunk_hard_limit=512,
+            )
+        }
 
 
 class _HybridSearchResult:
@@ -201,14 +214,14 @@ def _tool_context(
     )
 
 
-def _patch_routing(monkeypatch, profile: str = "standard", space: str = "rag/global"):
+def _patch_routing(monkeypatch, profile: str = "standard", model_version: str = "v1"):
     monkeypatch.setattr(
         "ai_core.nodes.retrieve.resolve_embedding_profile",
         lambda *, tenant_id, process=None, doc_class=None, collection_id=None, workflow_id=None: profile,
     )
     monkeypatch.setattr(
         "ai_core.nodes.retrieve.get_embedding_configuration",
-        lambda: _DummyConfig(profile, space),
+        lambda: _DummyConfig(profile, model_version),
     )
 
 
@@ -343,7 +356,7 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert meta_payload.alpha == pytest.approx(0.55)
     assert meta_payload.min_sim == pytest.approx(0.35)
     assert meta_payload.routing.profile == "standard"
-    assert meta_payload.routing.vector_space_id == "rag/global"
+    assert meta_payload.routing.vector_space_id == "rag/standard@v1"
     assert meta_payload.visibility_effective == "active"
 
 

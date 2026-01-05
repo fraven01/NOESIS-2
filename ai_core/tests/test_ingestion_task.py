@@ -237,7 +237,7 @@ def test_run_ingestion_success(monkeypatch):
             "trace_id": "trace-xyz",
             "idempotency_key": "idem-1",
             "embedding_profile": "standard",
-            "vector_space_id": "global",
+            "vector_space_id": "rag/standard@v1",
             "case_status": None,
             "case_phase": None,
         }
@@ -256,13 +256,13 @@ def test_run_ingestion_success(monkeypatch):
     assert end_call["trace_id"] == "trace-xyz"
     assert end_call["idempotency_key"] == "idem-1"
     assert end_call["embedding_profile"] == "standard"
-    assert end_call["vector_space_id"] == "global"
+    assert end_call["vector_space_id"] == "rag/standard@v1"
     assert end_call["case_status"] is None
     assert end_call["case_phase"] is None
     assert apply_async_calls == []
     assert schema_calls == [
         {
-            "id": "global",
+            "id": "rag/standard@v1",
             "schema": "rag",
             "backend": "pgvector",
             "dimension": 1536,
@@ -361,7 +361,7 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     assert end_calls[0]["duration_ms"] == pytest.approx(400.0)
     assert schema_calls == [
         {
-            "id": "global",
+            "id": "rag/standard@v1",
             "schema": "rag",
             "backend": "pgvector",
             "dimension": 1536,
@@ -449,7 +449,7 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     assert end_calls[0]["duration_ms"] == pytest.approx(600.0)
     assert schema_calls == [
         {
-            "id": "global",
+            "id": "rag/standard@v1",
             "schema": "rag",
             "backend": "pgvector",
             "dimension": 1536,
@@ -519,7 +519,7 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
     assert end_calls[0]["duration_ms"] == pytest.approx(400.0)
     assert schema_calls == [
         {
-            "id": "global",
+            "id": "rag/standard@v1",
             "schema": "rag",
             "backend": "pgvector",
             "dimension": 1536,
