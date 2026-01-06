@@ -133,6 +133,8 @@ def stub_embedding_client(monkeypatch):
 
 pytest_plugins = [
     "tests.plugins.rag_db",
+    "tests.chaos.fixtures",
+    "tests.chaos.reporting",
 ]
 
 

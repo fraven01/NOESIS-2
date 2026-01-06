@@ -48,6 +48,8 @@ _Based on architectural analysis 2025-12-31. Pre-MVP; breaking changes and test 
 
 - [x] **Remove Fake Abstractions**: Delete ceremonial wrappers without value (pointers: `ai_core/services/__init__.py`, `ai_core/ingestion.py`, `ai_core/graphs/technical/universal_ingestion_graph.py`; implementation: direct imports of storage/captioner, use real ledger module; acceptance: boilerplate classes deleted, direct usage, tests passing)
 
+- [ ] **Simplify Adaptive Chunking Toggles (future)**: Keep only two flags and one "new" path (pointers: `ai_core/rag/chunking/hybrid_chunker.py`, `ai_core/rag/chunking/late_chunker.py`, `ai_core/rag/chunking/README.md`; implementation: route all chunking through HybridChunker, keep legacy path only when `RAG_ADAPTIVE_CHUNKING_ENABLED=false`, no alias settings; acceptance: two flags only, minimal metadata (`metadata.kind` + `parent_ref` for assets), unified chunk_id strategy, tests limited to core acceptance checks)
+
 ### P2 - Long-term Improvements (High Effort)
 
 - [x] **Break Up God Files** BREAKING: Split 2000+ line monoliths into focused modules (pointers: `ai_core/services/__init__.py` (2,034 lines: `execute_graph` L776-1231, `start_ingestion_run` L1234-1367, `handle_document_upload` L1577-2033), `theme/views.py` (2,055 lines); implementation: split into `ai_core/services/{graph_executor,ingestion,document_upload,components}.py`, split into `theme/views/{rag_tools,search,documents,validators}.py`; acceptance: no file >500 lines, clear module boundaries, imports updated, tests passing)

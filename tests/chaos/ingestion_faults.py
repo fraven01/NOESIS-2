@@ -15,7 +15,6 @@ from ai_core.rag import vector_client
 from tests.chaos.conftest import _build_chaos_meta
 
 pytestmark = pytest.mark.chaos
-pytest_plugins = ["tests.chaos.fixtures", "ai_core.tests.conftest"]
 
 
 def _rate_limit_reader(_path: str):

@@ -226,6 +226,8 @@ class TestChunkerConfig:
         assert config.late_chunk_model == "embedding"  # MODEL_ROUTING.yaml label
         assert config.enable_quality_metrics is True
         assert config.max_chunk_tokens == 450
+        assert config.adaptive_chunking_enabled is True
+        assert config.asset_chunks_enabled is True
 
     def test_chunker_config_custom(self):
         """Test ChunkerConfig with custom values."""
@@ -234,12 +236,16 @@ class TestChunkerConfig:
             late_chunk_model="custom-model",
             enable_quality_metrics=False,
             max_chunk_tokens=600,
+            adaptive_chunking_enabled=False,
+            asset_chunks_enabled=False,
         )
 
         assert config.mode == ChunkerMode.AGENTIC
         assert config.late_chunk_model == "custom-model"
         assert config.enable_quality_metrics is False
         assert config.max_chunk_tokens == 600
+        assert config.adaptive_chunking_enabled is False
+        assert config.asset_chunks_enabled is False
 
     def test_chunker_config_frozen(self):
         """Test that ChunkerConfig is frozen (immutable)."""

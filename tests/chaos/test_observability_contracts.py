@@ -17,7 +17,6 @@ import ai_core.infra.observability as observability
 from tests.chaos.conftest import _build_chaos_meta
 
 pytestmark = pytest.mark.chaos
-pytest_plugins = ["tests.chaos.fixtures"]
 
 
 def test_scope_context_tags_in_span_metadata(langfuse_mock, chaos_env):

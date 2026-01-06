@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Tuple
+from typing import Any, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID, uuid5
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,28 @@ class SentenceWindow:
     embedding: List[float] | None = None  # Optional embedding vector
 
 
+@dataclass(frozen=True)
+class TextSegment:
+    """Structured text segment derived from parsed blocks."""
+
+    index: int
+    text: str
+    kind: str
+    section_path: Tuple[str, ...]
+    page_index: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class TextRun:
+    """Contiguous run of segments sharing the same section path."""
+
+    index: int
+    section_path: Tuple[str, ...]
+    segments: Tuple[TextSegment, ...]
+    text: str
+    page_index: Optional[int] = None
+
+
 class LateChunker:
     """
     Late Chunking: Embed full document first, then chunk with contextual embeddings.
@@ -90,6 +112,8 @@ class LateChunker:
         window_size: int = 3,
         batch_size: int = 16,
         use_content_based_ids: bool = True,
+        adaptive_enabled: bool = True,
+        asset_chunks_enabled: bool = True,
     ):
         """
         Initialize Late Chunker.
@@ -105,6 +129,8 @@ class LateChunker:
             window_size: Sentences per window for embedding (Phase 2, default: 3)
             batch_size: Windows to embed in parallel (Phase 2, default: 16)
             use_content_based_ids: Use SHA256-based chunk IDs for determinism (Phase 2, default: True)
+            adaptive_enabled: Enable adaptive, structure-first chunking (default: True)
+            asset_chunks_enabled: Emit asset-derived chunks when available (default: True)
         """
         self.model = model
         self.max_tokens = max_tokens
@@ -118,6 +144,8 @@ class LateChunker:
         self.window_size = window_size
         self.batch_size = batch_size
         self.use_content_based_ids = use_content_based_ids
+        self.adaptive_enabled = adaptive_enabled
+        self.asset_chunks_enabled = asset_chunks_enabled
 
     def chunk(
         self,
@@ -134,6 +162,16 @@ class LateChunker:
         Returns:
             List of chunk dicts with chunk_id, text, parent_ref, metadata
         """
+        if not self.adaptive_enabled:
+            return self._chunk_legacy(parsed, context)
+        return self._chunk_adaptive(parsed, context)
+
+    def _chunk_legacy(
+        self,
+        parsed: Any,
+        context: Any,
+    ) -> List[Mapping[str, Any]]:
+        """Legacy Late Chunking path (kept for backward compatibility)."""
         # 1. Build full text from parsed blocks
         full_text, block_map = self._build_full_text(parsed)
 
@@ -177,6 +215,51 @@ class LateChunker:
 
         return chunks
 
+    def _chunk_adaptive(
+        self,
+        parsed: Any,
+        context: Any,
+    ) -> List[Mapping[str, Any]]:
+        """Adaptive, structure-first chunking with optional asset chunks."""
+        full_text, _block_map = self._build_full_text(parsed)
+        token_count = self._count_tokens(full_text)
+
+        if token_count > self.max_tokens:
+            logger.warning(
+                "late_chunker_document_too_long",
+                extra={
+                    "token_count": token_count,
+                    "max_tokens": self.max_tokens,
+                    "document_id": str(context.metadata.document_id),
+                    "chunker_mode": "adaptive",
+                },
+            )
+            chunks = self._chunk_by_sections_adaptive(parsed, context)
+        else:
+            runs = self._build_text_runs(parsed)
+            chunks = []
+            for run in runs:
+                run_chunks = self._chunk_run(run, context)
+                if run_chunks:
+                    chunks.extend(run_chunks)
+
+        if self.asset_chunks_enabled:
+            asset_chunks = self._build_asset_chunks(parsed, context)
+            if asset_chunks:
+                chunks.extend(asset_chunks)
+
+        logger.info(
+            "late_chunker_completed",
+            extra={
+                "chunk_count": len(chunks),
+                "document_id": str(context.metadata.document_id),
+                "token_count": token_count,
+                "chunker_mode": "adaptive",
+            },
+        )
+
+        return chunks
+
     def _build_full_text(self, parsed: Any) -> Tuple[str, dict]:
         """Build full text from parsed blocks, tracking block origins."""
         parts = []
@@ -199,6 +282,98 @@ class LateChunker:
             current_offset += len(text) + 2  # +2 for "\n\n" separator
 
         return "\n\n".join(parts), block_map
+
+    def _build_text_runs(self, parsed: Any) -> List[TextRun]:
+        """Group parsed blocks into structure-aware runs."""
+        segments: list[TextSegment] = []
+        for idx, block in enumerate(parsed.text_blocks):
+            text = block.text.strip()
+            if not text:
+                continue
+            section_path = tuple(block.section_path) if block.section_path else ()
+            segments.append(
+                TextSegment(
+                    index=idx,
+                    text=text,
+                    kind=str(block.kind),
+                    section_path=section_path,
+                    page_index=block.page_index,
+                )
+            )
+
+        if not segments:
+            return []
+
+        runs: list[TextRun] = []
+        current_segments: list[TextSegment] = []
+        current_section = segments[0].section_path
+        run_index = 0
+
+        for segment in segments:
+            force_boundary = segment.kind == "heading" and current_segments
+            if (
+                segment.section_path != current_section and current_segments
+            ) or force_boundary:
+                runs.append(
+                    self._finalize_text_run(
+                        run_index,
+                        current_section,
+                        current_segments,
+                    )
+                )
+                run_index += 1
+                current_segments = []
+                current_section = segment.section_path
+            current_segments.append(segment)
+
+        if current_segments:
+            runs.append(
+                self._finalize_text_run(run_index, current_section, current_segments)
+            )
+
+        return runs
+
+    def _finalize_text_run(
+        self,
+        index: int,
+        section_path: Tuple[str, ...],
+        segments: Sequence[TextSegment],
+    ) -> TextRun:
+        text_parts = [segment.text for segment in segments if segment.text]
+        text = "\n\n".join(text_parts)
+        page_index = next(
+            (
+                segment.page_index
+                for segment in segments
+                if segment.page_index is not None
+            ),
+            None,
+        )
+        return TextRun(
+            index=index,
+            section_path=section_path,
+            segments=tuple(segments),
+            text=text,
+            page_index=page_index,
+        )
+
+    def _chunk_run(
+        self,
+        run: TextRun,
+        context: Any,
+    ) -> List[Mapping[str, Any]]:
+        if not run.text:
+            return []
+        sentences = self._split_sentences(run.text)
+        if not sentences:
+            return []
+        boundaries = self._detect_boundaries(sentences, context)
+        return self._build_chunks_adaptive(
+            run=run,
+            sentences=sentences,
+            boundaries=boundaries,
+            document_id=context.metadata.document_id,
+        )
 
     def _count_tokens(self, text: str) -> int:
         """Estimate token count (rough heuristic: 1 token ≈ 4 chars)."""
@@ -730,6 +905,220 @@ class LateChunker:
             overlap_count += 1
 
         return sentences[-overlap_count:] if overlap_count > 0 else []
+
+    def _build_chunks_adaptive(
+        self,
+        *,
+        run: TextRun,
+        sentences: List[str],
+        boundaries: List[LateBoundary],
+        document_id: UUID,
+    ) -> List[Mapping[str, Any]]:
+        """Build adaptive text chunks with structure-aware metadata."""
+        chunks: list[Mapping[str, Any]] = []
+        parent_ref = self._resolve_text_parent_ref(run)
+        section_path = list(run.section_path) if run.section_path else []
+
+        for idx, boundary in enumerate(boundaries):
+            chunk_sentences = sentences[boundary.start_idx : boundary.end_idx]
+            chunk_text = " ".join(chunk_sentences)
+            if not chunk_text.strip():
+                continue
+            locator = f"run:{run.index}:{boundary.start_idx}:{boundary.end_idx}:{idx}"
+            chunk_id = self._build_adaptive_chunk_id(
+                document_id=document_id,
+                chunk_text=chunk_text,
+                kind="text",
+                parent_ref=parent_ref,
+                locator=locator,
+            )
+            chunk = {
+                "chunk_id": chunk_id,
+                "text": chunk_text,
+                "parent_ref": parent_ref,
+                "section_path": section_path,
+                "metadata": {
+                    "chunker": "late",
+                    "kind": "text",
+                    "sentence_range": (boundary.start_idx, boundary.end_idx),
+                    "similarity_score": boundary.similarity_score,
+                    "model": self.model,
+                    "dimension": self.dimension,
+                },
+            }
+            if run.page_index is not None:
+                chunk["page_index"] = run.page_index
+            chunks.append(chunk)
+
+        return chunks
+
+    def _resolve_text_parent_ref(self, run: TextRun) -> str:
+        if run.section_path:
+            return ">".join(run.section_path)
+        return f"section:{run.index}"
+
+    def _build_adaptive_chunk_id(
+        self,
+        *,
+        document_id: UUID,
+        chunk_text: str,
+        kind: str,
+        parent_ref: str,
+        locator: str,
+    ) -> str:
+        if self.use_content_based_ids:
+            normalized_text = chunk_text.lower().strip()
+            namespaced_content = f"{document_id}:{kind}:{parent_ref}:{normalized_text}"
+            chunk_hash = hashlib.sha256(namespaced_content.encode("utf-8")).hexdigest()
+            return f"sha256-{chunk_hash[:32]}"
+        locator_value = f"{kind}:{parent_ref}:{locator}"
+        return str(uuid5(document_id, f"chunk:{locator_value}"))
+
+    def _chunk_by_sections_adaptive(
+        self,
+        parsed: Any,
+        context: Any,
+    ) -> List[Mapping[str, Any]]:
+        """Adaptive fallback chunking when document exceeds max_tokens."""
+        logger.warning(
+            "late_chunker_fallback_to_sections",
+            extra={
+                "document_id": str(context.metadata.document_id),
+                "chunker_mode": "adaptive",
+            },
+        )
+        chunks: list[Mapping[str, Any]] = []
+        document_id = context.metadata.document_id
+        for idx, block in enumerate(parsed.text_blocks):
+            text = block.text.strip()
+            if not text:
+                continue
+            section_path = list(block.section_path) if block.section_path else []
+            parent_ref = (
+                ">".join(block.section_path) if block.section_path else f"block:{idx}"
+            )
+            chunk_text = text[:2048]
+            chunk_id = self._build_adaptive_chunk_id(
+                document_id=document_id,
+                chunk_text=chunk_text,
+                kind="text",
+                parent_ref=parent_ref,
+                locator=f"fallback:{idx}",
+            )
+            chunk = {
+                "chunk_id": chunk_id,
+                "text": chunk_text,
+                "parent_ref": parent_ref,
+                "section_path": section_path,
+                "metadata": {
+                    "chunker": "late-fallback",
+                    "kind": "text",
+                },
+            }
+            if block.page_index is not None:
+                chunk["page_index"] = block.page_index
+            chunks.append(chunk)
+        return chunks
+
+    def _build_asset_chunks(
+        self,
+        parsed: Any,
+        context: Any,
+    ) -> List[Mapping[str, Any]]:
+        assets = getattr(parsed, "assets", None)
+        if not assets:
+            return []
+        chunks: list[Mapping[str, Any]] = []
+        document_id = context.metadata.document_id
+
+        for index, asset in enumerate(assets):
+            chunk_text = self._build_asset_text(asset, index)
+            if not chunk_text:
+                continue
+            parent_ref = self._resolve_asset_parent_ref(asset, index, document_id)
+            chunk_id = self._build_adaptive_chunk_id(
+                document_id=document_id,
+                chunk_text=chunk_text,
+                kind="asset",
+                parent_ref=parent_ref,
+                locator=f"asset:{index}",
+            )
+            chunk = {
+                "chunk_id": chunk_id,
+                "text": chunk_text,
+                "parent_ref": parent_ref,
+                "section_path": [],
+                "metadata": {
+                    "chunker": "late",
+                    "kind": "asset",
+                    "model": self.model,
+                    "dimension": self.dimension,
+                },
+            }
+            page_index = getattr(asset, "page_index", None)
+            if page_index is not None:
+                chunk["page_index"] = page_index
+            chunks.append(chunk)
+
+        return chunks
+
+    def _build_asset_text(self, asset: Any, index: int) -> str:
+        parts: list[str] = []
+        metadata = getattr(asset, "metadata", None)
+        if isinstance(metadata, Mapping):
+            candidates = metadata.get("caption_candidates")
+            if isinstance(candidates, Sequence) and not isinstance(
+                candidates, (str, bytes, bytearray)
+            ):
+                for candidate in candidates:
+                    if not isinstance(candidate, (list, tuple)) or len(candidate) != 2:
+                        continue
+                    label, value = candidate
+                    value_text = str(value).strip()
+                    if not value_text:
+                        continue
+                    label_text = str(label).strip()
+                    if label_text:
+                        label_text = label_text.replace("_", " ").title()
+                        parts.append(f"{label_text}: {value_text}")
+                    else:
+                        parts.append(value_text)
+        context_before = getattr(asset, "context_before", None)
+        if context_before:
+            parts.append(f"Context Before: {context_before}")
+        context_after = getattr(asset, "context_after", None)
+        if context_after:
+            parts.append(f"Context After: {context_after}")
+        file_uri = getattr(asset, "file_uri", None)
+        if file_uri:
+            uri_text = str(file_uri)
+            name = uri_text.split("/")[-1].split("\\")[-1] or uri_text
+            parts.append(f"Filename: {name}")
+        if not parts:
+            media_type = getattr(asset, "media_type", "asset")
+            parts.append(f"Asset {index + 1} ({media_type})")
+        return "\n".join(part.strip() for part in parts if part.strip())
+
+    def _resolve_asset_parent_ref(
+        self,
+        asset: Any,
+        index: int,
+        document_id: UUID,
+    ) -> str:
+        from common.assets import deterministic_asset_path
+        from documents.contract_utils import normalize_string
+
+        metadata = getattr(asset, "metadata", None)
+        raw_locator = None
+        if isinstance(metadata, Mapping):
+            raw_locator = metadata.get("locator")
+        locator = ""
+        if raw_locator is not None:
+            locator = normalize_string(str(raw_locator))
+        if not locator:
+            locator = f"asset-index:{index}"
+        asset_id = uuid5(document_id, deterministic_asset_path(document_id, locator))
+        return str(asset_id)
 
     def _build_chunks(
         self,

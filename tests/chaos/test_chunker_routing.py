@@ -55,6 +55,8 @@ def test_chunker_config_structure():
     assert hasattr(config, "agentic_chunk_model")
     assert hasattr(config, "max_chunk_tokens")
     assert hasattr(config, "overlap_tokens")
+    assert hasattr(config, "adaptive_chunking_enabled")
+    assert hasattr(config, "asset_chunks_enabled")
 
     # Verify types
     assert isinstance(config.mode, ChunkerMode)
@@ -62,6 +64,8 @@ def test_chunker_config_structure():
     assert isinstance(config.late_chunk_max_tokens, int)
     assert isinstance(config.max_chunk_tokens, int)
     assert isinstance(config.overlap_tokens, int)
+    assert isinstance(config.adaptive_chunking_enabled, bool)
+    assert isinstance(config.asset_chunks_enabled, bool)
 
     # Verify sane defaults
     assert config.late_chunk_max_tokens > 0

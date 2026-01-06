@@ -8,6 +8,7 @@ import logging
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
+from django.utils import timezone
 from django_tenants.utils import schema_context
 
 from ai_core.contracts.scope import ScopeContext
@@ -806,7 +807,7 @@ class DbDocumentsRepository(DocumentsRepository):
                 return False
 
             document.lifecycle_state = "retired"
-            document.lifecycle_updated_at = datetime.now()
+            document.lifecycle_updated_at = timezone.now()
             document.save(update_fields=["lifecycle_state", "lifecycle_updated_at"])
             return True
 

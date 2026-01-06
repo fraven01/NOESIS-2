@@ -206,6 +206,180 @@ class TestLateChunker:
                 # OR immediately after (no overlap if not enough sentences)
                 assert next_range[0] <= curr_range[1]
 
+    def test_late_chunker_sets_kind_metadata(
+        self,
+        stub_embedding_client,
+        sample_parsed_result,
+        sample_processing_context,
+    ):
+        """Adaptive chunker sets metadata.kind for text chunks."""
+        chunker = LateChunker(
+            model="oai-embed-large",
+            max_tokens=8000,
+            target_tokens=450,
+            adaptive_enabled=True,
+        )
+
+        with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
+            mock_get_client.return_value = stub_embedding_client
+
+            chunks = chunker.chunk(sample_parsed_result, sample_processing_context)
+
+        assert len(chunks) > 0
+        assert all(chunk["metadata"]["kind"] == "text" for chunk in chunks)
+
+    def test_late_chunker_asset_chunks_enabled(
+        self,
+        stub_embedding_client,
+        sample_processing_context,
+    ):
+        """Asset chunks are emitted when enabled."""
+        from documents.parsers import ParsedAssetWithMeta, ParsedResult, ParsedTextBlock
+
+        parsed = ParsedResult(
+            text_blocks=[
+                ParsedTextBlock(
+                    kind="paragraph",
+                    text="Asset-aware text block.",
+                    section_path=("Assets",),
+                    page_index=None,
+                )
+            ],
+            assets=[
+                ParsedAssetWithMeta(
+                    media_type="image/png",
+                    file_uri="file:///tmp/asset.png",
+                    page_index=2,
+                    metadata={
+                        "locator": "asset-1",
+                        "caption_candidates": [("alt_text", "Asset caption")],
+                    },
+                )
+            ],
+            statistics={"block.count": 1},
+        )
+
+        chunker = LateChunker(
+            model="oai-embed-large",
+            adaptive_enabled=True,
+            asset_chunks_enabled=True,
+        )
+
+        with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
+            mock_get_client.return_value = stub_embedding_client
+
+            chunks = chunker.chunk(parsed, sample_processing_context)
+
+        asset_chunks = [
+            chunk for chunk in chunks if chunk["metadata"].get("kind") == "asset"
+        ]
+        assert asset_chunks, "Expected asset chunk when assets are present."
+        asset_chunk = asset_chunks[0]
+        assert asset_chunk["parent_ref"]
+        assert asset_chunk["page_index"] == 2
+
+    def test_late_chunker_asset_chunks_disabled(
+        self,
+        stub_embedding_client,
+        sample_processing_context,
+    ):
+        """Asset chunks are skipped when disabled."""
+        from documents.parsers import ParsedAssetWithMeta, ParsedResult, ParsedTextBlock
+
+        parsed = ParsedResult(
+            text_blocks=[
+                ParsedTextBlock(
+                    kind="paragraph",
+                    text="Asset-aware text block.",
+                    section_path=("Assets",),
+                    page_index=None,
+                )
+            ],
+            assets=[
+                ParsedAssetWithMeta(
+                    media_type="image/png",
+                    file_uri="file:///tmp/asset.png",
+                    metadata={"locator": "asset-1"},
+                )
+            ],
+            statistics={"block.count": 1},
+        )
+
+        chunker = LateChunker(
+            model="oai-embed-large",
+            adaptive_enabled=True,
+            asset_chunks_enabled=False,
+        )
+
+        with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
+            mock_get_client.return_value = stub_embedding_client
+
+            chunks = chunker.chunk(parsed, sample_processing_context)
+
+        assert not any(chunk["metadata"].get("kind") == "asset" for chunk in chunks)
+
+    def test_late_chunker_chunk_ids_include_parent_ref(
+        self,
+        stub_embedding_client,
+        sample_processing_context,
+    ):
+        """Identical text in different sections yields distinct chunk IDs."""
+        from documents.parsers import ParsedResult, ParsedTextBlock
+
+        parsed = ParsedResult(
+            text_blocks=[
+                ParsedTextBlock(
+                    kind="paragraph",
+                    text="Same text.",
+                    section_path=("Section A",),
+                    page_index=None,
+                ),
+                ParsedTextBlock(
+                    kind="paragraph",
+                    text="Same text.",
+                    section_path=("Section B",),
+                    page_index=None,
+                ),
+            ],
+            assets=[],
+            statistics={"block.count": 2},
+        )
+
+        chunker = LateChunker(
+            model="oai-embed-large",
+            target_tokens=1000,
+            adaptive_enabled=True,
+        )
+
+        with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
+            mock_get_client.return_value = stub_embedding_client
+
+            chunks = chunker.chunk(parsed, sample_processing_context)
+
+        assert len(chunks) == 2
+        assert chunks[0]["text"] == chunks[1]["text"]
+        assert chunks[0]["chunk_id"] != chunks[1]["chunk_id"]
+
+    def test_late_chunker_legacy_path_unchanged(
+        self,
+        stub_embedding_client,
+        sample_parsed_result,
+        sample_processing_context,
+    ):
+        """Legacy mode keeps metadata shape stable."""
+        chunker = LateChunker(
+            model="oai-embed-large",
+            adaptive_enabled=False,
+        )
+
+        with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
+            mock_get_client.return_value = stub_embedding_client
+
+            chunks = chunker.chunk(sample_parsed_result, sample_processing_context)
+
+        assert len(chunks) > 0
+        assert "kind" not in chunks[0]["metadata"]
+
 
 class TestLateChunkerPhase2:
     """Test Phase 2 SOTA embedding-based boundary detection features."""

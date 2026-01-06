@@ -220,7 +220,7 @@ def _patch_routing(monkeypatch, profile: str = "standard", model_version: str = 
         lambda *, tenant_id, process=None, doc_class=None, collection_id=None, workflow_id=None: profile,
     )
     monkeypatch.setattr(
-        "ai_core.nodes.retrieve.get_embedding_configuration",
+        "ai_core.rag.vector_space_resolver.get_embedding_configuration",
         lambda: _DummyConfig(profile, model_version),
     )
 

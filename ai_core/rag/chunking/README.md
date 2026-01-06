@@ -20,6 +20,11 @@ HybridChunker (Main Implementation)
 
 **Strategy**: Embed full document first, then chunk based on contextual embeddings.
 
+**Adaptive Mode (default)**:
+- Structure-first chunking over parsed blocks (section paths respected)
+- Emits asset chunks when available (caption/context/filename)
+- Legacy path available via `RAG_ADAPTIVE_CHUNKING_ENABLED=false`
+
 **Two-Phase Implementation**:
 
 ##### Phase 1: Jaccard Similarity (Stability Compromise)
@@ -283,6 +288,10 @@ RAG_USE_EMBEDDING_SIMILARITY = False  # Enable Phase 2 (default: False for gradu
 RAG_CHUNKING_WINDOW_SIZE = 3  # Sentences per window for embedding
 RAG_CHUNKING_BATCH_SIZE = 16  # Windows to embed in parallel
 RAG_USE_CONTENT_BASED_IDS = True  # Use SHA256-based chunk IDs (deterministic)
+
+# Adaptive Late Chunking
+RAG_ADAPTIVE_CHUNKING_ENABLED = True  # Structure-first late chunking
+RAG_ASSET_CHUNKS_ENABLED = True  # Emit asset-derived chunks
 ```
 
 ### Environment Variables (.env)
@@ -299,6 +308,10 @@ RAG_CHUNKING_BATCH_SIZE=16
 
 # Use content-based IDs for determinism across processes
 RAG_USE_CONTENT_BASED_IDS=true
+
+# Adaptive late chunking and asset chunks
+RAG_ADAPTIVE_CHUNKING_ENABLED=true
+RAG_ASSET_CHUNKS_ENABLED=true
 ```
 
 ## Content-based Chunk IDs & Collision Prevention

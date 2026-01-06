@@ -51,6 +51,8 @@ class ChunkerConfig:
     window_size: int = 3  # Sentences per window for embedding
     batch_size: int = 16  # Windows to embed in parallel
     use_content_based_ids: bool = True  # SHA256-hash IDs (deterministic)
+    adaptive_chunking_enabled: bool = True  # Adaptive, structure-first late chunking
+    asset_chunks_enabled: bool = True  # Emit asset-derived chunks
 
 
 def get_default_chunker_config() -> ChunkerConfig:
@@ -75,6 +77,10 @@ def get_default_chunker_config() -> ChunkerConfig:
         window_size=getattr(settings, "RAG_CHUNKING_WINDOW_SIZE", 3),
         batch_size=getattr(settings, "RAG_CHUNKING_BATCH_SIZE", 16),
         use_content_based_ids=getattr(settings, "RAG_USE_CONTENT_BASED_IDS", True),
+        adaptive_chunking_enabled=getattr(
+            settings, "RAG_ADAPTIVE_CHUNKING_ENABLED", True
+        ),
+        asset_chunks_enabled=getattr(settings, "RAG_ASSET_CHUNKS_ENABLED", True),
     )
 
 
@@ -146,6 +152,10 @@ def get_chunker_config_from_routing(
         window_size=getattr(settings, "RAG_CHUNKING_WINDOW_SIZE", 3),
         batch_size=getattr(settings, "RAG_CHUNKING_BATCH_SIZE", 16),
         use_content_based_ids=getattr(settings, "RAG_USE_CONTENT_BASED_IDS", True),
+        adaptive_chunking_enabled=getattr(
+            settings, "RAG_ADAPTIVE_CHUNKING_ENABLED", True
+        ),
+        asset_chunks_enabled=getattr(settings, "RAG_ASSET_CHUNKS_ENABLED", True),
     )
 
 
@@ -179,6 +189,8 @@ class HybridChunker:
             window_size=config.window_size,
             batch_size=config.batch_size,
             use_content_based_ids=config.use_content_based_ids,
+            adaptive_enabled=config.adaptive_chunking_enabled,
+            asset_chunks_enabled=config.asset_chunks_enabled,
         )
 
         # Initialize Agentic Chunker (Phase 2)

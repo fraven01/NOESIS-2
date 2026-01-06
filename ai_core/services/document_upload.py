@@ -17,13 +17,12 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from ai_core.contracts.business import BusinessContext
-from ai_core.rag.collections import (
-    MANUAL_COLLECTION_LABEL,
-    MANUAL_COLLECTION_SLUG,
-    ensure_manual_collection,
-    manual_collection_uuid,
-)
 from ai_core.rag.vector_client import get_default_client
+from documents.collection_service import (
+    CollectionService,
+    DEFAULT_MANUAL_COLLECTION_LABEL as MANUAL_COLLECTION_LABEL,
+    DEFAULT_MANUAL_COLLECTION_SLUG as MANUAL_COLLECTION_SLUG,
+)
 from ai_core.tool_contracts.base import tool_context_from_meta
 from customers.tenant_context import TenantContext
 from documents.contracts import DocumentRef, InlineBlob, NormalizedDocument
@@ -127,7 +126,7 @@ def handle_document_upload(
             status.HTTP_400_BAD_REQUEST,
         )
 
-    manual_collection_scope = str(manual_collection_uuid(tenant_obj))
+    manual_collection_scope = str(CollectionService.manual_collection_uuid(tenant_obj))
 
     manual_scope_assigned = False
 
@@ -141,7 +140,8 @@ def handle_document_upload(
     if not metadata_obj.get("collection_id"):
         manual_scope_assigned = True
         try:
-            ensure_manual_collection(tenant_obj)
+            collection_service = CollectionService()
+            collection_service.ensure_manual_collection(tenant_obj)
         except Exception:  # pragma: no cover - defensive guard
             # BREAKING CHANGE (Option A): case_id from business_context
             logger.warning(

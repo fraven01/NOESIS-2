@@ -12,10 +12,15 @@ from typing import Any, Dict, Iterable, List, Mapping, Tuple
 from _pytest.config import Config
 from _pytest.reports import TestReport
 
-from .fixtures import CHAOS_ENV_REGISTRY
-
 CHAOS_LOG_ROOT = Path("logs/app/chaos")
 _RUN_ID: str | None = None
+
+
+def _get_chaos_env_registry():
+    """Lazy import to avoid circular dependency."""
+    from .fixtures import CHAOS_ENV_REGISTRY
+
+    return CHAOS_ENV_REGISTRY
 
 
 def pytest_runtest_setup(item) -> None:
@@ -49,7 +54,7 @@ def pytest_runtest_logreport(report: TestReport) -> None:
         return
 
     metadata = _serialise_user_properties(report.user_properties)
-    env_state = CHAOS_ENV_REGISTRY.get(report.nodeid)
+    env_state = _get_chaos_env_registry().get(report.nodeid)
     if env_state is not None:
         metadata.setdefault("chaos_env", env_state.values)
     markers = metadata.pop("chaos_markers", None)
@@ -118,3 +123,10 @@ def _build_filename(nodeid: str) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", nodeid)
     return f"{timestamp}_{slug}.json"
+
+
+# Export CHAOS_ENV_REGISTRY for backwards compatibility (lazy loaded)
+def __getattr__(name):
+    if name == "CHAOS_ENV_REGISTRY":
+        return _get_chaos_env_registry()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

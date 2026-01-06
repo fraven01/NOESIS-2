@@ -32,7 +32,6 @@ from common.constants import (
 )
 
 pytestmark = [pytest.mark.chaos, pytest.mark.perf_smoke]
-pytest_plugins = ["tests.chaos.fixtures"]
 
 _STAGING_WEB_CONCURRENCY = 30
 _FAILURE_THRESHOLD = 0.05

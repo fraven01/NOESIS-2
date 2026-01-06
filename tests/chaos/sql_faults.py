@@ -21,7 +21,6 @@ from common.constants import (
 )
 
 pytestmark = pytest.mark.chaos
-pytest_plugins = ["tests.chaos.fixtures"]
 
 
 def _sql_down() -> bool:

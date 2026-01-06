@@ -235,33 +235,32 @@
 ---
 
 ### 2.4 Adaptive Chunking
-**Priorität**: P2 | **Aufwand**: L | **Status**: 🟢 Ready
+**Priorit?t**: P2 | **Aufwand**: L | **Status**: ✅ Done
 
 **Problem**: Fixed-Size-Chunking ignoriert Document-Semantik
 
 **Tasks**:
-- [ ] Document-Type-Detection:
-  - ML-Classifier (Naive Bayes): `narrative` | `list` | `table` | `code`
-  - Fallback: Heuristics (siehe `_estimate_overlap_ratio`)
-- [ ] Adaptive Chunk-Size:
-  - Narrative: `target_tokens=600`, `overlap=25%`
-  - List: `target_tokens=300`, `overlap=10%`
-  - Code: `target_tokens=800`, `overlap=30%`
-- [ ] Semantic-Boundary-Detection:
-  - Nutze LLM (agentic-chunk: gemini-3-flash-preview) für Boundary-Kandidaten
-  - Fallback: Sentence-Boundary + Pronoun-Analysis
-- [ ] Chunk-Quality-Score:
-  - Coherence: Cosine-Sim von Satz-Embeddings
-  - Completeness: Pronoun-Resolution-Rate
-  - Auto-Split bei Score < 0.6
+- [x] LateChunker erweitern (global aktiv, Default bleibt `late`)
+  - Structure-first Split (section_path + heading boundaries)
+  - Legacy-Late Pfad bei `RAG_ADAPTIVE_CHUNKING_ENABLED=false`
+- [x] Asset-Chunks (Option A)
+  - Nur wenn `RAG_ASSET_CHUNKS_ENABLED=true`
+  - Text basiert auf Caption/Alt/Filename (Provenienz als kurzer Prefix im Text)
+  - `parent_ref` deterministisch (Asset-ID falls vorhanden; sonst `document_id+page_index+ordinal`)
+- [x] Guardrails
+  - `metadata.kind` ist immer gesetzt und nur `text` oder `asset`
+  - Chunk-ID-Strategie ber?cksichtigt `kind` + `parent_ref` (keine Kollisionen)
+- [x] Flags (Notausg?nge)
+  - `RAG_ADAPTIVE_CHUNKING_ENABLED=true` (default); `false` = alter Late-Pfad
+  - `RAG_ASSET_CHUNKS_ENABLED=true` (default); `false` = keine Asset-Chunks
 
 **Acceptance Criteria**:
-- Narrative-Docs: +20% Coherence-Score
-- List-Docs: -15% Chunk-Count (weniger Redundanz)
-- Code-Docs: +30% Retrieval-Precision
+- Asset-Chunks werden persisted + embedded, wenn `RAG_ASSET_CHUNKS_ENABLED=true`
+- `metadata.kind` ist immer gesetzt (`text`/`asset`)
+- `parent_ref` ist f?r Asset-Chunks immer gesetzt und deterministisch
+- `page_index` ist gesetzt, wenn verf?gbar
 
 **Dependencies**: 2.1
-
 ---
 
 ## 3. Observability & Debugging (P0 - Critical)

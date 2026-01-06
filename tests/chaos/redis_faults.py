@@ -29,7 +29,6 @@ from common.constants import (
 from tests.chaos.conftest import _build_chaos_meta
 
 pytestmark = pytest.mark.chaos
-pytest_plugins = ["tests.chaos.fixtures"]
 
 
 def _redis_down() -> bool:
