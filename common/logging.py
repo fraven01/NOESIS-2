@@ -48,6 +48,7 @@ _CONTEXT_FIELDS: tuple[str, ...] = (
     "span_id",
     "case_id",
     "tenant_id",
+    "task_id",
     "key_alias",
     "collection_id",
     "workflow_id",
@@ -321,7 +322,7 @@ def _ensure_trace_keys(
                 continue
             event_dict[field] = mask_value(raw_value) if mask else str(raw_value)
 
-    for key in ("trace_id", "span_id", "case_id", "tenant_id"):
+    for key in ("trace_id", "span_id", "case_id", "tenant_id", "task_id"):
         event_dict.setdefault(key, None)
 
     return event_dict
@@ -948,6 +949,7 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
         "span_id": None,
         "case_id": None,
         "tenant_id": None,
+        "task_id": None,
         "workflow_id": None,
         "run_id": None,
         "ingestion_run_id": None,

@@ -12,6 +12,7 @@ import environ
 from noesis2.api import schema as api_schema
 
 from common.logging import configure_logging
+from celery.schedules import crontab
 from kombu import Queue
 
 
@@ -465,6 +466,11 @@ CELERY_BEAT_SCHEDULE = {
     "dlq-alert": {
         "task": "ai_core.tasks.alert_dead_letter",
         "schedule": timedelta(seconds=CELERY_DLQ_ALERT_S),
+        "options": {"queue": "default"},
+    },
+    "rag-embedding-drift": {
+        "task": "ai_core.tasks.embedding_drift_check",
+        "schedule": crontab(day_of_month=1, hour=2, minute=0),
         "options": {"queue": "default"},
     },
 }

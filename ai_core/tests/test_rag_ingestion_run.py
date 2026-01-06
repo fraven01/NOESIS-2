@@ -2,7 +2,6 @@ from datetime import datetime, timezone as dt_timezone
 import json
 from pathlib import Path
 import uuid
-from types import SimpleNamespace
 
 import pytest
 from django.utils import timezone
@@ -36,32 +35,12 @@ def test_rag_ingestion_run_queues_task(
     captured = {}
     document_id = uuid.uuid4()
 
-    def fake_delay(
-        tenant_id,
-        case_id,
-        document_ids,
-        embedding_profile,
-        *,
-        run_id,
-        trace_id=None,
-        idempotency_key=None,
-        tenant_schema=None,
-    ):
-        captured.update(
-            {
-                "tenant_id": tenant_id,
-                "case_id": case_id,
-                "document_ids": document_ids,
-                "embedding_profile": embedding_profile,
-                "run_id": run_id,
-                "trace_id": trace_id,
-                "idempotency_key": idempotency_key,
-                "tenant_schema": tenant_schema,
-            }
-        )
+    def fake_enqueue(task, *, state, meta):
+        captured["state"] = state
+        captured["meta"] = meta
 
     monkeypatch.setattr(
-        "ai_core.views.run_ingestion", SimpleNamespace(delay=fake_delay)
+        "ai_core.services.ingestion._enqueue_ingestion_task", fake_enqueue
     )
 
     fixed_now = datetime(2024, 1, 1, 12, 0, tzinfo=dt_timezone.utc)
@@ -90,16 +69,17 @@ def test_rag_ingestion_run_queues_task(
     assert body["idempotent"] is False
     assert body["ingestion_run_id"]
 
-    assert captured == {
+    state = captured["state"]
+    assert state == {
         "tenant_id": test_tenant_schema_name,
         "case_id": "upload",
         "document_ids": [str(document_id)],
         "embedding_profile": "standard",
-        "trace_id": body["trace_id"],
-        "run_id": body["ingestion_run_id"],
-        "idempotency_key": None,
         "tenant_schema": test_tenant_schema_name,
+        "run_id": body["ingestion_run_id"],
+        "trace_id": body["trace_id"],
     }
+    assert "tool_context" in captured["meta"]
 
 
 @pytest.mark.django_db
@@ -126,24 +106,14 @@ def test_rag_ingestion_run_persists_collection_header_scope(
 
     collection_scope = str(uuid.uuid4())
 
-    def _assert_scope_persisted(
-        tenant_id,
-        case_id,
-        document_ids,
-        embedding_profile,
-        *,
-        run_id,
-        trace_id=None,
-        idempotency_key=None,
-        tenant_schema=None,
-    ):
-        assert list(document_ids) == [document_id]
+    def _assert_scope_persisted(task, *, state, meta):
+        assert list(state["document_ids"]) == [document_id]
         persisted = json.loads(meta_path.read_text())
         assert persisted["collection_id"] == collection_scope
 
     monkeypatch.setattr(
-        "ai_core.views.run_ingestion",
-        SimpleNamespace(delay=_assert_scope_persisted),
+        "ai_core.services.ingestion._enqueue_ingestion_task",
+        _assert_scope_persisted,
     )
 
     response = authenticated_client.post(

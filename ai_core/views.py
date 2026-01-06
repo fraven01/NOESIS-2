@@ -2107,25 +2107,6 @@ class RagHardDeleteAdminView(APIView):
 
         actor = _resolve_hard_delete_actor(request, operator_label)
 
-        async_result = hard_delete.delay(
-            tenant_id,
-            document_ids,
-            reason,
-            ticket_ref,
-            actor=actor,
-            tenant_schema=tenant_schema,
-            trace_id=trace_id,
-        )
-
-        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
-        response_payload = {
-            "status": "queued",
-            "job_id": getattr(async_result, "id", None),
-            "trace_id": trace_id,
-            "documents_requested": len(document_ids),
-            "idempotent": idempotent,
-        }
-
         scope_context = ScopeContext.model_validate(
             {
                 "tenant_id": tenant_id,
@@ -2146,6 +2127,28 @@ class RagHardDeleteAdminView(APIView):
                 mode="json", exclude_none=True
             ),
             "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+        }
+        state = {
+            "tenant_id": tenant_id,
+            "document_ids": document_ids,
+            "reason": reason,
+            "ticket_ref": ticket_ref,
+            "tenant_schema": tenant_schema,
+            "trace_id": trace_id,
+        }
+
+        async_result = hard_delete.delay(
+            state,
+            meta,
+            actor=actor,
+        )
+        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
+        response_payload = {
+            "status": "queued",
+            "job_id": getattr(async_result, "id", None),
+            "trace_id": trace_id,
+            "documents_requested": len(document_ids),
+            "idempotent": idempotent,
         }
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)

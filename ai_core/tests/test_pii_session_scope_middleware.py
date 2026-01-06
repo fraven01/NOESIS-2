@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from celery import chain, current_app
 from celery.canvas import Signature, _chain
@@ -7,6 +9,8 @@ from django.http import HttpResponse
 from django.test import RequestFactory
 from django_tenants.utils import get_public_schema_name, schema_context
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.infra.pii import mask_text
 from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.policy import get_session_scope
@@ -382,7 +386,7 @@ def test_request_to_task_chain_preserves_session_scope(
         abstract = False
         name = "tests.capture_scope_task"
 
-        def run(self, step: str) -> str:  # type: ignore[override]
+        def run(self, step: str, meta: dict[str, object] | None = None) -> str:  # type: ignore[override]
             config = get_pii_config()
             masked = mask_text(
                 "Email a@b.de bitte prüfen",
@@ -434,25 +438,43 @@ def test_request_to_task_chain_preserves_session_scope(
         request_tokens.append(masked)
         tenant_obj = getattr(request, "tenant", None)
         tenant_kwarg = getattr(tenant_obj, "id", None)
+        tenant_scope_id = (
+            str(tenant_kwarg)
+            if tenant_kwarg is not None
+            else request.META["HTTP_X_TENANT_ID"]
+        )
         scope = {
-            "tenant_id": (
-                tenant_kwarg
-                if tenant_kwarg is not None
-                else request.META["HTTP_X_TENANT_ID"]
-            ),
+            "tenant_id": tenant_scope_id,
             "case_id": request.META["HTTP_X_CASE_ID"],
             "trace_id": request.META["HTTP_X_TRACE_ID"],
             "session_salt": "||".join(
                 (
                     request.META["HTTP_X_TRACE_ID"],
                     request.META["HTTP_X_CASE_ID"],
-                    request.META["HTTP_X_TENANT_ID"],
+                    tenant_scope_id,
                 )
             ),
         }
+        scope_context = ScopeContext.model_validate(
+            {
+                "tenant_id": str(scope["tenant_id"]),
+                "trace_id": scope["trace_id"],
+                "invocation_id": uuid4().hex,
+                "run_id": uuid4().hex,
+            }
+        )
+        business_context = BusinessContext(case_id=scope["case_id"])
+        tool_context = scope_context.to_tool_context(business=business_context)
+        meta = {
+            "scope_context": scope_context.model_dump(mode="json", exclude_none=True),
+            "business_context": business_context.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+        }
         pipeline = chain(
-            capture_task.s(step="producer"),
-            capture_task.s(step="worker"),
+            capture_task.s(step="producer", meta=meta),
+            capture_task.s(step="worker", meta=meta),
         )
         with_scope_apply_async(pipeline, scope)
         return HttpResponse(masked)
@@ -478,7 +500,7 @@ def test_request_to_task_chain_preserves_session_scope(
             (
                 scope_headers_shared["HTTP_X_TRACE_ID"],
                 scope_headers_shared["HTTP_X_CASE_ID"],
-                scope_headers_shared["HTTP_X_TENANT_ID"],
+                tenant_scope_id,
             )
         ),
     )

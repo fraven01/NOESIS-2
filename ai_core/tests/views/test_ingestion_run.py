@@ -122,13 +122,15 @@ def test_ingestion_run_normalises_payload_before_dispatch(
 
     dispatched: dict[str, object] = {}
 
-    def _fake_delay(tenant, case, document_ids, profile_id, **kwargs):
-        dispatched["args"] = (tenant, case, document_ids, profile_id)
-        dispatched["kwargs"] = kwargs
+    def _fake_enqueue(task, *, state, meta):
+        dispatched["state"] = state
+        dispatched["meta"] = meta
 
     monkeypatch.setattr(views, "partition_document_ids", _fake_partition)
     monkeypatch.setattr(views, "resolve_ingestion_profile", _fake_resolve)
-    monkeypatch.setattr(views.run_ingestion, "delay", _fake_delay)
+    monkeypatch.setattr(
+        "ai_core.services.ingestion._enqueue_ingestion_task", _fake_enqueue
+    )
 
     raw_id = str(uuid.uuid4())
     response = authenticated_client.post(
@@ -150,6 +152,6 @@ def test_ingestion_run_normalises_payload_before_dispatch(
     assert response.status_code == 202
     assert captured["resolved_profile_input"] == "standard"
     assert captured["partition_args"][2] == [raw_id]
-    assert dispatched["args"][2] == ["doc-trimmed"]
-    assert dispatched["args"][3] == "standard"
-    assert dispatched["kwargs"]["tenant_schema"] == test_tenant_schema_name
+    assert dispatched["state"]["document_ids"] == ["doc-trimmed"]
+    assert dispatched["state"]["embedding_profile"] == "standard"
+    assert dispatched["state"]["tenant_schema"] == test_tenant_schema_name

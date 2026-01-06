@@ -96,7 +96,7 @@ def test_ingestion_submit_real_service_call(settings, tenant_pool):
         mock_build_graph.return_value = mock_graph
 
         # We also need to mock _enqueue_ingestion_task to avoid Celery
-        with patch("ai_core.services._enqueue_ingestion_task"):
+        with patch("ai_core.services.ingestion._enqueue_ingestion_task"):
             response = ingestion_submit(request)
 
             assert response.status_code == 200

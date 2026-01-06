@@ -62,29 +62,30 @@ logger.info("ingestion.start", extra=extra)
 ```python
 # ai_core/tasks.py (refactored)
 from structlog import contextvars
+from ai_core.tool_contracts.base import tool_context_from_meta
 
 def run_ingestion_graph(
-    tenant_id: str,
-    document_id: UUID,
-    ingestion_run_id: UUID,
-    trace_id: str,
-    # ... weitere Parameter
+    state: dict,
+    meta: dict | None = None,
 ):
+    context = tool_context_from_meta(meta or {})
+    scope = context.scope
+    business = context.business
     # 1. Binde Scope + Business Context EINMAL am Task-Start
     contextvars.bind_contextvars(
         # Scope Context (Layer 1 Norm - AGENTS.md)
-        tenant_id=tenant_id,
-        trace_id=trace_id,
-        invocation_id=str(ingestion_run_id),  # Standardisiert
-        ingestion_run_id=str(ingestion_run_id),
+        tenant_id=scope.tenant_id,
+        trace_id=scope.trace_id,
+        invocation_id=scope.invocation_id,
+        ingestion_run_id=scope.ingestion_run_id,
 
         # Business Context (Layer 2 Norm - AGENTS.md)
-        workflow_id=workflow_id,
-        document_id=str(document_id),
-        collection_id=str(collection_id) if collection_id else None,
+        workflow_id=business.workflow_id,
+        document_id=business.document_id,
+        collection_id=business.collection_id,
 
         # Technische Metadaten
-        vector_space_id=vector_space_id,
+        vector_space_id=state.get("vector_space_id"),
     )
 
     # 2. Logge OHNE extra - Kontext ist automatisch dabei

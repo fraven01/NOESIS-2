@@ -37,6 +37,7 @@ from .ingestion_status import (
     mark_ingestion_run_completed,
     mark_ingestion_run_running,
 )
+from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.tools import InputError
 from cases.models import Case
 
@@ -576,20 +577,57 @@ def partition_document_ids(
     queue="ingestion",
     bind=True,
     max_retries=3,
-    accepts_scope=True,
 )
 def process_document(
     self,
-    tenant: str,
-    case: str | None,
-    document_id: str,
-    embedding_profile: str,
-    tenant_schema: Optional[str] = None,
-    trace_id: Optional[str] = None,
-    **kwargs,
+    state: Mapping[str, object],
+    meta: Optional[Mapping[str, object]] = None,
+    *,
+    reembed_progress_key: Optional[str] = None,
 ) -> Dict[str, object]:
-    kwargs.pop("session_salt", None)
-    reembed_progress_key = kwargs.pop("reembed_progress_key", None)
+    state_payload = dict(state or {})
+    tool_context = None
+    if isinstance(meta, Mapping):
+        try:
+            tool_context = tool_context_from_meta(meta)
+        except (TypeError, ValueError):
+            tool_context = None
+
+    def _coerce_str(value: object | None) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip()
+            return candidate or None
+        try:
+            return str(value).strip() or None
+        except Exception:
+            return None
+
+    tenant = _coerce_str(state_payload.get("tenant_id")) or (
+        tool_context.scope.tenant_id if tool_context else None
+    )
+    case = _coerce_str(state_payload.get("case_id")) or (
+        tool_context.business.case_id if tool_context else None
+    )
+    trace_id = _coerce_str(state_payload.get("trace_id")) or (
+        tool_context.scope.trace_id if tool_context else None
+    )
+    tenant_schema = _coerce_str(state_payload.get("tenant_schema")) or (
+        tool_context.scope.tenant_schema if tool_context else None
+    )
+    document_id = _coerce_str(state_payload.get("document_id"))
+    embedding_profile = _coerce_str(state_payload.get("embedding_profile"))
+    if reembed_progress_key is None:
+        reembed_progress_key = _coerce_str(state_payload.get("reembed_progress_key"))
+
+    if not tenant:
+        raise InputError("missing_tenant_id", "tenant_id is required")
+    if not document_id:
+        raise InputError("missing_document_id", "document_id is required")
+    if not embedding_profile:
+        raise InputError("missing_embedding_profile", "embedding_profile is required")
+
     started = time.perf_counter()
 
     # Graph Migration: Load minimal state primarily for error tracking
@@ -805,22 +843,82 @@ def process_document(
         raise self.retry(exc=exc, countdown=countdown)
 
 
-@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=False)
 def run_ingestion(
-    tenant: str,
-    case: str | None,
-    document_ids: List[str],
-    embedding_profile: str,
+    state: Mapping[str, object],
+    meta: Optional[Mapping[str, object]] = None,
     *,
-    run_id: str,
-    trace_id: Optional[str] = None,
-    idempotency_key: Optional[str] = None,
-    tenant_schema: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
     dead_letter_queue: Optional[str] = None,
-    session_salt: Optional[str] = None,  # noqa: ARG001 - propagated by ScopedTask
-    session_scope: Optional[Tuple[str, str, str]] = None,  # noqa: ARG001 - unused hook
 ) -> Dict[str, object]:
+    state_payload = dict(state or {})
+    tool_context = None
+    if isinstance(meta, Mapping):
+        try:
+            tool_context = tool_context_from_meta(meta)
+        except (TypeError, ValueError):
+            tool_context = None
+
+    def _coerce_str(value: object | None) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip()
+            return candidate or None
+        try:
+            return str(value).strip() or None
+        except Exception:
+            return None
+
+    tenant = _coerce_str(state_payload.get("tenant_id")) or (
+        tool_context.scope.tenant_id if tool_context else None
+    )
+    case = _coerce_str(state_payload.get("case_id")) or (
+        tool_context.business.case_id if tool_context else None
+    )
+    trace_id = _coerce_str(state_payload.get("trace_id")) or (
+        tool_context.scope.trace_id if tool_context else None
+    )
+    run_id = (
+        _coerce_str(state_payload.get("run_id"))
+        or (tool_context.scope.ingestion_run_id if tool_context else None)
+        or (tool_context.scope.run_id if tool_context else None)
+    )
+    embedding_profile = _coerce_str(state_payload.get("embedding_profile"))
+    idempotency_key = _coerce_str(state_payload.get("idempotency_key")) or (
+        tool_context.scope.idempotency_key if tool_context else None
+    )
+    tenant_schema = _coerce_str(state_payload.get("tenant_schema")) or (
+        tool_context.scope.tenant_schema if tool_context else None
+    )
+
+    if timeout_seconds is None:
+        timeout_candidate = state_payload.get("timeout_seconds")
+        try:
+            timeout_seconds = (
+                float(timeout_candidate) if timeout_candidate is not None else None
+            )
+        except (TypeError, ValueError):
+            timeout_seconds = None
+    if dead_letter_queue is None:
+        dead_letter_queue = _coerce_str(state_payload.get("dead_letter_queue"))
+
+    document_ids: List[str] = []
+    document_ids_raw = state_payload.get("document_ids")
+    if isinstance(document_ids_raw, (list, tuple)):
+        for entry in document_ids_raw:
+            candidate = _coerce_str(entry)
+            if candidate:
+                document_ids.append(candidate)
+    else:
+        candidate = _coerce_str(document_ids_raw)
+        if candidate:
+            document_ids.append(candidate)
+
+    if not document_ids:
+        raise InputError("missing_document_ids", "document_ids is required")
+    if not embedding_profile:
+        raise InputError("missing_embedding_profile", "embedding_profile is required")
     if not tenant:
         raise InputError("missing_tenant_id", "tenant_id is required")
     if not run_id:
@@ -929,12 +1027,15 @@ def run_ingestion(
         if valid_ids:
             job_group = group(
                 process_document.s(
-                    tenant,
-                    case,
-                    doc_id,
-                    resolved_profile_id,
-                    tenant_schema,
-                    trace_id,
+                    {
+                        "tenant_id": tenant,
+                        "case_id": case,
+                        "document_id": doc_id,
+                        "embedding_profile": resolved_profile_id,
+                        "tenant_schema": tenant_schema,
+                        "trace_id": trace_id,
+                    },
+                    meta,
                 )
                 for doc_id in valid_ids
             )
@@ -1255,7 +1356,6 @@ def _safe_dispatch_dead_letters(
     base=ScopedTask,
     queue="dead_letter",
     name="ai_core.ingestion.dead_letter",
-    accepts_scope=True,
 )
 def record_dead_letter(payload: Dict[str, object]) -> None:
     log.error("Ingestion dead letter", extra=payload)

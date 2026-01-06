@@ -200,19 +200,9 @@ def web_search(request):
             collection_id=collection_id,
         )
 
-        # Build context_payload as nested + flattened dict (hybrid for compatibility)
+        col_tool_context = col_scope.to_tool_context(business=col_business)
         col_context_payload = {
-            # ToolContext structure (for model_validate)
-            "scope": col_scope.model_dump(mode="json"),
-            "business": col_business.model_dump(mode="json"),
-            "metadata": {},
-            # Flattened fields for backward compatibility
-            "tenant_id": tenant_id,
-            "workflow_id": "collection-search-manual",
-            "case_id": case_id,
-            "trace_id": trace_id,
-            "run_id": run_id,
-            "user_id": user_id,
+            "tool_context": col_tool_context.model_dump(mode="json", exclude_none=True)
         }
 
         col_graph = build_collection_search_graph()

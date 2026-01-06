@@ -48,6 +48,12 @@ _Based on architectural analysis 2025-12-31. Pre-MVP; breaking changes and test 
 
 - [x] **Remove Fake Abstractions**: Delete ceremonial wrappers without value (pointers: `ai_core/services/__init__.py`, `ai_core/ingestion.py`, `ai_core/graphs/technical/universal_ingestion_graph.py`; implementation: direct imports of storage/captioner, use real ledger module; acceptance: boilerplate classes deleted, direct usage, tests passing)
 
+- [x] **Remove hybrid ToolContext payload in workbench web search** BREAKING: Stop sending flattened `tenant_id`/`case_id`/etc alongside ToolContext when invoking collection search (pointers: `theme/views_web_search.py`, `ai_core/graphs/technical/collection_search.py`; acceptance: collection search reads from `meta["tool_context"]` (or ToolContext validation) only, no flattened fields in meta, tests updated)
+
+- [x] **Drop legacy tenant/case metadata keys in LLM scoring** BREAKING: Remove `tenant`/`case` fallback keys and duplicated fields in scoring metadata (pointers: `llm_worker/graphs/score_results.py:_build_metadata`, `ai_core/llm/client.py:call`; acceptance: only `tenant_id`/`case_id` accepted in metadata, no legacy key fallback, tests updated)
+
+- [x] **Enforce ingestion task signature (state/meta only)** BREAKING: Remove legacy args/kwargs fallback and `state` detection in ingestion enqueue (pointers: `ai_core/services/ingestion.py:_enqueue_ingestion_task`, `ai_core/tasks.py`, `ai_core/views.py`; acceptance: ingestion tasks accept `state, meta` only, legacy args/kwargs removed, tests updated)
+
 - [ ] **Simplify Adaptive Chunking Toggles (future)**: Keep only two flags and one "new" path (pointers: `ai_core/rag/chunking/hybrid_chunker.py`, `ai_core/rag/chunking/late_chunker.py`, `ai_core/rag/chunking/README.md`; implementation: route all chunking through HybridChunker, keep legacy path only when `RAG_ADAPTIVE_CHUNKING_ENABLED=false`, no alias settings; acceptance: two flags only, minimal metadata (`metadata.kind` + `parent_ref` for assets), unified chunk_id strategy, tests limited to core acceptance checks)
 
 ### P2 - Long-term Improvements (High Effort)
@@ -67,6 +73,10 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 - [x] **State Dict -> Dataclasses**: Replace manual dict building with typed dataclasses (pointers: `ai_core/services/crawler_runner.py:298-314` (synthesized_state, entry dicts built manually); implementation: create typed dataclasses for common state shapes, use Pydantic models for serialization; acceptance: no manual dict building for structured data, type-safe state management)
 
 ## Semantics / IDs
+
+- [ ] Clean-state graph input schema for collection_search (BREAKING): move graph state to ToolContext only (pointers: `ai_core/graphs/technical/collection_search.py`, `ai_core/views.py`, `theme/views_web_search.py`, `ai_core/tests/graphs/test_collection_search_graph.py`; acceptance: state includes `tool_context` only, no flat context dict access, views build ToolContext, tests updated)
+- [ ] Enforce GraphIOSpec + versioned I/O for collection_search (BREAKING): add GraphIOSpec and validate schema_id/schema_version at boundary (pointers: `ai_core/graph/io.py`, `ai_core/graphs/technical/collection_search.py`, `ai_core/tests/graphs/test_collection_search_graph.py`; acceptance: GraphIOSpec attached to graph, boundary validation enforced, tests updated)
+- [ ] Remove legacy context surface (BREAKING): delete deprecated ToolContext properties and legacy GraphContext (pointers: `ai_core/tool_contracts/base.py`, `ai_core/graph/core.py`, `ai_core/commands/graph_execution.py`; acceptance: no `context.<id>` access, GraphContext removed or replaced, tests updated)
 
 - [x] Semantics vNext: keep `case_id` required; standardize defaults (`general` for API views, `dev-case-local` for `/rag-tools`) and ensure that case exists per tenant (`ai_core/graph/schemas.py:normalize_meta`, `ai_core/views.py`, `theme/views.py`, `cases/*`)
 - [x] Hard-break ScopeContext business IDs: reject business identifiers in `ScopeContext` (pointers: `ai_core/contracts/scope.py:ScopeContext.forbid_business_ids`, `ai_core/tests/test_scope_context.py`; acceptance: ScopeContext validation raises when `case_id|collection_id|workflow_id|document_id|document_version_id` appear in input)
@@ -98,6 +108,7 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 ## Observability / operations
 
 - [x] Review queue + retry handling across `agents`/`ingestion` (`llm_worker/tasks.py`, `ai_core/tasks.py`, `common/celery.py`; done: RetryableTask, queue routing, DLQ, circuit breaker, cleanup task)
+- [x] Scope injection cleanup (PII/Logging): keep PII session scope and log context without passing scope kwargs into task run signatures (pointers: `common/celery.py:ScopedTask.__call__`, `common/celery.py:with_scope_apply_async`, `ai_core/ingestion.py:run_ingestion`; acceptance: tasks consume `state/meta` only, scope kwargs used only for PII/logging, no unexpected kwarg failures)
 
 ## Agent navigation (docs-only drift)
 

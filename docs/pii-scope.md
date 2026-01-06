@@ -5,7 +5,7 @@ Dieser Leitfaden beschreibt, wie der PII-Session-Scope in NOESIS 2 gesetzt, üb
 ## 1. HTTP-Ingress
 
 1. **PII-Session-Middleware** (`ai_core.middleware.PIISessionScopeMiddleware`) liest bei jedem Request die Header `X-Tenant-Id`, `X-Case-Id` und `X-Trace-Id`.
-2. Der Scope wird als `(tenant_id, case_id, session_salt)` registriert. `session_salt` entspricht `trace_id || case_id || tenant_id`, sofern kein eigener Wert gesetzt wurde.
+2. Der PII-Session-Scope wird als `(tenant_id, case_id, session_salt)` registriert. `session_salt` entspricht `trace_id || case_id || tenant_id`, sofern kein eigener Wert gesetzt wurde. Hinweis: Das ist nicht identisch mit ScopeContext (case_id kommt aus BusinessContext).
 3. Die Middleware steht *vor* Logging- und Redaction-Komponenten, damit sämtlicher nachfolgender Code denselben Scope nutzt.
 4. Nach Abschluss (Response oder Exception) wird der Scope wieder geleert.
 
@@ -31,7 +31,7 @@ Dieser Leitfaden beschreibt, wie der PII-Session-Scope in NOESIS 2 gesetzt, üb
 ## 4. Async & Tasks
 
 1. `common.celery.ScopedTask` setzt den Scope vor `run()` und räumt ihn in `finally` wieder auf.
-2. Produzenten verwenden `with_scope_apply_async()` und injizieren `tenant_id`, `case_id`, `trace_id`, `session_salt` in die Signaturen.
+2. Produzenten geben Scope-Informationen über `meta`/`tool_context` weiter; `with_scope_apply_async()` injiziert nur Trace-Header (keine Scope-Kwargs).
 3. Tests (`common/tests/test_celery_scope.py`) verifizieren, dass der Scope im Worker vorhanden ist und nach dem Task verschwindet.
 
 ## 5. Egress / Downstream Services
@@ -63,6 +63,7 @@ class PIISessionScopeMiddleware(BaseHTTPMiddleware):
         tenant_id = request.headers.get("X-Tenant-Id", "")
         case_id = request.headers.get("X-Case-Id", "")
         trace_id = request.headers.get("X-Trace-Id", "")
+        # PII scope uses business case_id for deterministic masking.
         session_salt = trace_id or case_id or tenant_id
 
         if tenant_id or case_id or session_salt:

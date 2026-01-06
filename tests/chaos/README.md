@@ -221,7 +221,7 @@ meta = _build_chaos_meta(
 **Cause**: Trying to pass case_id/collection_id into ScopeContext directly.
 **Fix**: Use separate business_context or BusinessContext model:
 ```python
-# WRONG:
+# WRONG (case_id belongs to BusinessContext, ScopeContext will reject it):
 scope = ScopeContext(tenant_id="t", trace_id="tr", run_id="r", case_id="c")
 
 # RIGHT:

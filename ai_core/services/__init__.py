@@ -49,7 +49,6 @@ from .ingestion import (
     _get_run_ingestion_task,
     _persist_collection_scope,
     _resolve_ingestion_profile,
-    _task_accepts_state,
     start_ingestion_run,
 )
 from .repository import _build_documents_repository, _get_documents_repository
@@ -93,7 +92,6 @@ __all__ = [
     "_persist_collection_scope",
     "_resolve_ingestion_profile",
     "_should_enqueue_graph",
-    "_task_accepts_state",
     "execute_graph",
     "emit_event",
     "emit_ingestion_case_event",

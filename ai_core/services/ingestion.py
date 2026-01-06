@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from importlib import import_module
-from inspect import signature
 from uuid import UUID, uuid4
 
 from django.utils import timezone
@@ -59,35 +58,19 @@ def _get_run_ingestion_task():  # type: ignore[no-untyped-def]
     return RUN_INGESTION
 
 
-def _task_accepts_state(task: object) -> bool:
-    run_fn = getattr(task, "run", None)
-    if run_fn is None:
-        return False
-    try:
-        params = signature(run_fn).parameters
-    except (TypeError, ValueError):
-        return False
-    return "state" in params
-
-
 def _enqueue_ingestion_task(
     task: object,
     *,
     state: Mapping[str, object],
     meta: Mapping[str, object],
-    legacy_args: tuple[object, ...],
-    legacy_kwargs: Mapping[str, object],
 ) -> None:
-    if _task_accepts_state(task):
-        signature = task.s(state, meta)
-        try:
-            context = tool_context_from_meta(meta)
-            scope_dict = context.scope.model_dump(mode="json", exclude_none=True)
-        except (TypeError, ValueError):
-            scope_dict = {}
-        with_scope_apply_async(signature, scope_dict)
-        return
-    task.delay(*legacy_args, **legacy_kwargs)
+    signature = task.s(state, meta)
+    try:
+        context = tool_context_from_meta(meta)
+        scope_dict = context.scope.model_dump(mode="json", exclude_none=True)
+    except (TypeError, ValueError):
+        scope_dict = {}
+    with_scope_apply_async(signature, scope_dict)
 
 
 def _get_partition_document_ids():  # type: ignore[no-untyped-def]
@@ -338,18 +321,6 @@ def start_ingestion_run(
         _get_run_ingestion_task(),
         state=state_payload,
         meta=dict(meta),
-        legacy_args=(
-            tool_context.scope.tenant_id,
-            tool_context.business.case_id,
-            to_dispatch,
-            resolved_profile_id,
-        ),
-        legacy_kwargs={
-            "tenant_schema": tenant_schema,
-            "run_id": ingestion_run_id,
-            "trace_id": tool_context.scope.trace_id,
-            "idempotency_key": idempotency_key,
-        },
     )
 
     record_ingestion_run_queued(

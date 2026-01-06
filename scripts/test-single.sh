@@ -13,4 +13,4 @@ if [ -z "$1" ]; then
 fi
 
 docker compose -f docker-compose.dev.yml run --rm web sh -c \
-    "pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q -v $1"
+    "pip install -q -r requirements.txt -r requirements-dev.txt && python -m pytest -q -v $1"

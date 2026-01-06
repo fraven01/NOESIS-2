@@ -267,26 +267,20 @@ def _build_metadata(
     control: Mapping[str, Any] | None,
     prompt_version: str,
 ) -> dict[str, Any]:
-    def _lookup(key: str, legacy_key: str | None = None) -> Any:
+    def _lookup(key: str) -> Any:
         if meta and key in meta:
             return meta[key]
-        if legacy_key and meta and legacy_key in meta:
-            return meta[legacy_key]
         if control and key in control:
             return control[key]
-        if legacy_key and control and legacy_key in control:
-            return control[legacy_key]
         return None
 
-    tenant_id = _lookup("tenant_id", "tenant")
-    case_id = _lookup("case_id", "case")
+    tenant_id = _lookup("tenant_id")
+    case_id = _lookup("case_id")
     trace_id = _lookup("trace_id") or DEFAULT_TRACE_ID
 
     metadata: dict[str, Any] = {
         "tenant_id": tenant_id,
-        "tenant": tenant_id,
         "case_id": case_id,
-        "case": case_id,
         "trace_id": trace_id,
         "prompt_version": prompt_version,
     }

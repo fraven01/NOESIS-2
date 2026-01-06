@@ -12,13 +12,15 @@ from ai_core.infra.observability import emit_event
 from ai_core.tool_contracts.base import tool_context_from_meta
 from cases.integration import emit_case_lifecycle_for_collection_search
 from common.celery import RetryableTask
+from common.logging import get_logger
 from llm_worker.graphs import run_score_results
+
+logger = get_logger(__name__)
 
 
 @shared_task(
     base=RetryableTask,
     queue="agents-high",
-    accepts_scope=True,
     time_limit=600,
     soft_time_limit=540,
 )
@@ -29,11 +31,6 @@ def run_graph(  # type: ignore[no-untyped-def]
     meta: Mapping[str, Any] | None,
     ledger_identifier: str | None = None,
     initial_cost_total: float | None = None,
-    tenant_id: str | None = None,
-    case_id: str | None = None,
-    trace_id: str | None = None,
-    session_salt: str | None = None,
-    **_scope: Any,
 ) -> dict[str, Any]:
     """
     Execute a registered graph runner with the provided state and metadata.
@@ -48,31 +45,7 @@ def run_graph(  # type: ignore[no-untyped-def]
     In 202-Fallback-Modus kann das Result-Backend deaktiviert sein;
     siehe GRAPH_WORKER_TIMEOUT_S.
     """
-    import sys
-
-    sys.stderr.write("DEBUG: run_graph ENTERED\n")
-    sys.stderr.flush()
-
-    # Set tenant schema context for database queries
-    # This ensures document models are accessed in the correct tenant schema
-    if tenant_id:
-        try:
-            from customers.models import Tenant
-
-            tenant = Tenant.objects.get(schema_name=str(tenant_id))
-            connection.set_tenant(tenant)
-            sys.stderr.write(f"DEBUG: Tenant schema set to {tenant.schema_name}\n")
-            sys.stderr.flush()
-        except Tenant.DoesNotExist:
-            # Log warning but continue - some graphs might not need DB access
-            sys.stderr.write(
-                f"WARNING: Tenant {tenant_id} not found, using default schema\n"
-            )
-            sys.stderr.flush()
-
-    # Scope parameters (tenant_id, case_id, trace_id, session_salt) are accepted
-    # so ScopedTask/with_scope_apply_async can attach masking context without
-    # causing unexpected kwargs errors.
+    logger.debug("celery.run_graph.entered")
 
     runner_state = dict(state or {})
     runner_meta = dict(meta or {})
@@ -89,6 +62,40 @@ def run_graph(  # type: ignore[no-untyped-def]
     # BREAKING CHANGE (Option A - Strict Separation):
     # Business IDs (workflow_id, collection_id) now in business_context
     business_context = tool_context.business if tool_context else None
+
+    tenant_id = None
+    case_id = None
+    trace_id = None
+    if scope_context:
+        tenant_id = scope_context.tenant_id
+        trace_id = scope_context.trace_id
+    if business_context:
+        case_id = business_context.case_id
+    if not tenant_id:
+        tenant_id = runner_meta.get("tenant_id")
+    if case_id is None:
+        case_id = runner_meta.get("case_id")
+    if not trace_id:
+        trace_id = runner_meta.get("trace_id")
+
+    # Set tenant schema context for database queries
+    # This ensures document models are accessed in the correct tenant schema
+    if tenant_id:
+        try:
+            from customers.models import Tenant
+
+            tenant = Tenant.objects.get(schema_name=str(tenant_id))
+            connection.set_tenant(tenant)
+            logger.debug(
+                "celery.run_graph.tenant_schema_set",
+                extra={"tenant_schema": tenant.schema_name},
+            )
+        except Tenant.DoesNotExist:
+            # Log warning but continue - some graphs might not need DB access
+            logger.warning(
+                "celery.run_graph.tenant_missing",
+                extra={"tenant_id": tenant_id},
+            )
 
     # Build ScopeContext via normalize_task_context (Pre-MVP ID Contract)
     # S2S Hop: service_id REQUIRED, user_id ABSENT
@@ -185,8 +192,10 @@ def run_graph(  # type: ignore[no-untyped-def]
     try:
         payload = _recursive_serialize(payload)
     except Exception as exc:
-        sys.stderr.write(f"DEBUG: Serialization failed: {exc}\n")
-        sys.stderr.flush()
+        logger.warning(
+            "celery.run_graph.serialization_failed",
+            extra={"error": str(exc)},
+        )
 
     lifecycle_result = emit_case_lifecycle_for_collection_search(
         graph_name=graph_name,

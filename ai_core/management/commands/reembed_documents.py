@@ -15,6 +15,8 @@ from ai_core.infra.reembed_progress import (
     reserve_reembed_delay,
 )
 from ai_core.ingestion import process_document
+from ai_core.contracts.business import BusinessContext
+from ai_core.ids.http_scope import normalize_task_context
 from ai_core.rag import vector_client
 from ai_core.rag.embedding_config import build_embedding_model_version
 from ai_core.rag.ingestion_contracts import resolve_ingestion_profile
@@ -31,6 +33,43 @@ REEMBED_PROGRESS_PREFIX = "reembed:progress"
 def _iter_batches(items: list[object], batch_size: int):
     for index in range(0, len(items), batch_size):
         yield items[index : index + batch_size]
+
+
+def _coerce_text(value: object | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate or None
+    try:
+        return str(value).strip() or None
+    except Exception:
+        return None
+
+
+def _build_task_meta(
+    *,
+    tenant_id: str,
+    case_id: str | None,
+    trace_id: str | None,
+    tenant_schema: str | None,
+) -> dict[str, object]:
+    scope = normalize_task_context(
+        tenant_id=tenant_id,
+        case_id=case_id,
+        service_id="celery-ingestion-worker",
+        trace_id=trace_id,
+        invocation_id=uuid4().hex,
+        run_id=uuid4().hex,
+        tenant_schema=tenant_schema,
+    )
+    business = BusinessContext(case_id=case_id)
+    tool_context = scope.to_tool_context(business=business)
+    return {
+        "scope_context": scope.model_dump(mode="json", exclude_none=True),
+        "business_context": business.model_dump(mode="json", exclude_none=True),
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+    }
 
 
 def _fetch_chunk_counts(
@@ -164,14 +203,25 @@ class Command(BaseCommand):
                 case_value = case_filter if case_filter is not None else document_case
                 if case_value == "":
                     case_value = None
+                trace_value = _coerce_text(trace_id)
+                meta = _build_task_meta(
+                    tenant_id=tenant.schema_name,
+                    case_id=case_value,
+                    trace_id=trace_value,
+                    tenant_schema=tenant.schema_name,
+                )
+                state = {
+                    "tenant_id": tenant.schema_name,
+                    "case_id": case_value,
+                    "document_id": str(document_id),
+                    "embedding_profile": resolved_profile_id,
+                    "tenant_schema": tenant.schema_name,
+                    "trace_id": trace_value,
+                }
                 process_document.apply_async(
                     kwargs={
-                        "tenant": tenant.schema_name,
-                        "case": case_value,
-                        "document_id": str(document_id),
-                        "embedding_profile": resolved_profile_id,
-                        "tenant_schema": tenant.schema_name,
-                        "trace_id": trace_id or None,
+                        "state": state,
+                        "meta": meta,
                         "reembed_progress_key": progress_key,
                     },
                     queue="ingestion-bulk",

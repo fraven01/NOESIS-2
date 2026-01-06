@@ -28,6 +28,7 @@ from ai_core.infra.observability import emit_event, observe_span, update_observa
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.rag.embeddings import EmbeddingClient
+from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.tools.web_search import (
     SearchProviderError,
     ToolOutcome,
@@ -447,6 +448,19 @@ def _get_ids(
         # Identity IDs (Pre-MVP ID Contract)
         "user_id": context.get("user_id"),
         "service_id": context.get("service_id"),
+    }
+
+
+def _context_from_tool_context(tool_context) -> dict[str, Any]:
+    return {
+        "tenant_id": tool_context.scope.tenant_id,
+        "workflow_id": tool_context.business.workflow_id,
+        "case_id": tool_context.business.case_id,
+        "trace_id": tool_context.scope.trace_id,
+        "run_id": tool_context.scope.run_id,
+        "ingestion_run_id": tool_context.scope.ingestion_run_id,
+        "user_id": tool_context.scope.user_id,
+        "service_id": tool_context.scope.service_id,
     }
 
 
@@ -1036,10 +1050,12 @@ class CollectionSearchAdapter:
         else:
             input_state = raw_state
 
-        # 2. Prepare Context (Dependencies + Meta)
+        # 2. Prepare Context (Dependencies + ToolContext)
+        if not meta:
+            raise InvalidGraphInput("tool_context required in meta")
+        tool_context = tool_context_from_meta(meta)
         context = dict(self.dependencies)
-        if meta:
-            context.update(meta)
+        context.update(_context_from_tool_context(tool_context))
 
         # Enforce tenant isolation (Finding #1 fix)
         _validate_tenant_context(context)

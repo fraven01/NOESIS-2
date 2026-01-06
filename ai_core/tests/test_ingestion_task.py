@@ -200,16 +200,19 @@ def test_run_ingestion_success(monkeypatch):
     captured_signatures = _patch_group(monkeypatch, async_result)
     _patch_perf_counter(monkeypatch, 10.0, 10.5)
 
+    state = {
+        "tenant_id": "tenant-a",
+        "case_id": "case-b",
+        "document_ids": list(valid_ids),
+        "embedding_profile": "standard",
+        "run_id": "run-123",
+        "trace_id": "trace-xyz",
+        "idempotency_key": "idem-1",
+    }
     response = ingestion.run_ingestion.run(
-        tenant="tenant-a",
-        case="case-b",
-        document_ids=list(valid_ids),
-        embedding_profile="standard",
-        run_id="run-123",
-        trace_id="trace-xyz",
-        idempotency_key="idem-1",
+        state,
+        None,
         timeout_seconds=5.0,
-        session_salt="sess-456",
     )
 
     assert response["status"] == "dispatched"
@@ -222,8 +225,28 @@ def test_run_ingestion_success(monkeypatch):
     assert response["duration_ms"] == pytest.approx(500.0)
 
     assert dummy_process.calls == [
-        ("tenant-a", "case-b", "doc-1", "standard", None, "trace-xyz"),
-        ("tenant-a", "case-b", "doc-2", "standard", None, "trace-xyz"),
+        (
+            {
+                "tenant_id": "tenant-a",
+                "case_id": "case-b",
+                "document_id": "doc-1",
+                "embedding_profile": "standard",
+                "tenant_schema": None,
+                "trace_id": "trace-xyz",
+            },
+            None,
+        ),
+        (
+            {
+                "tenant_id": "tenant-a",
+                "case_id": "case-b",
+                "document_id": "doc-2",
+                "embedding_profile": "standard",
+                "tenant_schema": None,
+                "trace_id": "trace-xyz",
+            },
+            None,
+        ),
     ]
     assert len(captured_signatures) == 1
     assert len(captured_signatures[0]) == len(valid_ids)
@@ -314,14 +337,18 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
 
     monkeypatch.setattr(ingestion, "_collect_partial_results", fake_collect)
 
+    state = {
+        "tenant_id": "tenant-a",
+        "case_id": "case-b",
+        "document_ids": list(valid_ids),
+        "embedding_profile": "standard",
+        "run_id": "run-timeout",
+        "trace_id": "trace-timeout",
+        "idempotency_key": "timeout-id",
+    }
     response = ingestion.run_ingestion.run(
-        tenant="tenant-a",
-        case="case-b",
-        document_ids=list(valid_ids),
-        embedding_profile="standard",
-        run_id="run-timeout",
-        trace_id="trace-timeout",
-        idempotency_key="timeout-id",
+        state,
+        None,
         timeout_seconds=3.0,
         dead_letter_queue="dlq-test",
     )
@@ -416,14 +443,18 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     monkeypatch.setattr(ingestion, "_determine_failed_documents", flaky_determine)
 
     with pytest.raises(RuntimeError, match="aggregation failed"):
+        state = {
+            "tenant_id": "tenant-a",
+            "case_id": "case-b",
+            "document_ids": list(valid_ids),
+            "embedding_profile": "standard",
+            "run_id": "run-exc",
+            "trace_id": "trace-exc",
+            "idempotency_key": "exc-id",
+        }
         ingestion.run_ingestion.run(
-            tenant="tenant-a",
-            case="case-b",
-            document_ids=list(valid_ids),
-            embedding_profile="standard",
-            run_id="run-exc",
-            trace_id="trace-exc",
-            idempotency_key="exc-id",
+            state,
+            None,
             timeout_seconds=2.5,
             dead_letter_queue="dlq-exc",
         )
@@ -485,13 +516,17 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
     _patch_group(monkeypatch, async_result)
     _patch_perf_counter(monkeypatch, 40.0, 40.4)
 
+    state = {
+        "tenant_id": "tenant-a",
+        "case_id": "case-b",
+        "document_ids": list(valid_ids),
+        "embedding_profile": "standard",
+        "run_id": "run-contract",
+        "trace_id": "trace-contract",
+    }
     response = ingestion.run_ingestion.run(
-        tenant="tenant-a",
-        case="case-b",
-        document_ids=list(valid_ids),
-        embedding_profile="standard",
-        run_id="run-contract",
-        trace_id="trace-contract",
+        state,
+        None,
         dead_letter_queue="dlq-contract",
     )
 

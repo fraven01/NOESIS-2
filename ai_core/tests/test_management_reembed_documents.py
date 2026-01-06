@@ -94,27 +94,35 @@ def test_reembed_documents_queues_tasks(settings, test_tenant_schema_name, monke
     assert len(calls) == 2
     assert all(call["queue"] == "ingestion-bulk" for call in calls)
 
-    call_by_document = {call["kwargs"]["document_id"]: call["kwargs"] for call in calls}
+    call_by_document = {
+        call["kwargs"]["state"]["document_id"]: call["kwargs"] for call in calls
+    }
     kwargs_one = call_by_document[str(doc_one.id)]
     kwargs_two = call_by_document[str(doc_two.id)]
 
-    assert kwargs_one["tenant"] == tenant.schema_name
-    assert kwargs_one["tenant_schema"] == tenant.schema_name
-    assert kwargs_one["embedding_profile"] == "standard"
+    state_one = kwargs_one["state"]
+    state_two = kwargs_two["state"]
 
-    assert kwargs_two["tenant"] == tenant.schema_name
-    assert kwargs_two["tenant_schema"] == tenant.schema_name
+    assert state_one["tenant_id"] == tenant.schema_name
+    assert state_one["tenant_schema"] == tenant.schema_name
+    assert state_one["embedding_profile"] == "standard"
+
+    assert state_two["tenant_id"] == tenant.schema_name
+    assert state_two["tenant_schema"] == tenant.schema_name
 
     progress_key = kwargs_one["reembed_progress_key"]
     assert progress_key == kwargs_two["reembed_progress_key"]
 
-    assert kwargs_one["document_id"] == str(doc_one.id)
-    assert kwargs_one["case"] == "case-1"
-    assert kwargs_one["trace_id"] == "trace-1"
+    assert state_one["document_id"] == str(doc_one.id)
+    assert state_one["case_id"] == "case-1"
+    assert state_one["trace_id"] == "trace-1"
 
-    assert kwargs_two["document_id"] == str(doc_two.id)
-    assert kwargs_two["case"] is None
-    assert kwargs_two["trace_id"] is None
+    assert state_two["document_id"] == str(doc_two.id)
+    assert state_two["case_id"] is None
+    assert state_two["trace_id"] is None
+
+    meta_one = kwargs_one["meta"]
+    assert meta_one["scope_context"]["tenant_id"] == tenant.schema_name
 
     assert progress_payloads
     init_payload = progress_payloads[0]

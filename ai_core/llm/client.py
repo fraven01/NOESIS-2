@@ -200,16 +200,15 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     prompt:
         Prompt text which will be PII-masked before sending.
     metadata:
-        Dict containing at least ``tenant_id``/``tenant``, ``case_id``/``case`` and ``trace_id``.
+        Dict containing at least ``tenant_id``, ``case_id``, and ``trace_id``.
     """
 
     model_id = resolve(label)
     cfg = get_config()
     url = f"{cfg.litellm_base_url.rstrip('/')}/v1/chat/completions"
     headers = {"Authorization": f"Bearer {cfg.litellm_api_key}"}
-    # Accept both new (tenant_id/case_id) and legacy (tenant/case) keys
-    tenant_value = metadata.get("tenant_id") or metadata.get("tenant")
-    case_value = metadata.get("case_id") or metadata.get("case")
+    tenant_value = metadata.get("tenant_id")
+    case_value = metadata.get("case_id")
     propagated_headers = {
         X_TRACE_ID_HEADER: metadata.get("trace_id"),
         X_CASE_ID_HEADER: case_value,
@@ -245,7 +244,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     log_extra = {
         "trace_id": mask_value(metadata.get("trace_id")),
         "case_id": mask_value(case_value),
-        "tenant": mask_value(tenant_value),
+        "tenant_id": mask_value(tenant_value),
         "key_alias": mask_value(metadata.get("key_alias")),
     }
     # Attach lightweight context to the current observation (no PII payloads)
@@ -493,8 +492,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         result["cost"] = cost_data
 
     ledger_payload = {
-        "tenant": tenant_value,
-        "case": case_value,
+        "tenant_id": tenant_value,
+        "case_id": case_value,
         "trace_id": metadata.get("trace_id"),
         "label": label,
         "model": model_id,

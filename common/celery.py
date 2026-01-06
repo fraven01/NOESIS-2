@@ -18,7 +18,7 @@ from ai_core.infra.pii_flags import (
     load_tenant_pii_config,
     set_pii_config,
 )
-from ai_core.infra.observability import emit_event, update_observation
+from ai_core.infra.observability import emit_event, record_span, update_observation
 from ai_core.infra import rate_limit as tenant_rate_limit
 from ai_core.infra.policy import (
     clear_session_scope,
@@ -97,12 +97,13 @@ class ContextTask(Task):
         self._request_override = self._REQUEST_OVERRIDE_SENTINEL
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
-        import sys
-
-        sys.stderr.write(f"DEBUG: ContextTask.__call__ ENTERED for {self.name}\n")
-        sys.stderr.flush()
         clear_log_context()
         context = self._gather_context(args, kwargs)
+        request = getattr(self, "request", None)
+        task_id = getattr(request, "id", None) if request is not None else None
+        if task_id:
+            task_id = self._normalize(task_id)
+            context["task_id"] = task_id
         if context:
             bind_log_context(**context)
 
@@ -110,15 +111,66 @@ class ContextTask(Task):
         if _OTEL_AVAILABLE:
             # Extract W3C trace context from headers and activate it
             request_headers = getattr(self.request, "headers", None) or {}
-            # Ensure headers are a dict
             if not isinstance(request_headers, dict):
                 request_headers = {}
             ctx = TraceContextTextMapPropagator().extract(carrier=request_headers)
             token = otel_context.attach(ctx)
 
+        task_name = getattr(self, "name", None) or type(self).__name__
+        queue = _resolve_task_queue(self, kwargs)
+        queue_time_ms = _resolve_queue_time_ms(request)
+        start_perf = time.perf_counter()
+        retry_count = int(getattr(request, "retries", 0)) if request is not None else 0
+        start_payload: dict[str, Any] = {
+            "task_id": task_id,
+            "task_name": task_name,
+            "queue": queue,
+            "task.queue_time_ms": queue_time_ms,
+            "task.retry_count": retry_count,
+        }
+
+        record_span(
+            f"task.{task_name}.start",
+            attributes={**context, **start_payload},
+            trace_id=context.get("trace_id"),
+        )
+        logger.info("celery.task.start", extra=start_payload)
+
+        exc: BaseException | None = None
         try:
+            pre_execute = getattr(self, "_pre_execute", None)
+            if callable(pre_execute):
+                pre_execute(args, kwargs)
             return super().__call__(*args, **kwargs)
+        except BaseException as caught:
+            exc = caught
+            raise
         finally:
+            duration_ms = (time.perf_counter() - start_perf) * 1000.0
+            retry_count = (
+                int(getattr(request, "retries", 0)) if request is not None else 0
+            )
+            end_payload = {
+                **start_payload,
+                "task.duration_ms": duration_ms,
+                "task.retry_count": retry_count,
+                "task.status": "error" if exc is not None else "ok",
+            }
+            if exc is not None:
+                end_payload["error.type"] = exc.__class__.__name__
+                end_payload["error.message"] = str(exc)
+
+            record_span(
+                f"task.{task_name}.end",
+                attributes={**context, **end_payload},
+                trace_id=context.get("trace_id"),
+            )
+
+            if exc is not None:
+                logger.error("celery.task.failure", extra=end_payload, exc_info=True)
+            else:
+                logger.info("celery.task.end", extra=end_payload)
+
             if _OTEL_AVAILABLE and token is not None:
                 otel_context.detach(token)
             clear_log_context()
@@ -142,6 +194,8 @@ class ContextTask(Task):
 
         if args and not kwargs.get("meta"):
             context.update(self._from_meta(args[0]))
+            if len(args) > 1:
+                context.update(self._from_meta(args[1]))
 
         return {key: value for key, value in context.items() if value}
 
@@ -220,7 +274,7 @@ class ContextTask(Task):
 
         tenant_id = context_data.get("tenant_id")
         if tenant_id:
-            context["tenant"] = self._normalize(tenant_id)
+            context["tenant_id"] = self._normalize(tenant_id)
 
         case_id = context_data.get("case_id")
         if case_id:
@@ -251,69 +305,67 @@ class ScopedTask(ContextTask):
     helpers. ``session_salt`` acts as the entropy source that keeps masking
     tokens stable for a single trace/case combination, while ``session_scope``
     lets producers override the tuple entirely when they already derived a
-    canonical scope upstream. Both parameters are therefore plumbed through to
-    worker tasks so the masking layer can associate emitted tokens with the
-    right tenant/case context.
+    canonical scope upstream. Scope values are derived from meta/tool_context
+    (or explicit scope kwargs) without being forwarded into task signatures.
     """
 
     abstract = True
 
-    # Tasks must explicitly opt-in to receiving scope kwargs in ``run``.
-    accepts_scope = False
-
-    _SCOPE_FIELDS = ("tenant_id", "case_id", "trace_id", "session_salt")
+    # PII-session scope fields (not ScopeContext fields).
+    _PII_SESSION_FIELDS = ("tenant_id", "case_id", "trace_id", "session_salt")
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
-        import sys
-
-        sys.stderr.write(f"DEBUG: ScopedTask.__call__ ENTERED for {self.name}\n")
-        sys.stderr.flush()
         call_kwargs = dict(kwargs)
         scope_kwargs: dict[str, Any] = {}
-        provided_scope_fields: dict[str, bool] = {}
-        for field in self._SCOPE_FIELDS:
+        for field in self._PII_SESSION_FIELDS:
             if field in call_kwargs:
-                provided_scope_fields[field] = True
                 scope_kwargs[field] = call_kwargs.pop(field)
-            else:
-                provided_scope_fields[field] = False
 
         explicit_scope = call_kwargs.pop("session_scope", None)
 
-        tenant_id = scope_kwargs.get("tenant_id")
-        case_id = scope_kwargs.get("case_id")
-        trace_id = scope_kwargs.get("trace_id")
-        session_salt = scope_kwargs.get("session_salt")
+        context = self._gather_context(args, call_kwargs)
+
+        def _coerce_text(value: Any) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                candidate = value.strip()
+                return candidate or None
+            try:
+                return str(value).strip() or None
+            except Exception:
+                return None
+
+        tenant_id = _coerce_text(scope_kwargs.get("tenant_id")) or _coerce_text(
+            context.get("tenant_id")
+        )
+        case_id = _coerce_text(scope_kwargs.get("case_id")) or _coerce_text(
+            context.get("case_id")
+        )
+        trace_id = _coerce_text(scope_kwargs.get("trace_id")) or _coerce_text(
+            context.get("trace_id")
+        )
+        session_salt = _coerce_text(scope_kwargs.get("session_salt"))
         scope_override: tuple[str, str, str] | None = None
 
         if isinstance(explicit_scope, (list, tuple)) and len(explicit_scope) == 3:
             tenant_scope_val, case_scope_val, salt_scope_val = explicit_scope
             scope_override = (
-                str(tenant_scope_val) if tenant_scope_val is not None else "",
-                str(case_scope_val) if case_scope_val is not None else "",
-                str(salt_scope_val) if salt_scope_val is not None else "",
+                _coerce_text(tenant_scope_val) or "",
+                _coerce_text(case_scope_val) or "",
+                _coerce_text(salt_scope_val) or "",
             )
             if not case_id and case_scope_val:
-                case_id = case_scope_val
+                case_id = scope_override[1] or None
             if not session_salt and salt_scope_val:
-                session_salt = salt_scope_val
+                session_salt = scope_override[2] or None
 
         if not session_salt:
-            salt_parts = [
-                str(value) for value in (trace_id, case_id, tenant_id) if value
-            ]
-            session_salt = "||".join(salt_parts) if salt_parts else None
-
-        if session_salt:
-            scope_kwargs["session_salt"] = session_salt
-
-        for field, value in (
-            ("tenant_id", tenant_id),
-            ("case_id", case_id),
-            ("trace_id", trace_id),
-        ):
-            if value is not None:
-                scope_kwargs.setdefault(field, value)
+            session_salt = _derive_session_salt_from_ids(
+                trace_id=trace_id,
+                case_id=case_id,
+                tenant_id=tenant_id,
+            )
 
         tenant_config = load_tenant_pii_config(tenant_id) if tenant_id else None
 
@@ -352,24 +404,7 @@ class ScopedTask(ContextTask):
                 scoped_config = tenant_config
             set_pii_config(scoped_config)
 
-        # Forward scope keyword arguments only to tasks that explicitly opted in
-        # via ``accepts_scope``. This keeps the masking/logging context intact
-        # while avoiding unexpected keyword arguments for tasks that do not
-        # handle scope-aware parameters.
-        accepts_scope = bool(getattr(self, "accepts_scope", False))
-        if accepts_scope:
-            for field in self._SCOPE_FIELDS:
-                value = scope_kwargs.get(field)
-                if value is not None:
-                    call_kwargs.setdefault(field, value)
-
-            if explicit_scope is not None:
-                call_kwargs.setdefault("session_scope", explicit_scope)
-
         try:
-            pre_execute = getattr(self, "_pre_execute", None)
-            if callable(pre_execute):
-                pre_execute(args, call_kwargs)
             return super().__call__(*args, **call_kwargs)
         finally:
             clear_pii_config()
@@ -468,6 +503,48 @@ def _resolve_priority_from_kwargs(kwargs: dict[str, Any]) -> str | None:
             if value:
                 return value
     return None
+
+
+def _coerce_timestamp(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if candidate <= 0:
+        return None
+    if candidate > 1e12:
+        candidate /= 1000.0
+    return candidate
+
+
+def _resolve_queue_time_ms(request: Any) -> float | None:
+    if request is None:
+        return None
+
+    sent_at: float | None = None
+    headers = getattr(request, "headers", None)
+    if isinstance(headers, Mapping):
+        for key in ("sent_at", "sentat", "sent-at", "timestamp"):
+            sent_at = _coerce_timestamp(headers.get(key))
+            if sent_at is not None:
+                break
+
+    if sent_at is None:
+        sent_at = _coerce_timestamp(getattr(request, "sent_at", None))
+
+    if sent_at is None:
+        return None
+
+    start_time = _coerce_timestamp(getattr(request, "time_start", None))
+    if start_time is None:
+        start_time = time.time()
+
+    queue_time = (start_time - sent_at) * 1000.0
+    if queue_time < 0:
+        return 0.0
+    return queue_time
 
 
 def _resolve_task_queue(task: Task, kwargs: dict[str, Any]) -> str | None:
@@ -578,6 +655,7 @@ class RetryableTask(ScopedTask):
         reason_category = _retry_reason_category(exc)
         retry_count = int(getattr(self.request, "retries", 0))
         attempt = retry_count + 1
+        task_name = getattr(self, "name", None)
         agent_id = _resolve_agent_id(self, kwargs)
         context = self._gather_context(args, kwargs)
         if "tenant" in context and "tenant_id" not in context:
@@ -585,7 +663,7 @@ class RetryableTask(ScopedTask):
 
         payload: dict[str, Any] = {
             "task_id": task_id,
-            "task_name": getattr(self, "name", None),
+            "task_name": task_name,
             "agent_id": agent_id,
             "retry_count": retry_count,
             "attempt": attempt,
@@ -593,6 +671,7 @@ class RetryableTask(ScopedTask):
             "reason_category": reason_category,
             "exc_type": exc.__class__.__name__,
             "exc_message": str(exc),
+            "task.retry_count": retry_count,
             **context,
         }
 
@@ -635,6 +714,15 @@ class RetryableTask(ScopedTask):
             logger.debug("task.retry.span_failed", exc_info=True)
 
         try:
+            record_span(
+                f"task.{task_name or agent_id}.retry.{attempt}",
+                attributes=payload,
+                trace_id=context.get("trace_id"),
+            )
+        except Exception:
+            logger.debug("task.retry.record_span_failed", exc_info=True)
+
+        try:
             emit_event("task.retry", payload)
         except Exception:
             logger.debug("task.retry.event_failed", exc_info=True)
@@ -666,15 +754,13 @@ def _compute_retry_after_ms(now: float | None = None) -> int:
     return max(0, int(ttl * 1000))
 
 
-_SCOPE_KWARG_KEYS = ("tenant_id", "case_id", "trace_id", "session_salt")
-
-
-def _derive_session_salt(scope: TypingMapping[str, Any]) -> str | None:
-    session_salt = scope.get("session_salt")
-    if session_salt:
-        return str(session_salt)
-
-    salt_parts = [scope.get("trace_id"), scope.get("case_id"), scope.get("tenant_id")]
+def _derive_session_salt_from_ids(
+    *,
+    trace_id: str | None,
+    case_id: str | None,
+    tenant_id: str | None,
+) -> str | None:
+    salt_parts = [trace_id, case_id, tenant_id]
     filtered = [str(part) for part in salt_parts if part]
     if filtered:
         return "||".join(filtered)
@@ -719,39 +805,36 @@ def with_scope_apply_async(
     *args: Any,
     **kwargs: Any,
 ):
-    """Clone a Celery signature and schedule it with the given scope.
+    """Clone a Celery signature and schedule it (trace headers injected).
 
     Example
     -------
     >>> from celery import chain
-    >>> scoped = with_scope_apply_async(
-    ...     chain(task_a.s(), task_b.s()),
-    ...     {"tenant_id": "t-1", "case_id": "c-1", "trace_id": "tr-1"},
-    ... )
+    >>> meta = {
+    ...     "scope_context": {
+    ...         "tenant_id": "t-1",
+    ...         "trace_id": "tr-1",
+    ...         "invocation_id": "inv-1",
+    ...         "run_id": "run-1",
+    ...     },
+    ...     "business_context": {"case_id": "c-1"},
+    ... }
+    >>> signature = chain(task_a.s(state={}, meta=meta), task_b.s(state={}, meta=meta))
+    >>> scoped = with_scope_apply_async(signature, {})  # trace headers only
 
-    All tasks in the chain receive ``tenant_id``, ``case_id`` and
-    ``session_salt`` keyword arguments so they can establish the masking scope.
+    Scope context must be supplied via meta/tool_context; this helper only
+    injects trace headers for observability.
     """
 
     if not isinstance(signature, Signature):
         raise TypeError("signature must be a celery Signature instance")
 
-    scope_kwargs: dict[str, Any] = {}
-    for key in _SCOPE_KWARG_KEYS:
-        value = scope.get(key)
-        if value:
-            scope_kwargs[key] = value
-
-    derived_salt = _derive_session_salt(scope)
-    if derived_salt:
-        scope_kwargs.setdefault("session_salt", derived_salt)
-
     otel_headers: dict[str, str] = {}
     if _OTEL_AVAILABLE:
         TraceContextTextMapPropagator().inject(otel_headers)
 
-    if not scope_kwargs and not otel_headers:
+    if not otel_headers:
         return signature.apply_async(*args, **kwargs)
 
-    scoped_signature = _clone_with_scope(signature, scope_kwargs, otel_headers)
+    scoped_signature = _clone_with_scope(signature, {}, otel_headers)
     return scoped_signature.apply_async(*args, **kwargs)

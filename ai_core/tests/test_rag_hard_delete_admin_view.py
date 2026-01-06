@@ -44,17 +44,18 @@ def test_rag_hard_delete_admin_service_key(client, settings, monkeypatch):
     assert body["documents_requested"] == 2
     assert response["X-Trace-Id"]
 
-    assert captured["args"] == (
-        tenant_id,
-        [
-            "3fbb07d0-2a5b-4b75-8ad4-5c5e8f3e1d21",
-            "986cf6d5-2d8c-4b6c-98eb-3ac80f8aa84f",
-        ],
-        "cleanup",
-        "TCK-1234",
-    )
+    state = captured["args"][0]
+    meta = captured["args"][1]
+    assert state["tenant_id"] == tenant_id
+    assert state["document_ids"] == [
+        "3fbb07d0-2a5b-4b75-8ad4-5c5e8f3e1d21",
+        "986cf6d5-2d8c-4b6c-98eb-3ac80f8aa84f",
+    ]
+    assert state["reason"] == "cleanup"
+    assert state["ticket_ref"] == "TCK-1234"
+    assert state["trace_id"] == body["trace_id"]
+    assert meta["scope_context"]["trace_id"] == body["trace_id"]
     assert captured["kwargs"]["actor"] == {"internal_key": "ops-service"}
-    assert captured["kwargs"]["trace_id"] == body["trace_id"]
 
 
 @pytest.mark.django_db

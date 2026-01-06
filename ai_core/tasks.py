@@ -88,7 +88,11 @@ from .rag.semantic_chunker import SectionChunkPlan, SemanticChunker, SemanticTex
 from .rag.parents import limit_parent_payload
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
-from .rag.ingestion_contracts import ChunkMeta, ensure_embedding_dimensions
+from .rag.ingestion_contracts import (
+    ChunkMeta,
+    ensure_embedding_dimensions,
+    log_embedding_quality_stats,
+)
 from .rag.chunking import RoutingAwareChunker
 from .rag.embeddings import (
     EmbeddingBatchResult,
@@ -671,7 +675,7 @@ def log_ingestion_run_end(
         )
 
 
-@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion")
 def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     """Persist raw document bytes."""
     external_id = meta.get("external_id")
@@ -685,7 +689,7 @@ def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     return {"path": path, "content_hash": content_hash}
 
 
-@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion")
 def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
     """Decode bytes to text and store."""
     full = object_store.BASE_PATH / raw_path
@@ -695,7 +699,7 @@ def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion")
 def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     """Mask PII in text."""
     full = object_store.BASE_PATH / text_path
@@ -713,7 +717,7 @@ def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion")
 def _split_sentences(text: str) -> List[str]:
     """Best-effort sentence segmentation that retains punctuation."""
 
@@ -1209,7 +1213,6 @@ def _build_processing_context(
 @shared_task(
     base=RetryableTask,
     queue="ingestion",
-    accepts_scope=True,
     time_limit=600,
     soft_time_limit=540,
 )
@@ -1857,7 +1860,6 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 @shared_task(
     base=RetryableTask,
     queue="ingestion",
-    accepts_scope=True,
     time_limit=300,
     soft_time_limit=270,
 )
@@ -2287,7 +2289,7 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
         raise
 
 
-@shared_task(base=RetryableTask, queue="ingestion", accepts_scope=True)
+@shared_task(base=RetryableTask, queue="ingestion")
 def upsert(
     meta: Dict[str, str],
     embeddings_path: str,
@@ -2511,6 +2513,14 @@ def upsert(
             embedding_profile=meta.get("embedding_profile") if meta else None,
             vector_space_id=meta.get("vector_space_id") if meta else None,
         )
+        log_embedding_quality_stats(
+            chunk_objs,
+            tenant_id=tenant_id,
+            process=meta.get("process") if meta else None,
+            workflow_id=business_context.workflow_id if business_context else None,
+            embedding_profile=meta.get("embedding_profile") if meta else None,
+            vector_space_id=meta.get("vector_space_id") if meta else None,
+        )
 
         schema = tenant_schema or (meta.get("tenant_schema") if meta else None)
         vector_space_schema = _resolve_vector_space_schema(meta) if meta else None
@@ -2547,15 +2557,50 @@ def upsert(
         raise
 
 
-@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
+@shared_task(base=ScopedTask, queue="ingestion")
 def ingestion_run(
-    tenant_id: str,
-    case_id: str,
-    document_ids: List[str],
-    priority: str = "normal",
-    trace_id: str | None = None,
+    state: Mapping[str, Any],
+    meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, object]:
     """Placeholder ingestion dispatcher used by the ingestion run endpoint."""
+
+    state_payload = dict(state or {})
+    tool_context = None
+    if isinstance(meta, Mapping):
+        try:
+            tool_context = tool_context_from_meta(meta)
+        except (TypeError, ValueError):
+            tool_context = None
+
+    def _coerce_str(value: object | None) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip()
+            return candidate or None
+        try:
+            return str(value).strip() or None
+        except Exception:
+            return None
+
+    tenant_id = _coerce_str(state_payload.get("tenant_id")) or (
+        tool_context.scope.tenant_id if tool_context else None
+    )
+    case_id = _coerce_str(state_payload.get("case_id")) or (
+        tool_context.business.case_id if tool_context else None
+    )
+    trace_id = _coerce_str(state_payload.get("trace_id")) or (
+        tool_context.scope.trace_id if tool_context else None
+    )
+    document_ids = state_payload.get("document_ids") or []
+    if not isinstance(document_ids, list):
+        document_ids = [document_ids]
+    document_ids = [
+        candidate
+        for candidate in (_coerce_str(entry) for entry in document_ids)
+        if candidate
+    ]
+    priority = _coerce_str(state_payload.get("priority")) or "normal"
 
     # Keep relying on django.utils.timezone.now so call sites and tests can
     # monkeypatch the module-level helper consistently.
@@ -2762,6 +2807,198 @@ def alert_dead_letter_queue(
         "threshold": threshold_value,
         "alerted": queue_length > threshold_value,
     }
+
+
+def _load_drift_ground_truth(path: str) -> tuple[list[dict[str, object]], str] | None:
+    candidate = Path(path)
+    if not candidate.exists():
+        return None
+    raw_bytes = candidate.read_bytes()
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, list):
+        return None
+    dataset_id = hashlib.sha256(raw_bytes).hexdigest()[:12]
+    return [item for item in payload if isinstance(item, Mapping)], dataset_id
+
+
+def _drift_metrics_path(tenant_id: str, dataset_id: str) -> str:
+    tenant_segment = object_store.sanitize_identifier(tenant_id)
+    dataset_segment = object_store.safe_filename(f"{dataset_id}.json")
+    return "/".join(("quality", "drift", tenant_segment, dataset_segment))
+
+
+def _load_previous_drift_metrics(
+    tenant_id: str, dataset_id: str
+) -> dict[str, object] | None:
+    path = _drift_metrics_path(tenant_id, dataset_id)
+    try:
+        previous = object_store.read_json(path)
+    except FileNotFoundError:
+        return None
+    if not isinstance(previous, dict):
+        return None
+    if previous.get("dataset_id") != dataset_id:
+        return None
+    return previous
+
+
+def _extract_expected_ids(record: Mapping[str, object]) -> tuple[set[str], str]:
+    raw_chunks = record.get("expected_chunk_ids") or record.get("expected_chunks")
+    raw_docs = record.get("expected_document_ids") or record.get("expected_documents")
+    chunk_ids = {str(value) for value in (raw_chunks or []) if value}
+    doc_ids = {str(value) for value in (raw_docs or []) if value}
+    if chunk_ids:
+        return chunk_ids, "chunk_id"
+    return doc_ids, "document_id"
+
+
+def _evaluate_drift_queries(
+    records: list[dict[str, object]],
+    *,
+    default_top_k: int,
+) -> tuple[dict[str, dict[str, float]], int, int]:
+    router = get_default_router()
+    totals: dict[str, int] = {}
+    hits: dict[str, int] = {}
+    skipped = 0
+
+    for record in records:
+        query = str(record.get("query") or "").strip()
+        tenant_id = str(record.get("tenant_id") or "").strip()
+        if not query or not tenant_id:
+            skipped += 1
+            continue
+
+        expected_ids, id_field = _extract_expected_ids(record)
+        if not expected_ids:
+            skipped += 1
+            continue
+
+        try:
+            top_k = int(record.get("top_k") or default_top_k)
+        except (TypeError, ValueError):
+            top_k = default_top_k
+        if top_k <= 0:
+            top_k = default_top_k
+
+        collection_id = record.get("collection_id")
+        workflow_id = record.get("workflow_id")
+        case_id = record.get("case_id")
+
+        try:
+            results = router.search(
+                query,
+                tenant_id=tenant_id,
+                case_id=str(case_id) if case_id else None,
+                top_k=top_k,
+                collection_id=str(collection_id) if collection_id else None,
+                workflow_id=str(workflow_id) if workflow_id else None,
+            )
+        except Exception:
+            skipped += 1
+            continue
+
+        candidate_ids: set[str] = set()
+        for chunk in results:
+            meta = chunk.meta or {}
+            candidate_value = meta.get(id_field)
+            if candidate_value:
+                candidate_ids.add(str(candidate_value))
+
+        totals[tenant_id] = totals.get(tenant_id, 0) + 1
+        if expected_ids.intersection(candidate_ids):
+            hits[tenant_id] = hits.get(tenant_id, 0) + 1
+
+    metrics: dict[str, dict[str, float]] = {}
+    for tenant_id, total in totals.items():
+        hit_count = hits.get(tenant_id, 0)
+        recall = hit_count / float(total) if total else 0.0
+        metrics[tenant_id] = {
+            "recall": recall,
+            "hits": float(hit_count),
+            "total": float(total),
+        }
+
+    return metrics, skipped, len(records)
+
+
+@shared_task(
+    base=ScopedTask,
+    queue="default",
+    name="ai_core.tasks.embedding_drift_check",
+)
+def embedding_drift_check(
+    *,
+    ground_truth_path: str | None = None,
+    top_k: int = 10,
+) -> dict[str, object]:
+    """Evaluate retrieval drift using ground-truth queries."""
+
+    path = ground_truth_path
+    if not path:
+        path = os.getenv("RAG_DRIFT_GROUND_TRUTH_PATH")
+    if not path:
+        path = getattr(settings, "RAG_DRIFT_GROUND_TRUTH_PATH", None)
+    if not path:
+        return {"status": "skipped", "reason": "ground_truth_path_missing"}
+
+    loaded = _load_drift_ground_truth(path)
+    if not loaded:
+        return {"status": "skipped", "reason": "ground_truth_unavailable"}
+
+    records, dataset_id = loaded
+    metrics, skipped, total = _evaluate_drift_queries(records, default_top_k=top_k)
+
+    summary: dict[str, object] = {
+        "status": "ok",
+        "dataset_id": dataset_id,
+        "total_queries": total,
+        "skipped_queries": skipped,
+        "tenants": list(metrics.keys()),
+    }
+
+    for tenant_id, tenant_metrics in metrics.items():
+        recall = float(tenant_metrics.get("recall", 0.0))
+        previous = _load_previous_drift_metrics(tenant_id, dataset_id)
+        previous_recall = None
+        if previous:
+            try:
+                previous_recall = float(previous.get("recall", 0.0))
+            except (TypeError, ValueError):
+                previous_recall = None
+        delta = recall - previous_recall if previous_recall is not None else None
+
+        payload = {
+            "tenant_id": tenant_id,
+            "dataset_id": dataset_id,
+            "recall": recall,
+            "previous_recall": previous_recall,
+            "delta": delta,
+            "total_queries": tenant_metrics.get("total"),
+            "hits": tenant_metrics.get("hits"),
+        }
+        logger.info("rag.drift.recall", extra=payload)
+
+        if delta is not None and delta <= -0.1:
+            emit_event("rag.drift.recall_drop", payload)
+            logger.warning("rag.drift.recall_drop", extra=payload)
+
+        metrics_path = _drift_metrics_path(tenant_id, dataset_id)
+        object_store.write_json(
+            metrics_path,
+            {
+                "dataset_id": dataset_id,
+                "recall": recall,
+                "total_queries": tenant_metrics.get("total"),
+                "hits": tenant_metrics.get("hits"),
+                "computed_at": timezone.now().isoformat(),
+            },
+        )
+
+    return summary
 
 
 def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
@@ -3098,7 +3335,6 @@ def _ensure_ingestion_phase_spans(
 @shared_task(
     base=RetryableTask,
     queue="ingestion",
-    accepts_scope=True,
     name="ai_core.tasks.run_ingestion_graph",
     time_limit=900,
     soft_time_limit=840,
