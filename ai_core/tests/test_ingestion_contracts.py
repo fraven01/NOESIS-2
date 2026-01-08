@@ -20,7 +20,7 @@ from ai_core.rag.vector_space_resolver import (
     VectorSpaceResolverErrorCode,
 )
 from ai_core.rag.schemas import Chunk
-from ai_core.rag.vector_client import DedupSignatures
+from ai_core.rag.deduplication import DedupSignatures
 from common.logging import log_context
 from documents.contracts import (
     DocumentMeta,

@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ai_core.infra.object_store import read_json, sanitize_identifier, write_json
 
+
+if TYPE_CHECKING:  # pragma: no cover - typing-only imports
+    from ai_core.tool_contracts import ToolContext
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +37,33 @@ class Checkpointer(Protocol):
 class GraphContext:
     """Immutable descriptor for a graph execution."""
 
-    tenant_id: str
-    case_id: str
-    trace_id: str
-    workflow_id: str
-    run_id: str
+    tool_context: "ToolContext"
     graph_name: str
     graph_version: str = "v0"
+
+    @property
+    def tenant_id(self) -> str:
+        return self.tool_context.scope.tenant_id
+
+    @property
+    def case_id(self) -> str | None:
+        return self.tool_context.business.case_id
+
+    @property
+    def trace_id(self) -> str:
+        return self.tool_context.scope.trace_id
+
+    @property
+    def workflow_id(self) -> str | None:
+        return (
+            self.tool_context.business.workflow_id or self.tool_context.business.case_id
+        )
+
+    @property
+    def run_id(self) -> str | None:
+        return (
+            self.tool_context.scope.run_id or self.tool_context.scope.ingestion_run_id
+        )
 
 
 class FileCheckpointer(Checkpointer):

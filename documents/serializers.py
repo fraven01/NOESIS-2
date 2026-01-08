@@ -90,7 +90,7 @@ class DocumentCommentSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
-    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    user_id = serializers.UUIDField(source="user.id", read_only=True)
     username = serializers.CharField(source="user.username", read_only=True)
     mentions = serializers.SerializerMethodField()
 

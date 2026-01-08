@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from django.http import HttpResponse
@@ -189,6 +190,7 @@ def test_observe_span_no_tracer_noop(monkeypatch):
 
 def test_update_observation_sets_attributes(monkeypatch):
     recorded: dict[str, Any] = {}
+    user_id = str(uuid4())
 
     class FakeSpan:
         def set_attribute(self, key: str, value: Any) -> None:  # noqa: D401
@@ -197,13 +199,13 @@ def test_update_observation_sets_attributes(monkeypatch):
     monkeypatch.setattr(observability, "_get_current_span", lambda: FakeSpan())
 
     update_observation(
-        user_id="tenant-1",
+        user_id=user_id,
         session_id="case-1",
         tags=["a", "b"],
         metadata={"foo": "bar"},
     )
 
-    assert recorded["user.id"] == "tenant-1"
+    assert recorded["user.id"] == user_id
     assert recorded["session.id"] == "case-1"
     assert recorded["tags"] == ["a", "b"]
     assert recorded["meta.foo"] == "bar"
@@ -241,15 +243,14 @@ def test_record_span_invokes_tracer(monkeypatch):
 
     record_span(
         "unit.record",
-        trace_id="abc",
-        attributes={"value": 1, "flag": True},
+        attributes={"value": 1, "flag": True, "trace_id": "abc"},
     )
 
     name, attrs = spans[0]
     assert name == "unit.record"
     assert attrs["value"] == 1
     assert attrs["flag"] is True
-    assert attrs["legacy.trace_id"] == "abc"
+    assert attrs["trace_id"] == "abc"
 
 
 def test_emit_event_attaches_to_span(monkeypatch):
@@ -294,6 +295,7 @@ def test_emit_event_prints_without_span(monkeypatch, caplog):
 
 def test_start_and_end_trace_manage_context(monkeypatch):
     seen: list[str] = []
+    user_id = str(uuid4())
 
     class FakeContext:
         def __enter__(self) -> None:  # noqa: D401
@@ -312,7 +314,12 @@ def test_start_and_end_trace_manage_context(monkeypatch):
     monkeypatch.setattr(observability, "tracing_enabled", lambda: True)
     monkeypatch.setattr(observability, "_get_tracer", lambda: FakeTracer())
 
-    start_trace(name="root", user_id="user", session_id="case", metadata={"k": "v"})
+    start_trace(
+        name="root",
+        user_id=user_id,
+        session_id="case",
+        metadata={"k": "v"},
+    )
     end_trace()
 
     assert seen[0] == "root"

@@ -398,9 +398,9 @@ def emit_router_validation_failure(error: RouterInputError) -> None:
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
+        metadata["trace_id"] = str(trace_id)
         record_span(
             "rag.router.validation_failed",
-            trace_id=str(trace_id),
             attributes=metadata,
         )
 

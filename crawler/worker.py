@@ -551,6 +551,11 @@ class CrawlerWorker:
             candidate_business = meta_overrides.get("business_context")
             if isinstance(candidate_business, Mapping):
                 business_source = dict(candidate_business)
+        initiated_by_user_id = (
+            meta_overrides.get("initiated_by_user_id")
+            if isinstance(meta_overrides, Mapping)
+            else None
+        )
 
         # Extract business IDs (BREAKING CHANGE: from business_context or parameters)
         resolved_case_id = case_id or business_source.get("case_id")
@@ -560,18 +565,13 @@ class CrawlerWorker:
         # Build ScopeContext (infrastructure only)
         scope = normalize_task_context(
             tenant_id=tenant_id,
-            case_id=(
-                str(resolved_case_id) if resolved_case_id else None
-            ),  # DEPRECATED param
             service_id="crawler-worker",
             trace_id=trace_id or scope_source.get("trace_id"),
             invocation_id=scope_source.get("invocation_id"),
             run_id=scope_source.get("run_id"),
             ingestion_run_id=scope_source.get("ingestion_run_id"),
-            workflow_id=resolved_workflow_id,  # DEPRECATED param
             idempotency_key=idempotency_key or scope_source.get("idempotency_key"),
             tenant_schema=scope_source.get("tenant_schema"),
-            collection_id=resolved_collection_id,  # DEPRECATED param
         )
 
         # Build BusinessContext (BREAKING CHANGE: business domain IDs)
@@ -584,7 +584,16 @@ class CrawlerWorker:
                 str(resolved_collection_id) if resolved_collection_id else None
             ),
         )
-        tool_context = scope.to_tool_context(business=business)
+        metadata = (
+            {"initiated_by_user_id": initiated_by_user_id}
+            if initiated_by_user_id
+            else None
+        )
+        tool_context = (
+            scope.to_tool_context(business=business, metadata=metadata)
+            if metadata
+            else scope.to_tool_context(business=business)
+        )
 
         payload: dict[str, Any] = {
             "scope_context": scope.model_dump(mode="json"),
@@ -592,6 +601,8 @@ class CrawlerWorker:
             "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
             "crawl_id": crawl_id,
         }
+        if initiated_by_user_id:
+            payload["initiated_by_user_id"] = initiated_by_user_id
         if frontier_state:
             payload.setdefault("frontier", dict(frontier_state))
         if meta_overrides:
@@ -611,6 +622,7 @@ class CrawlerWorker:
                 "invocation_id",
                 "user_id",
                 "service_id",
+                "initiated_by_user_id",
                 "document_id",
                 "document_version_id",
             ):

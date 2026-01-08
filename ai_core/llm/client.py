@@ -200,7 +200,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     prompt:
         Prompt text which will be PII-masked before sending.
     metadata:
-        Dict containing at least ``tenant_id``, ``case_id``, and ``trace_id``.
+        Dict containing at least ``tenant_id``, ``case_id``, and ``trace_id``,
+        plus optional ``user_id`` for telemetry attribution.
     """
 
     model_id = resolve(label)
@@ -209,6 +210,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {cfg.litellm_api_key}"}
     tenant_value = metadata.get("tenant_id")
     case_value = metadata.get("case_id")
+    user_value = metadata.get("user_id")
     propagated_headers = {
         X_TRACE_ID_HEADER: metadata.get("trace_id"),
         X_CASE_ID_HEADER: case_value,
@@ -250,11 +252,12 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     # Attach lightweight context to the current observation (no PII payloads)
     _safe_update_observation(
         tags=["llm", "litellm", f"label:{label}", f"model:{model_id}"],
-        user_id=str(tenant_value) if tenant_value else None,
+        user_id=str(user_value) if user_value else None,
         session_id=str(case_value) if case_value else None,
         metadata={
             "trace_id": metadata.get("trace_id"),
             "prompt_version": prompt_version,
+            "tenant_id": tenant_value,
         },
     )
 

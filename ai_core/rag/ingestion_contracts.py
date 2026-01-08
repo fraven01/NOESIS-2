@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from documents.contracts import NormalizedDocument
 from documents.providers import parse_provider_reference
 
-from ai_core.rag.vector_client import DedupSignatures
+from ai_core.rag.deduplication import DedupSignatures
 
 from .schemas import Chunk
 
@@ -192,9 +192,9 @@ def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolut
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
+        metadata["trace_id"] = str(trace_id)
         record_span(
             "rag.ingestion.profile.resolve",
-            trace_id=str(trace_id),
             attributes=metadata,
         )
 
@@ -505,9 +505,9 @@ def log_embedding_quality_stats(
 
     trace_id = get_log_context().get("trace_id")
     if trace_id:
+        payload["trace_id"] = str(trace_id)
         record_span(
             "embedding.quality.stats",
-            trace_id=str(trace_id),
             attributes=payload,
         )
 

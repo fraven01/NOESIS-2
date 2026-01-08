@@ -404,7 +404,6 @@ class UploadWorker:
         # Build ScopeContext (infrastructure only, no business IDs)
         scope = normalize_task_context(
             tenant_id=tenant_id,
-            case_id=case_id,  # DEPRECATED parameter, not used in ScopeContext
             service_id="upload-worker",
             trace_id=trace_id,
             invocation_id=invocation_id,
@@ -412,14 +411,29 @@ class UploadWorker:
 
         # Build BusinessContext (business domain IDs)
         business = BusinessContext(case_id=case_id, workflow_id=workflow_id)
-        tool_context = scope.to_tool_context(business=business)
+        initiated_by_user_id = None
+        if audit_meta:
+            initiated_by_user_id = audit_meta.get("initiated_by_user_id")
+        metadata = (
+            {"initiated_by_user_id": initiated_by_user_id}
+            if initiated_by_user_id
+            else None
+        )
+        tool_context = (
+            scope.to_tool_context(business=business, metadata=metadata)
+            if metadata
+            else scope.to_tool_context(business=business)
+        )
 
-        return {
+        payload = {
             "scope_context": scope.model_dump(mode="json"),
             "business_context": business.model_dump(mode="json", exclude_none=True),
             "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
             "audit_meta": dict(audit_meta or {}),
         }
+        if initiated_by_user_id:
+            payload["initiated_by_user_id"] = initiated_by_user_id
+        return payload
 
     def _get_domain_service(self) -> DocumentDomainService:
         if self._domain_service is None:

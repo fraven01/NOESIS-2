@@ -26,7 +26,7 @@ from ai_core.infra.policy import (
     get_session_scope,
 )
 from ai_core.metrics.task_metrics import record_task_retry
-from ai_core.tool_contracts.base import tool_context_from_meta
+from ai_core.tool_contracts.base import ToolContext, tool_context_from_meta
 from ai_core.tools.errors import (
     InputError,
     PermanentError,
@@ -132,7 +132,6 @@ class ContextTask(Task):
         record_span(
             f"task.{task_name}.start",
             attributes={**context, **start_payload},
-            trace_id=context.get("trace_id"),
         )
         logger.info("celery.task.start", extra=start_payload)
 
@@ -163,7 +162,6 @@ class ContextTask(Task):
             record_span(
                 f"task.{task_name}.end",
                 attributes={**context, **end_payload},
-                trace_id=context.get("trace_id"),
             )
 
             if exc is not None:
@@ -255,36 +253,41 @@ class ContextTask(Task):
         if tool_context is None:
             return {}
 
-        context_data: dict[str, Any] | None = None
+        tenant_id = None
+        case_id = None
+        trace_id = None
+        idempotency_key = None
 
-        if isinstance(tool_context, Mapping):
-            context_data = dict(tool_context)
+        if isinstance(tool_context, ToolContext):
+            scope = tool_context.scope
+            business = tool_context.business
+            tenant_id = scope.tenant_id
+            trace_id = scope.trace_id
+            idempotency_key = scope.idempotency_key
+            case_id = business.case_id
+        elif isinstance(tool_context, Mapping):
+            scope_data = tool_context.get("scope")
+            business_data = tool_context.get("business")
+            if isinstance(scope_data, Mapping):
+                tenant_id = scope_data.get("tenant_id")
+                trace_id = scope_data.get("trace_id")
+                idempotency_key = scope_data.get("idempotency_key")
+            if isinstance(business_data, Mapping):
+                case_id = business_data.get("case_id")
         else:
-            attributes = {}
-            for field in ("tenant_id", "case_id", "trace_id", "idempotency_key"):
-                if hasattr(tool_context, field):
-                    attributes[field] = getattr(tool_context, field)
-            if attributes:
-                context_data = attributes
-
-        if not context_data:
             return {}
 
         context: dict[str, str] = {}
 
-        tenant_id = context_data.get("tenant_id")
         if tenant_id:
             context["tenant_id"] = self._normalize(tenant_id)
 
-        case_id = context_data.get("case_id")
         if case_id:
             context["case_id"] = self._normalize(case_id)
 
-        trace_id = context_data.get("trace_id")
         if trace_id:
             context["trace_id"] = self._normalize(trace_id)
 
-        idempotency_key = context_data.get("idempotency_key")
         if idempotency_key:
             context["idempotency_key"] = self._normalize(idempotency_key)
 
@@ -717,7 +720,6 @@ class RetryableTask(ScopedTask):
             record_span(
                 f"task.{task_name or agent_id}.retry.{attempt}",
                 attributes=payload,
-                trace_id=context.get("trace_id"),
             )
         except Exception:
             logger.debug("task.retry.record_span_failed", exc_info=True)

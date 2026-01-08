@@ -106,7 +106,7 @@ class DbDocumentsRepository(DocumentsRepository):
             last_hop_service_id = (audit_meta or {}).get("last_hop_service_id")
             if created_by_user_id:
                 try:
-                    created_by_user = User.objects.get(pk=int(created_by_user_id))
+                    created_by_user = User.objects.get(pk=created_by_user_id)
                 except Exception:
                     logger.warning(
                         "documents.created_by_user_missing",

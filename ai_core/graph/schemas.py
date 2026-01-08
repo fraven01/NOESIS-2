@@ -10,8 +10,10 @@ from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     META_CASE_ID_KEY,
     META_IDEMPOTENCY_KEY,
+    META_INVOCATION_ID_KEY,
     META_KEY_ALIAS_KEY,
     META_COLLECTION_ID_KEY,
+    META_SERVICE_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
     META_TRACE_ID_KEY,
@@ -20,7 +22,9 @@ from common.constants import (
     META_DOCUMENT_VERSION_ID_KEY,
     X_CASE_ID_HEADER,
     X_COLLECTION_ID_HEADER,
+    X_INVOCATION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
+    X_SERVICE_ID_HEADER,
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
     X_TRACE_ID_HEADER,
@@ -31,6 +35,7 @@ from common.constants import (
 
 from ai_core.contracts.business import BusinessContext
 from ai_core.contracts.scope import ScopeContext
+from ai_core.ids.extractors import extract_runtime_ids
 from ai_core.infra.rate_limit import get_quota
 
 
@@ -116,21 +121,14 @@ def _build_scope_context(request: Any) -> ScopeContext:
     invocation_id = (
         _normalize_header_value(
             getattr(request, "invocation_id", None)
-            or headers.get("X-Invocation-ID")
-            or meta.get("HTTP_X_INVOCATION_ID")
+            or headers.get(X_INVOCATION_ID_HEADER)
+            or meta.get(META_INVOCATION_ID_KEY)
         )
         or uuid4().hex
     )
 
-    run_id = _normalize_header_value(
-        getattr(request, "run_id", None)
-        or headers.get("X-Run-ID")
-        or meta.get("HTTP_X_RUN_ID")
-    )
-    ingestion_run_id = _normalize_header_value(
-        getattr(request, "ingestion_run_id", None)
-        or headers.get("X-Ingestion-Run-ID")
-        or meta.get("HTTP_X_INGESTION_RUN_ID")
+    run_id, ingestion_run_id = extract_runtime_ids(
+        request=request, headers=headers, meta=meta, generate_if_missing=True
     )
 
     if not tenant_id_raw:
@@ -139,9 +137,6 @@ def _build_scope_context(request: Any) -> ScopeContext:
     tenant_id = str(tenant_id_raw).strip()
     if not tenant_id:
         raise ValueError("missing required meta keys: tenant_id")
-
-    if not ingestion_run_id and not run_id:
-        run_id = uuid4().hex
 
     # BREAKING CHANGE (Option A - Pre-MVP ID Contract):
     # Extract identity IDs (user_id for User Request Hops, service_id for S2S Hops)
@@ -159,8 +154,8 @@ def _build_scope_context(request: Any) -> ScopeContext:
     if not user_id:
         service_id = _normalize_header_value(
             getattr(request, "service_id", None)
-            or headers.get("X-Service-ID")
-            or meta.get("HTTP_X_SERVICE_ID")
+            or headers.get(X_SERVICE_ID_HEADER)
+            or meta.get(META_SERVICE_ID_KEY)
         )
 
     # BREAKING CHANGE (Option A): Business IDs removed from ScopeContext
@@ -240,8 +235,12 @@ def normalize_meta(request: Any) -> dict:
         "graph_version": graph_version,
         "requested_at": requested_at,
     }
+    if scope.user_id:
+        context_metadata["initiated_by_user_id"] = scope.user_id
 
     meta["context_metadata"] = context_metadata
+    if scope.user_id:
+        meta["initiated_by_user_id"] = scope.user_id
 
     # Build ToolContext with BusinessContext
     tool_context = scope.to_tool_context(business=business, metadata=context_metadata)

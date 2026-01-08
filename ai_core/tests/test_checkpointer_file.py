@@ -4,19 +4,25 @@ from __future__ import annotations
 
 import json
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.graph.core import FileCheckpointer, GraphContext
 from ai_core.infra import object_store
+from ai_core.tool_contracts.base import tool_context_from_scope
 
 
 def test_load_returns_empty_when_state_file_absent(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
     checkpointer = FileCheckpointer()
-    ctx = GraphContext(
+    scope = ScopeContext(
         tenant_id="tenant-123",
-        case_id="case-456",
         trace_id="trace-789",
-        workflow_id="test-workflow",
+        invocation_id="invocation-001",
         run_id="test-run",
+    )
+    business = BusinessContext(case_id="case-456")
+    ctx = GraphContext(
+        tool_context=tool_context_from_scope(scope, business),
         graph_name="info_intake",
     )
 
@@ -26,12 +32,15 @@ def test_load_returns_empty_when_state_file_absent(tmp_path, monkeypatch) -> Non
 def test_save_persists_state_under_sanitized_path(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
     checkpointer = FileCheckpointer()
-    ctx = GraphContext(
+    scope = ScopeContext(
         tenant_id="Tenant One",
-        case_id="Case:01",
         trace_id="trace-abc",
-        workflow_id="test-workflow",
+        invocation_id="invocation-002",
         run_id="test-run",
+    )
+    business = BusinessContext(case_id="Case:01")
+    ctx = GraphContext(
+        tool_context=tool_context_from_scope(scope, business),
         graph_name="retrieval_augmented_generation",
     )
     state = {"step": "complete", "nested": {"value": 3}}

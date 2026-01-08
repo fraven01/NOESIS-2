@@ -77,12 +77,10 @@ def test_successful_search(
 ) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(
-        name: str, *, attributes: dict[str, object], trace_id: str | None = None
-    ) -> None:
+    def _capture_span(name: str, *, attributes: dict[str, object]) -> None:
         assert name == "tool.web_search"
         captured_span.update(attributes)
-        assert trace_id == context.trace_id
+        assert attributes["trace_id"] == context.trace_id
 
     monkeypatch.setattr("ai_core.tools.web_search.record_span", _capture_span)
 
@@ -133,9 +131,7 @@ def test_timeout_error(
 ) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(
-        name: str, *, attributes: dict[str, object], trace_id: str | None = None
-    ) -> None:
+    def _capture_span(name: str, *, attributes: dict[str, object]) -> None:
         captured_span.update(attributes)
 
     monkeypatch.setattr("ai_core.tools.web_search.record_span", _capture_span)
@@ -169,9 +165,7 @@ def test_quota_exceeded(
 ) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(
-        name: str, *, attributes: dict[str, object], trace_id: str | None = None
-    ) -> None:
+    def _capture_span(name: str, *, attributes: dict[str, object]) -> None:
         captured_span.update(attributes)
 
     monkeypatch.setattr("ai_core.tools.web_search.record_span", _capture_span)
@@ -236,12 +230,10 @@ def test_invalid_query_only_operators(
 ) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(
-        name: str, *, attributes: dict[str, object], trace_id: str | None = None
-    ) -> None:
+    def _capture_span(name: str, *, attributes: dict[str, object]) -> None:
         assert name == "tool.web_search"
         captured_span.update(attributes)
-        assert trace_id == context.trace_id
+        assert attributes["trace_id"] == context.trace_id
 
     monkeypatch.setattr("ai_core.tools.web_search.record_span", _capture_span)
 
@@ -280,9 +272,7 @@ def test_bad_response_error(
 ) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(
-        name: str, *, attributes: dict[str, object], trace_id: str | None = None
-    ) -> None:
+    def _capture_span(name: str, *, attributes: dict[str, object]) -> None:
         captured_span.update(attributes)
 
     monkeypatch.setattr("ai_core.tools.web_search.record_span", _capture_span)

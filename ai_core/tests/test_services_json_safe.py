@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from ai_core import services
-from ai_core.rag.vector_client import DedupSignatures, NearDuplicateSignature
+from ai_core.rag.deduplication import DedupSignatures, NearDuplicateSignature
 
 
 def test_dump_jsonable_handles_dataclass_payloads():

@@ -34,7 +34,13 @@ For entity persistence within graphs, use `audit_meta_from_scope()`:
 from ai_core.contracts.audit_meta import audit_meta_from_scope
 
 # In a graph node that creates entities:
-audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
+tool_context = state["tool_context"]
+scope = tool_context.scope
+audit_meta = audit_meta_from_scope(
+    scope,
+    created_by_user_id=scope.user_id,
+    initiated_by_user_id=tool_context.metadata.get("initiated_by_user_id"),
+)
 entity.audit_meta = audit_meta.model_dump()
 ```
 

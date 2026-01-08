@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from ai_core.rag.delta import DeltaDecision, DeltaStatus, evaluate_delta
-from ai_core.rag.vector_client import DedupSignatures
+from ai_core.rag.deduplication import DedupSignatures
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,

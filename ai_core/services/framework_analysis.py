@@ -24,7 +24,12 @@ def run_framework_analysis(
         raise TypeError("framework analysis graph returned unexpected output type")
 
     scope = context.scope
-    audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
+    initiated_by_user_id = context.metadata.get("initiated_by_user_id")
+    audit_meta = audit_meta_from_scope(
+        scope,
+        created_by_user_id=scope.user_id,
+        initiated_by_user_id=initiated_by_user_id,
+    )
 
     profile = persist_profile(
         tenant_schema=str(scope.tenant_schema or ""),

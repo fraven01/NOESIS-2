@@ -56,7 +56,6 @@ def _build_task_meta(
 ) -> dict[str, object]:
     scope = normalize_task_context(
         tenant_id=tenant_id,
-        case_id=case_id,
         service_id="celery-ingestion-worker",
         trace_id=trace_id,
         invocation_id=uuid4().hex,

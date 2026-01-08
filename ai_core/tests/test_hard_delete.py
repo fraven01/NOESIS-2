@@ -58,10 +58,14 @@ def test_hard_delete_service_key(monkeypatch, settings):
         name: str,
         *,
         attributes: dict[str, object] | None = None,
-        trace_id: str | None = None,
     ) -> None:
+        payload = attributes or {}
         spans.append(
-            {"trace_id": trace_id, "node_name": name, "metadata": attributes or {}}
+            {
+                "trace_id": payload.get("trace_id"),
+                "node_name": name,
+                "metadata": payload,
+            }
         )
 
     monkeypatch.setattr("ai_core.rag.hard_delete.record_span", _capture_span)
@@ -124,10 +128,15 @@ def test_hard_delete_service_key_with_scoped_session(monkeypatch, settings):
     spans: list[dict[str, object]] = []
 
     def _capture_span(
-        trace_id: str, node_name: str, metadata: dict[str, object]
+        name: str, *, attributes: dict[str, object] | None = None
     ) -> None:
+        payload = attributes or {}
         spans.append(
-            {"trace_id": trace_id, "node_name": node_name, "metadata": metadata}
+            {
+                "trace_id": payload.get("trace_id"),
+                "node_name": name,
+                "metadata": payload,
+            }
         )
 
     monkeypatch.setattr("ai_core.rag.hard_delete.record_span", _capture_span)

@@ -168,8 +168,8 @@ def test_router_requires_tenant_id(
     monkeypatch.setattr(
         router_validation_module,
         "record_span",
-        lambda name, *, attributes=None, trace_id=None: spans.append(
-            (name, attributes, trace_id)
+        lambda name, *, attributes=None: spans.append(
+            (name, attributes, (attributes or {}).get("trace_id"))
         ),
     )
 
@@ -648,8 +648,8 @@ def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "ai_core.rag.vector_store.record_span",
-        lambda name, *, attributes=None, trace_id=None: spans.append(
-            (name, attributes, trace_id)
+        lambda name, *, attributes=None: spans.append(
+            (name, attributes, (attributes or {}).get("trace_id"))
         ),
     )
     monkeypatch.setattr(

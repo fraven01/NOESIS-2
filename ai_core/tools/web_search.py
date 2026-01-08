@@ -319,9 +319,7 @@ class WebSearchWorker:
             error=error,
             quota_remaining=quota_remaining,
         )
-        record_span(
-            "tool.web_search", attributes=span_attributes, trace_id=ctx.scope.trace_id
-        )
+        record_span("tool.web_search", attributes=span_attributes)
 
         outcome_meta = self._build_outcome_meta(
             ctx,
@@ -640,7 +638,6 @@ class WebSearchWorker:
                 error_kind_override="ValidationError",
                 error_message_override=message,
             ),
-            trace_id=ctx.trace_id,
         )
         return WebSearchResponse(results=[], outcome=outcome)
 

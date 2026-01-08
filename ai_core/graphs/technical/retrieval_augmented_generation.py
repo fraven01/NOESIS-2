@@ -289,8 +289,8 @@ def _build_compiled_graph(
             logger.warning(
                 "rag.compose.missing_prompt_version",
                 extra={
-                    "tenant_id": context.tenant_id,
-                    "case_id": context.case_id,
+                    "tenant_id": context.scope.tenant_id,
+                    "case_id": context.business.case_id,
                     "graph": getattr(context, "graph_name", "rag.default"),
                 },
             )

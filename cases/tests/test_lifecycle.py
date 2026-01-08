@@ -16,12 +16,22 @@ def test_update_case_from_collection_search_creates_events(test_tenant_schema_na
     with tenant_context(tenant):
         Case.objects.create(tenant=tenant, external_id="case-lifecycle")
 
+    from ai_core.contracts import BusinessContext, ScopeContext
+
+    tool_context = ScopeContext(
+        tenant_id=tenant.schema_name,
+        trace_id="trace-42",
+        invocation_id="invoke-1",
+        run_id="run-1",
+    ).to_tool_context(
+        business=BusinessContext(
+            workflow_id="wf-123",
+            collection_id="legal-news",
+        )
+    )
+
     state = {
-        "context": {
-            "workflow_id": "wf-123",
-            "trace_id": "trace-42",
-            "collection_scope": "legal-news",
-        },
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         "transitions": [
             {"node": "strategy_generated", "decision": "ok"},
             {"node": "ingest_triggered", "decision": "triggered"},
@@ -62,8 +72,17 @@ def test_update_case_from_collection_search_sets_completed_phase(
     with tenant_context(tenant):
         Case.objects.create(tenant=tenant, external_id="case-phase")
 
+    from ai_core.contracts import BusinessContext, ScopeContext
+
+    tool_context = ScopeContext(
+        tenant_id=tenant.schema_name,
+        trace_id="trace-77",
+        invocation_id="invoke-2",
+        run_id="run-2",
+    ).to_tool_context(business=BusinessContext(workflow_id="wf-321"))
+
     state = {
-        "context": {"workflow_id": "wf-321"},
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         "input": {"collection_scope": "fin-law"},
         "transitions": [
             {"node": "ingest_triggered", "decision": "triggered"},

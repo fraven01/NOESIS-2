@@ -134,9 +134,9 @@ def _emit_vector_space_resolution(resolution: VectorSpaceResolution) -> None:
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
+        metadata["trace_id"] = str(trace_id)
         record_span(
             "rag.vector_space.resolve",
-            trace_id=str(trace_id),
             attributes=metadata,
         )
 

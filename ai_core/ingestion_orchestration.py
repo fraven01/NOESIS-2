@@ -254,6 +254,12 @@ class ObservabilityWrapper:
 
         if ingestion_ctx.tenant_id:
             metadata["tenant_id"] = ingestion_ctx.tenant_id
+        user_id = trace_context.get("user_id")
+        if user_id:
+            metadata["user_id"] = str(user_id)
+        service_id = trace_context.get("service_id")
+        if service_id:
+            metadata["service_id"] = str(service_id)
         if ingestion_ctx.case_id:
             metadata["case_id"] = ingestion_ctx.case_id
         if ingestion_ctx.document_id:
@@ -268,7 +274,7 @@ class ObservabilityWrapper:
 
         return ObservabilityContext(
             trace_name="crawler.ingestion",
-            user_id=ingestion_ctx.tenant_id,
+            user_id=str(user_id) if user_id else None,
             session_id=ingestion_ctx.case_id,
             metadata=metadata,
             task_identifier=task_identifier,

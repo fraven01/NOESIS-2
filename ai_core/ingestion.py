@@ -586,12 +586,9 @@ def process_document(
     reembed_progress_key: Optional[str] = None,
 ) -> Dict[str, object]:
     state_payload = dict(state or {})
-    tool_context = None
-    if isinstance(meta, Mapping):
-        try:
-            tool_context = tool_context_from_meta(meta)
-        except (TypeError, ValueError):
-            tool_context = None
+    if not isinstance(meta, Mapping):
+        raise ValueError("meta with tool_context is required for process_document")
+    tool_context = tool_context_from_meta(meta)
 
     def _coerce_str(value: object | None) -> Optional[str]:
         if value is None:
@@ -604,18 +601,10 @@ def process_document(
         except Exception:
             return None
 
-    tenant = _coerce_str(state_payload.get("tenant_id")) or (
-        tool_context.scope.tenant_id if tool_context else None
-    )
-    case = _coerce_str(state_payload.get("case_id")) or (
-        tool_context.business.case_id if tool_context else None
-    )
-    trace_id = _coerce_str(state_payload.get("trace_id")) or (
-        tool_context.scope.trace_id if tool_context else None
-    )
-    tenant_schema = _coerce_str(state_payload.get("tenant_schema")) or (
-        tool_context.scope.tenant_schema if tool_context else None
-    )
+    tenant = _coerce_str(tool_context.scope.tenant_id)
+    case = _coerce_str(tool_context.business.case_id)
+    trace_id = _coerce_str(tool_context.scope.trace_id)
+    tenant_schema = _coerce_str(tool_context.scope.tenant_schema)
     document_id = _coerce_str(state_payload.get("document_id"))
     embedding_profile = _coerce_str(state_payload.get("embedding_profile"))
     if reembed_progress_key is None:
@@ -852,12 +841,9 @@ def run_ingestion(
     dead_letter_queue: Optional[str] = None,
 ) -> Dict[str, object]:
     state_payload = dict(state or {})
-    tool_context = None
-    if isinstance(meta, Mapping):
-        try:
-            tool_context = tool_context_from_meta(meta)
-        except (TypeError, ValueError):
-            tool_context = None
+    if not isinstance(meta, Mapping):
+        raise ValueError("meta with tool_context is required for run_ingestion")
+    tool_context = tool_context_from_meta(meta)
 
     def _coerce_str(value: object | None) -> Optional[str]:
         if value is None:
@@ -870,27 +856,15 @@ def run_ingestion(
         except Exception:
             return None
 
-    tenant = _coerce_str(state_payload.get("tenant_id")) or (
-        tool_context.scope.tenant_id if tool_context else None
-    )
-    case = _coerce_str(state_payload.get("case_id")) or (
-        tool_context.business.case_id if tool_context else None
-    )
-    trace_id = _coerce_str(state_payload.get("trace_id")) or (
-        tool_context.scope.trace_id if tool_context else None
-    )
-    run_id = (
-        _coerce_str(state_payload.get("run_id"))
-        or (tool_context.scope.ingestion_run_id if tool_context else None)
-        or (tool_context.scope.run_id if tool_context else None)
+    tenant = _coerce_str(tool_context.scope.tenant_id)
+    case = _coerce_str(tool_context.business.case_id)
+    trace_id = _coerce_str(tool_context.scope.trace_id)
+    run_id = _coerce_str(
+        tool_context.scope.ingestion_run_id or tool_context.scope.run_id
     )
     embedding_profile = _coerce_str(state_payload.get("embedding_profile"))
-    idempotency_key = _coerce_str(state_payload.get("idempotency_key")) or (
-        tool_context.scope.idempotency_key if tool_context else None
-    )
-    tenant_schema = _coerce_str(state_payload.get("tenant_schema")) or (
-        tool_context.scope.tenant_schema if tool_context else None
-    )
+    idempotency_key = _coerce_str(tool_context.scope.idempotency_key)
+    tenant_schema = _coerce_str(tool_context.scope.tenant_schema)
 
     if timeout_seconds is None:
         timeout_candidate = state_payload.get("timeout_seconds")

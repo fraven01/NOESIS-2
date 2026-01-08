@@ -73,7 +73,7 @@ def run_ingestion_graph(
     # For entity persistence
     audit_meta = audit_meta_from_scope(
         scope,
-        initiated_by_user_id=context.scope.user_id,
+        initiated_by_user_id=context.metadata.get("initiated_by_user_id"),
     )
 
     # Execute graph with scope
@@ -226,8 +226,8 @@ def process_crawl_job(job: CrawlJob):
 
 For each Celery task in `ai_core/tasks.py`:
 
-- [ ] Add `service_id` parameter to `normalize_task_context()`
-- [ ] Add `initiated_by_user_id` parameter for audit tracking
+- [ ] Use `normalize_task_context()` with explicit `service_id`
+- [ ] Capture `initiated_by_user_id` via `audit_meta_from_scope()` (not ScopeContext)
 - [ ] Build `audit_meta` for entity creation
 - [ ] Log service_id in structured logs
 

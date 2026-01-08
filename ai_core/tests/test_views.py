@@ -630,7 +630,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
 
     tool_context = recorded["tool_context"]
     assert isinstance(tool_context, ToolContext)
-    assert tool_context.tenant_id == tenant_id
+    assert tool_context.scope.tenant_id == tenant_id
     assert tool_context.metadata.get("graph_name") == "rag.default"
 
     params = recorded["params"]

@@ -167,8 +167,8 @@ def test_emit_router_validation_failure_emits_span(monkeypatch) -> None:
     monkeypatch.setattr(
         router_validation_module,
         "record_span",
-        lambda name, *, attributes=None, trace_id=None: spans.append(
-            (name, attributes, trace_id)
+        lambda name, *, attributes=None: spans.append(
+            (name, attributes, (attributes or {}).get("trace_id"))
         ),
     )
 

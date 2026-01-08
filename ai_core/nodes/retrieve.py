@@ -645,16 +645,20 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
 
     started_at = time.perf_counter()
 
-    tenant_id = str(getattr(context, "tenant_id", "") or "").strip()
+    tenant_id = str(context.scope.tenant_id or "").strip()
     if not tenant_id:
         raise ContextError("tenant_id required", field="tenant_id")
 
     tenant_schema = (
-        str(context.tenant_schema).strip()
-        if context.tenant_schema is not None
+        str(context.scope.tenant_schema).strip()
+        if context.scope.tenant_schema is not None
         else None
     )
-    case_id = str(context.case_id).strip() if context.case_id is not None else None
+    case_id = (
+        str(context.business.case_id).strip()
+        if context.business.case_id is not None
+        else None
+    )
 
     filters = _ensure_mapping(params.filters, field="filters")
     process = params.process

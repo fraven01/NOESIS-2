@@ -6,6 +6,9 @@ import pytest
 from celery.exceptions import TimeoutError as CeleryTimeoutError
 
 from ai_core import ingestion
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
+from ai_core.tool_contracts import ToolContext
 from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
 from ai_core.tools import InputError
 
@@ -164,6 +167,25 @@ def _patch_perf_counter(monkeypatch, start: float, end: float) -> None:
     monkeypatch.setattr(ingestion.time, "perf_counter", fake_perf_counter)
 
 
+def _build_meta(state: Dict[str, Any]) -> Dict[str, Any]:
+    scope = ScopeContext(
+        tenant_id=state["tenant_id"],
+        trace_id=state["trace_id"],
+        invocation_id="inv-1",
+        run_id=state["run_id"],
+        idempotency_key=state.get("idempotency_key"),
+        tenant_schema=state.get("tenant_schema"),
+        service_id="ingestion-task",
+    )
+    business = BusinessContext(case_id=state.get("case_id"))
+    tool_context = ToolContext(scope=scope, business=business)
+    return {
+        "scope_context": scope.model_dump(mode="json", exclude_none=True),
+        "business_context": business.model_dump(mode="json", exclude_none=True),
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+    }
+
+
 @pytest.mark.django_db
 def test_run_ingestion_success(monkeypatch):
     (
@@ -209,9 +231,10 @@ def test_run_ingestion_success(monkeypatch):
         "trace_id": "trace-xyz",
         "idempotency_key": "idem-1",
     }
+    meta = _build_meta(state)
     response = ingestion.run_ingestion.run(
         state,
-        None,
+        meta,
         timeout_seconds=5.0,
     )
 
@@ -234,7 +257,7 @@ def test_run_ingestion_success(monkeypatch):
                 "tenant_schema": None,
                 "trace_id": "trace-xyz",
             },
-            None,
+            meta,
         ),
         (
             {
@@ -245,7 +268,7 @@ def test_run_ingestion_success(monkeypatch):
                 "tenant_schema": None,
                 "trace_id": "trace-xyz",
             },
-            None,
+            meta,
         ),
     ]
     assert len(captured_signatures) == 1
@@ -348,7 +371,7 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     }
     response = ingestion.run_ingestion.run(
         state,
-        None,
+        _build_meta(state),
         timeout_seconds=3.0,
         dead_letter_queue="dlq-test",
     )
@@ -454,7 +477,7 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
         }
         ingestion.run_ingestion.run(
             state,
-            None,
+            _build_meta(state),
             timeout_seconds=2.5,
             dead_letter_queue="dlq-exc",
         )
@@ -526,7 +549,7 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
     }
     response = ingestion.run_ingestion.run(
         state,
-        None,
+        _build_meta(state),
         dead_letter_queue="dlq-contract",
     )
 

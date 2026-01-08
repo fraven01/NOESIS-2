@@ -69,7 +69,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
         context: ToolContext, params: retrieve.RetrieveInput
     ) -> retrieve.RetrieveOutput:
         calls.append("retrieve")
-        assert context.tenant_id == "tenant-42"
+        assert context.scope.tenant_id == "tenant-42"
         assert isinstance(params, retrieve.RetrieveInput)
         return _dummy_output()
 
@@ -124,7 +124,7 @@ def test_graph_normalises_tenant_alias() -> None:
     def _recording_retrieve(
         context: ToolContext, params: retrieve.RetrieveInput
     ) -> retrieve.RetrieveOutput:
-        captured["tenant_id"] = context.tenant_id
+        captured["tenant_id"] = context.scope.tenant_id
         return _dummy_output()
 
     graph = retrieval_augmented_generation.RetrievalAugmentedGenerationGraph(

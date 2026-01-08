@@ -128,3 +128,36 @@ class TestNormalizeRequest(TestCase):
 
         assert scope.ingestion_run_id == "ing-1"
         assert scope.run_id is None
+
+    def test_user_id_is_normalized_to_uuid(self):
+        request = HttpRequest()
+        request.META = {"HTTP_X_TENANT_ID": "t1"}
+
+        mock_tenant = Mock()
+        mock_tenant.schema_name = "t1"
+        self.mock_tenant_context.from_request.return_value = mock_tenant
+
+        user = Mock()
+        user.is_authenticated = True
+        user.pk = "550e8400-e29b-41d4-a716-446655440000"
+        request.user = user
+
+        scope = normalize_request(request)
+
+        assert scope.user_id == "550e8400-e29b-41d4-a716-446655440000"
+
+    def test_user_id_requires_uuid(self):
+        request = HttpRequest()
+        request.META = {"HTTP_X_TENANT_ID": "t1"}
+
+        mock_tenant = Mock()
+        mock_tenant.schema_name = "t1"
+        self.mock_tenant_context.from_request.return_value = mock_tenant
+
+        user = Mock()
+        user.is_authenticated = True
+        user.pk = 1234
+        request.user = user
+
+        with self.assertRaises(ValueError):
+            normalize_request(request)

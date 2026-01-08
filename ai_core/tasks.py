@@ -608,7 +608,6 @@ def log_ingestion_run_start(
     if trace_id:
         record_span(
             "rag.ingestion.run.start",
-            trace_id=trace_id,
             attributes={**extra},
         )
 
@@ -670,7 +669,6 @@ def log_ingestion_run_end(
     if trace_id:
         record_span(
             "rag.ingestion.run.end",
-            trace_id=trace_id,
             attributes={**extra},
         )
 
@@ -1985,9 +1983,7 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
         try:
             update_observation(
                 tags=["ingestion", "embed"],
-                user_id=(
-                    str(context.scope.tenant_id) if context.scope.tenant_id else None
-                ),
+                user_id=(str(context.scope.user_id) if context.scope.user_id else None),
                 session_id=(
                     str(context.business.case_id) if context.business.case_id else None
                 ),
@@ -1995,6 +1991,7 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                     "embedding_profile": meta.get("embedding_profile"),
                     "vector_space_id": resolved_vector_space_id,
                     "embedding_model_version": embedding_model_version,
+                    "tenant_id": context.scope.tenant_id,
                     "collection_id": context.business.collection_id,
                 },
             )
@@ -2309,13 +2306,13 @@ def upsert(
     else:
         data = list(raw_data or [])
 
+    context = tool_context_from_meta(meta)
     cache_client = _redis_client()
     dedupe_key = None
     dedupe_token = None
     idempotency_key = None
     if cache_client is not None:
-        context = tool_context_from_meta(meta) if meta else None
-        tenant_id = context.scope.tenant_id if context else None
+        tenant_id = context.scope.tenant_id
         content_hash = _resolve_upsert_content_hash(meta, data)
         vector_space_id = _resolve_upsert_vector_space_id(meta, data)
         profile_key = _resolve_upsert_embedding_profile(meta, data)
@@ -2380,14 +2377,13 @@ def upsert(
                 )
     try:
         # Debug visibility for parents presence in upsert input and parsed payload
-        context = tool_context_from_meta(meta) if meta else None
         try:
             logger.warning(
                 "ingestion.upsert.parents_loaded",
                 extra={
                     "event": "DEBUG.TASKS.UPSERT.PARENTS_LOADED",
-                    "tenant_id": context.scope.tenant_id if context else None,
-                    "case_id": context.business.case_id if context else None,
+                    "tenant_id": context.scope.tenant_id,
+                    "case_id": context.business.case_id,
                     "parents_present": bool(parents),
                     "parents_count": (
                         len(parents) if isinstance(parents, dict) else None
@@ -2408,12 +2404,11 @@ def upsert(
             try:
                 meta_model = ChunkMeta.model_validate(raw_meta)
             except ValidationError:
-                context = tool_context_from_meta(meta) if meta else None
                 logger.error(
                     "ingestion.chunk.meta.invalid",
                     extra={
-                        "tenant_id": context.scope.tenant_id if context else None,
-                        "case_id": context.business.case_id if context else None,
+                        "tenant_id": context.scope.tenant_id,
+                        "case_id": context.business.case_id,
                         "chunk_index": index,
                         "keys": (
                             sorted(raw_meta.keys())
@@ -2475,17 +2470,7 @@ def upsert(
                 )
             )
 
-        context = tool_context_from_meta(meta) if meta else None
-        tenant_id: Optional[str] = context.scope.tenant_id if context else None
-        if not tenant_id:
-            tenant_id = next(
-                (
-                    str(chunk.meta.get("tenant_id"))
-                    for chunk in chunk_objs
-                    if chunk.meta and chunk.meta.get("tenant_id")
-                ),
-                None,
-            )
+        tenant_id = context.scope.tenant_id
         if not tenant_id:
             raise ValueError("tenant_id required for upsert")
 
@@ -2494,7 +2479,7 @@ def upsert(
             if chunk_tenant and str(chunk_tenant) != tenant_id:
                 raise ValueError("chunk tenant mismatch")
 
-        expected_dimension_value = meta.get("vector_space_dimension") if meta else None
+        expected_dimension_value = meta.get("vector_space_dimension")
         expected_dimension: Optional[int] = None
         if expected_dimension_value is not None:
             try:
@@ -2503,27 +2488,26 @@ def upsert(
                 expected_dimension = None
 
         # BREAKING CHANGE (Option A): workflow_id from business_context
-        business_context = context.business if context else None
         ensure_embedding_dimensions(
             chunk_objs,
             expected_dimension,
             tenant_id=tenant_id,
-            process=meta.get("process") if meta else None,
-            workflow_id=business_context.workflow_id if business_context else None,
-            embedding_profile=meta.get("embedding_profile") if meta else None,
-            vector_space_id=meta.get("vector_space_id") if meta else None,
+            process=meta.get("process"),
+            workflow_id=context.business.workflow_id,
+            embedding_profile=meta.get("embedding_profile"),
+            vector_space_id=meta.get("vector_space_id"),
         )
         log_embedding_quality_stats(
             chunk_objs,
             tenant_id=tenant_id,
-            process=meta.get("process") if meta else None,
-            workflow_id=business_context.workflow_id if business_context else None,
-            embedding_profile=meta.get("embedding_profile") if meta else None,
-            vector_space_id=meta.get("vector_space_id") if meta else None,
+            process=meta.get("process"),
+            workflow_id=context.business.workflow_id,
+            embedding_profile=meta.get("embedding_profile"),
+            vector_space_id=meta.get("vector_space_id"),
         )
 
-        schema = tenant_schema or (meta.get("tenant_schema") if meta else None)
-        vector_space_schema = _resolve_vector_space_schema(meta) if meta else None
+        schema = tenant_schema or meta.get("tenant_schema")
+        vector_space_schema = _resolve_vector_space_schema(meta)
 
         tenant_client = vector_client
         if tenant_client is None and callable(vector_client_factory):
@@ -2565,12 +2549,9 @@ def ingestion_run(
     """Placeholder ingestion dispatcher used by the ingestion run endpoint."""
 
     state_payload = dict(state or {})
-    tool_context = None
-    if isinstance(meta, Mapping):
-        try:
-            tool_context = tool_context_from_meta(meta)
-        except (TypeError, ValueError):
-            tool_context = None
+    if not isinstance(meta, MappingABC):
+        raise ValueError("meta with tool_context is required for ingestion_run")
+    tool_context = tool_context_from_meta(meta)
 
     def _coerce_str(value: object | None) -> Optional[str]:
         if value is None:
@@ -2583,15 +2564,9 @@ def ingestion_run(
         except Exception:
             return None
 
-    tenant_id = _coerce_str(state_payload.get("tenant_id")) or (
-        tool_context.scope.tenant_id if tool_context else None
-    )
-    case_id = _coerce_str(state_payload.get("case_id")) or (
-        tool_context.business.case_id if tool_context else None
-    )
-    trace_id = _coerce_str(state_payload.get("trace_id")) or (
-        tool_context.scope.trace_id if tool_context else None
-    )
+    tenant_id = _coerce_str(tool_context.scope.tenant_id)
+    case_id = _coerce_str(tool_context.business.case_id)
+    trace_id = _coerce_str(tool_context.scope.trace_id)
     document_ids = state_payload.get("document_ids") or []
     if not isinstance(document_ids, list):
         document_ids = [document_ids]
@@ -3056,39 +3031,17 @@ def _coerce_str(value: Any | None) -> Optional[str]:
     return text.strip() or None
 
 
-def _extract_from_mapping(mapping: Any, key: str) -> Optional[str]:
-    if not isinstance(mapping, MappingABC):
-        return None
-    return _coerce_str(mapping.get(key))
-
-
-def _resolve_document_id(
-    state: Mapping[str, Any], meta: Optional[Mapping[str, Any]]
-) -> Optional[str]:
-    """Try to resolve the document identifier from meta/state payloads.
+def _resolve_document_id(state: Mapping[str, Any], tool_context: Any) -> Optional[str]:
+    """Try to resolve the document identifier from tool_context or state payloads.
 
     BREAKING CHANGE (Option A - Strict Separation):
     Document ID is a business identifier, so we check business_context first.
     """
 
-    state_meta = state.get("meta") if isinstance(state, MappingABC) else None
-    tool_context = None
-    if isinstance(meta, MappingABC):
-        try:
-            tool_context = tool_context_from_meta(meta)
-        except (TypeError, ValueError):
-            tool_context = None
-
     # Check business_context first (BREAKING CHANGE)
-    candidate = tool_context.business.document_id if tool_context is not None else None
+    candidate = getattr(tool_context.business, "document_id", None)
     if candidate:
         return _coerce_str(candidate)
-
-    # Fallback to other sources
-    for source in (meta, state_meta, state):
-        candidate = _extract_from_mapping(source, "document_id")
-        if candidate:
-            return candidate
 
     raw_document = state.get("raw_document") if isinstance(state, MappingABC) else None
     if isinstance(raw_document, MappingABC):
@@ -3116,40 +3069,22 @@ def _resolve_trace_context(
     not scope_context.
     """
 
-    state_meta = state.get("meta") if isinstance(state, MappingABC) else None
-    tool_context = None
-    if isinstance(meta, MappingABC):
-        try:
-            tool_context = tool_context_from_meta(meta)
-        except (TypeError, ValueError):
-            tool_context = None
-    scope_context = tool_context.scope if tool_context else None
-    business_context = tool_context.business if tool_context else None
+    if not isinstance(meta, MappingABC):
+        raise ValueError("meta with tool_context is required for trace context")
+    tool_context = tool_context_from_meta(meta)
+    scope_context = tool_context.scope
+    business_context = tool_context.business
 
     # Infrastructure IDs from scope_context
-    tenant_id = _coerce_str(
-        (scope_context.tenant_id if scope_context else None)
-        or _extract_from_mapping(state_meta, "tenant_id")
-        or _extract_from_mapping(state, "tenant_id")
-    )
-    trace_id = _coerce_str(
-        (scope_context.trace_id if scope_context else None)
-        or _extract_from_mapping(state_meta, "trace_id")
-        or _extract_from_mapping(state, "trace_id")
-    )
+    tenant_id = _coerce_str(scope_context.tenant_id)
+    trace_id = _coerce_str(scope_context.trace_id)
+    user_id = _coerce_str(scope_context.user_id)
+    service_id = _coerce_str(scope_context.service_id)
 
     # Business IDs from business_context (BREAKING CHANGE)
-    case_id = _coerce_str(
-        (business_context.case_id if business_context else None)
-        or _extract_from_mapping(state_meta, "case_id")
-        or _extract_from_mapping(state, "case_id")
-    )
-    workflow_id = _coerce_str(
-        (business_context.workflow_id if business_context else None)
-        or _extract_from_mapping(state_meta, "workflow_id")
-        or _extract_from_mapping(state, "workflow_id")
-    )
-    document_id = _resolve_document_id(state, meta)
+    case_id = _coerce_str(business_context.case_id)
+    workflow_id = _coerce_str(business_context.workflow_id)
+    document_id = _resolve_document_id(state, tool_context)
 
     return {
         "tenant_id": tenant_id,
@@ -3157,6 +3092,8 @@ def _resolve_trace_context(
         "workflow_id": workflow_id,
         "trace_id": trace_id,
         "document_id": document_id,
+        "user_id": user_id,
+        "service_id": service_id,
     }
 
 
@@ -3424,20 +3361,15 @@ def run_ingestion_graph(
 
         # Build Context via normalize_task_context (Pre-MVP ID Contract)
         # S2S Hop: service_id REQUIRED, user_id ABSENT
-        # Note: case_id, workflow_id, collection_id parameters are DEPRECATED
-        # but kept for backward compatibility
         scope = normalize_task_context(
             tenant_id=ingestion_ctx.tenant_id,
-            case_id=case_id,  # DEPRECATED parameter (not in ScopeContext)
             service_id="celery-ingestion-worker",
             trace_id=ingestion_ctx.trace_id,
             invocation_id=getattr(ingestion_ctx, "invocation_id", None)
             or trace_context.get("invocation_id")
             or (meta.get("invocation_id") if meta else None),
-            workflow_id=workflow_id,  # DEPRECATED parameter (not in ScopeContext)
             run_id=ingestion_ctx.run_id,
             ingestion_run_id=ingestion_ctx.ingestion_run_id,
-            collection_id=collection_id,  # DEPRECATED parameter (not in ScopeContext)
         )
 
         # BREAKING CHANGE (Option A - Full ToolContext Migration):
@@ -3450,7 +3382,10 @@ def run_ingestion_graph(
             collection_id=collection_id,
         )
 
-        audit_meta = (meta or {}).get("audit_meta") if meta else {}
+        audit_meta = dict((meta or {}).get("audit_meta") or {})
+        initiated_by_user_id = (meta or {}).get("initiated_by_user_id")
+        if initiated_by_user_id and "initiated_by_user_id" not in audit_meta:
+            audit_meta["initiated_by_user_id"] = initiated_by_user_id
         run_context = {
             "scope": scope.model_dump(mode="json"),
             "business": business.model_dump(mode="json"),

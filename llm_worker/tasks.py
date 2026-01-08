@@ -50,37 +50,23 @@ def run_graph(  # type: ignore[no-untyped-def]
     runner_state = dict(state or {})
     runner_meta = dict(meta or {})
 
-    tool_context = None
-    if runner_meta:
-        try:
-            tool_context = tool_context_from_meta(runner_meta)
-        except (TypeError, ValueError):
-            tool_context = None
+    tool_context = tool_context_from_meta(runner_meta)
 
-    scope_context = tool_context.scope if tool_context else None
+    scope_context = tool_context.scope
 
     # BREAKING CHANGE (Option A - Strict Separation):
     # Business IDs (workflow_id, collection_id) now in business_context
-    business_context = tool_context.business if tool_context else None
+    business_context = tool_context.business
 
-    tenant_id = None
-    case_id = None
-    trace_id = None
-    if scope_context:
-        tenant_id = scope_context.tenant_id
-        trace_id = scope_context.trace_id
-    if business_context:
-        case_id = business_context.case_id
-    if not tenant_id:
-        tenant_id = runner_meta.get("tenant_id")
-    if case_id is None:
-        case_id = runner_meta.get("case_id")
-    if not trace_id:
-        trace_id = runner_meta.get("trace_id")
+    tenant_id = scope_context.tenant_id
+    case_id = business_context.case_id
+    trace_id = scope_context.trace_id
+
+    task_type = runner_meta.get("task_type", "rag_query")
 
     # Set tenant schema context for database queries
     # This ensures document models are accessed in the correct tenant schema
-    if tenant_id:
+    if tenant_id and task_type != "score_results":
         try:
             from customers.models import Tenant
 
@@ -99,31 +85,22 @@ def run_graph(  # type: ignore[no-untyped-def]
 
     # Build ScopeContext via normalize_task_context (Pre-MVP ID Contract)
     # S2S Hop: service_id REQUIRED, user_id ABSENT
-    # BREAKING CHANGE (Option A): case_id is optional, only check tenant_id
-    if tenant_id:
-        scope = normalize_task_context(
-            tenant_id=tenant_id,
-            case_id=case_id,  # Optional after Option A
-            service_id="celery-agents-worker",
-            trace_id=trace_id or (scope_context.trace_id if scope_context else None),
-            invocation_id=(scope_context.invocation_id if scope_context else None),
-            workflow_id=(
-                business_context.workflow_id if business_context else None
-            ),  # BREAKING CHANGE: from business_context
-            run_id=scope_context.run_id if scope_context else None,
-            ingestion_run_id=(
-                scope_context.ingestion_run_id if scope_context else None
-            ),
-            idempotency_key=(scope_context.idempotency_key if scope_context else None),
-            tenant_schema=scope_context.tenant_schema if scope_context else None,
-            collection_id=(
-                business_context.collection_id if business_context else None
-            ),  # BREAKING CHANGE: from business_context
-        )
-        # Inject scope context into meta for graph execution
-        runner_meta["scope_context"] = scope.model_dump(mode="json")
-    task_type = runner_meta.get("task_type", "rag_query")
-
+    scope = normalize_task_context(
+        tenant_id=tenant_id,
+        service_id="celery-agents-worker",
+        trace_id=trace_id,
+        invocation_id=scope_context.invocation_id,
+        run_id=scope_context.run_id,
+        ingestion_run_id=scope_context.ingestion_run_id,
+        idempotency_key=scope_context.idempotency_key,
+        tenant_schema=scope_context.tenant_schema,
+    )
+    # Inject updated scope/tool context into meta for graph execution
+    updated_context = tool_context.model_copy(update={"scope": scope})
+    runner_meta["scope_context"] = scope.model_dump(mode="json")
+    runner_meta["tool_context"] = updated_context.model_dump(
+        mode="json", exclude_none=True
+    )
     with track_ledger_costs(initial_cost_total) as tracker:
         runner_meta["ledger_logger"] = tracker.record_ledger_meta
         try:

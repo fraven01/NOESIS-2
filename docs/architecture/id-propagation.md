@@ -81,7 +81,7 @@ For `trace_id`, if an active OTel span exists, it takes precedence for generatio
 ## Validierung und Fehlerpfade
 
 - **Pflicht**: `tenant_id` immer; `case_id` Pflicht für fachliche Workloads; `trace_id` Pflicht für Observability; genau eine Laufzeit-ID.
-- **Fail-fast**: Graph-Inputs (`GraphContextPayload`, `WebSearchContext`, Tool-Inputs) verwenden `extra=forbid` und Feldvalidatoren. Fehlende oder leere Felder brechen den Start ab.
+- **Fail-fast**: Graph-Inputs (GraphIOSpec-boundary models, Tool-Inputs) verwenden `extra=forbid` und Feldvalidatoren. Fehlende oder leere Felder brechen den Start ab.
 - **System-Tasks**: `case_id` optional; Events markieren `system_task=true` im Metadata-Feld.
 - **Fallback**: Kein Default-Case; fehlende Cases müssen explizit erstellt werden (Auto-Create-Flag) oder führen zu 4xx.
 
@@ -90,3 +90,4 @@ For `trace_id`, if an active OTel span exists, it takes precedence for generatio
 - `trace_id` bleibt identisch über alle Layer; `workflow_id`, `case_id`, `run_id`/`ingestion_run_id` werden als Span-Attribute geführt.
 - LangGraph-Transitions mappen auf Span-Namen (`crawler.ingestion.update_status`, `ingest`, `document_pipeline`, etc.).
 - Logs/Events spiegeln ID-Payloads (`case_lifecycle`, `ingestion.end`) und dienen als Auditquelle.
+- Telemetry uses `user_id` for the user and `tenant_id` for the tenant; never swap them.

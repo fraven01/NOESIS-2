@@ -8,7 +8,6 @@ import time
 from collections.abc import Callable, Mapping
 from importlib import import_module
 from typing import Any
-from uuid import uuid4
 
 from celery import current_app, exceptions as celery_exceptions
 from django.conf import settings
@@ -137,14 +136,8 @@ class GraphExecutionCommand:
         if hasattr(request, "_request") and request._request is not request:
             setattr(request._request, "tool_context", tool_context)
 
-        run_id = uuid4().hex
-        workflow_id = tool_context.business.workflow_id or tool_context.business.case_id
         context = GraphContext(
-            tenant_id=tool_context.scope.tenant_id,
-            case_id=tool_context.business.case_id,
-            trace_id=tool_context.scope.trace_id,
-            workflow_id=workflow_id,
-            run_id=run_id,
+            tool_context=tool_context,
             graph_name=normalized_meta["graph_name"],
             graph_version=normalized_meta["graph_version"],
         )
@@ -164,14 +157,16 @@ class GraphExecutionCommand:
         if initial_cost_total is not None:
             base_observation_metadata["cost.total_usd"] = initial_cost_total
 
+        user_id = tool_context.scope.user_id
+        session_id = context.case_id
         observation_kwargs = {
             "tags": [
                 "graph",
                 f"graph:{context.graph_name}",
                 f"version:{context.graph_version}",
             ],
-            "user_id": str(context.tenant_id),
-            "session_id": str(context.case_id),
+            "user_id": str(user_id) if user_id else None,
+            "session_id": str(session_id) if session_id else None,
             "metadata": dict(base_observation_metadata),
         }
 
@@ -194,10 +189,11 @@ class GraphExecutionCommand:
             try:
                 lf_start_trace_fn(
                     name=f"graph:{context.graph_name}",
-                    user_id=str(context.tenant_id),
-                    session_id=str(context.case_id),
+                    user_id=str(user_id) if user_id else None,
+                    session_id=str(session_id) if session_id else None,
                     metadata={
                         "trace_id": context.trace_id,
+                        "tenant_id": context.tenant_id,
                         "version": context.graph_version,
                         "workflow_id": context.workflow_id,
                         "run_id": context.run_id,

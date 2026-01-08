@@ -17,13 +17,9 @@ NEW (v2):
     business = BusinessContext(case_id="c", collection_id="col")
     ToolContext(scope=scope, business=business, locale="de-DE")
 
-Backward compatibility via @property accessors (DEPRECATED, will be removed):
-    context.tenant_id  # → context.scope.tenant_id (deprecated)
-    context.case_id    # → context.business.case_id (deprecated)
-
 New code should use explicit paths:
-    context.scope.tenant_id  # ✅
-    context.business.case_id  # ✅
+    context.scope.tenant_id
+    context.business.case_id
 """
 
 from __future__ import annotations
@@ -64,11 +60,6 @@ class ToolContext(BaseModel):
     - Context contains Scope, Business, and Runtime Permissions
     - Tool-Run functions read identifiers exclusively from context, not params
 
-    Backward Compatibility:
-    Properties like context.tenant_id, context.case_id still work (DEPRECATED).
-    They delegate to context.scope.X or context.business.X.
-    New code should use explicit paths.
-
     Migration examples:
         OLD: context.tenant_id
         NEW: context.scope.tenant_id
@@ -77,7 +68,7 @@ class ToolContext(BaseModel):
         NEW: context.business.case_id
 
         OLD: params.collection_id or context.collection_id  # RED FLAG!
-        NEW: context.business.collection_id  # ✅ Only from context
+        NEW: context.business.collection_id  # Only from context
     """
 
     model_config = ConfigDict(frozen=True)
@@ -99,85 +90,6 @@ class ToolContext(BaseModel):
     auth: Optional[dict[str, Any]] = None
     visibility_override_allowed: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-    # === Backward Compatibility Properties (DEPRECATED) ===
-    # These will be removed in a future version after migration is complete.
-    # New code MUST use context.scope.X or context.business.X instead.
-
-    @property
-    def tenant_id(self) -> str:
-        """DEPRECATED: Use context.scope.tenant_id instead."""
-        return self.scope.tenant_id
-
-    @property
-    def trace_id(self) -> str:
-        """DEPRECATED: Use context.scope.trace_id instead."""
-        return self.scope.trace_id
-
-    @property
-    def invocation_id(self) -> str:
-        """DEPRECATED: Use context.scope.invocation_id instead."""
-        return self.scope.invocation_id
-
-    @property
-    def user_id(self) -> str | None:
-        """DEPRECATED: Use context.scope.user_id instead."""
-        return self.scope.user_id
-
-    @property
-    def service_id(self) -> str | None:
-        """DEPRECATED: Use context.scope.service_id instead."""
-        return self.scope.service_id
-
-    @property
-    def run_id(self) -> str | None:
-        """DEPRECATED: Use context.scope.run_id instead."""
-        return self.scope.run_id
-
-    @property
-    def ingestion_run_id(self) -> str | None:
-        """DEPRECATED: Use context.scope.ingestion_run_id instead."""
-        return self.scope.ingestion_run_id
-
-    @property
-    def tenant_schema(self) -> str | None:
-        """DEPRECATED: Use context.scope.tenant_schema instead."""
-        return self.scope.tenant_schema
-
-    @property
-    def idempotency_key(self) -> str | None:
-        """DEPRECATED: Use context.scope.idempotency_key instead."""
-        return self.scope.idempotency_key
-
-    @property
-    def now_iso(self) -> datetime:
-        """DEPRECATED: Use context.scope.timestamp instead."""
-        return self.scope.timestamp
-
-    @property
-    def case_id(self) -> str | None:
-        """DEPRECATED: Use context.business.case_id instead."""
-        return self.business.case_id
-
-    @property
-    def collection_id(self) -> str | None:
-        """DEPRECATED: Use context.business.collection_id instead."""
-        return self.business.collection_id
-
-    @property
-    def workflow_id(self) -> str | None:
-        """DEPRECATED: Use context.business.workflow_id instead."""
-        return self.business.workflow_id
-
-    @property
-    def document_id(self) -> str | None:
-        """DEPRECATED: Use context.business.document_id instead."""
-        return self.business.document_id
-
-    @property
-    def document_version_id(self) -> str | None:
-        """DEPRECATED: Use context.business.document_version_id instead."""
-        return self.business.document_version_id
 
 
 def tool_context_from_scope(
@@ -277,9 +189,12 @@ def tool_context_from_meta(meta: Mapping[str, Any]) -> ToolContext:
         business = BusinessContext.model_validate(business_payload)
 
     metadata = meta.get("context_metadata")
-    metadata_payload = dict(metadata) if isinstance(metadata, Mapping) else None
+    metadata_payload = dict(metadata) if isinstance(metadata, Mapping) else {}
+    initiated_by_user_id = meta.get("initiated_by_user_id")
+    if initiated_by_user_id is not None:
+        metadata_payload.setdefault("initiated_by_user_id", initiated_by_user_id)
 
-    if metadata_payload is None:
+    if not metadata_payload:
         return tool_context_from_scope(scope, business)
     return tool_context_from_scope(scope, business, metadata=metadata_payload)
 

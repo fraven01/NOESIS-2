@@ -11,7 +11,8 @@ from psycopg2 import sql
 from common.logging import get_logger
 
 from .normalization import normalise_text
-from .vector_client import PgVectorClient, _coerce_vector_values
+from .vector_client import PgVectorClient
+from .vector_utils import _coerce_vector_values
 
 logger = get_logger(__name__)
 

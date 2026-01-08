@@ -10,12 +10,11 @@ from typing import Mapping, Optional
 from documents.contracts import NormalizedDocument
 from documents.normalization import document_payload_bytes, normalized_primary_text
 
-from ai_core.rag.vector_client import (
+from ai_core.rag.deduplication import (
     DedupSignatures as DeltaSignatures,
     NearDuplicateSignature as _NearDuplicateSignature,
-    build_dedup_signatures,
-    extract_primary_text_hash,
 )
+from ai_core.rag.hashing import build_dedup_signatures, extract_primary_text_hash
 
 
 NearDuplicateSignature = _NearDuplicateSignature

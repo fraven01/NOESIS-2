@@ -434,7 +434,6 @@ def record_span(
     name: str,
     *,
     attributes: Optional[dict[str, Any]] = None,
-    trace_id: str | None = None,
 ) -> None:
     """Record a standalone span with optional metadata."""
 
@@ -445,8 +444,6 @@ def record_span(
         return
 
     span_attributes = _normalise_attributes(attributes or {})
-    if trace_id is not None:
-        span_attributes.setdefault("legacy.trace_id", str(trace_id))
 
     try:
         cm = tracer.start_as_current_span(name, attributes=span_attributes)

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import re
 from typing import Iterable
+from uuid import UUID
 
 from django.contrib.auth import get_user_model
 from django.db.models.functions import Lower
 
 
-RICH_MENTION_PATTERN = re.compile(r"<@(?P<user_id>\d+)>")
+RICH_MENTION_PATTERN = re.compile(r"<@(?P<user_id>[0-9a-fA-F-]{32,36})>")
 USERNAME_PATTERN = re.compile(r"(?<![\w@])@(?P<username>[A-Za-z0-9_.-]{3,})")
 
 
@@ -33,11 +34,15 @@ def resolve_mentioned_users(text: str | None) -> list[object]:
 
     User = get_user_model()
 
-    rich_user_ids = {
-        int(match.group("user_id"))
-        for match in RICH_MENTION_PATTERN.finditer(text)
-        if match.group("user_id")
-    }
+    rich_user_ids: set[str] = set()
+    for match in RICH_MENTION_PATTERN.finditer(text):
+        raw_user_id = match.group("user_id")
+        if not raw_user_id:
+            continue
+        try:
+            rich_user_ids.add(str(UUID(raw_user_id)))
+        except (TypeError, ValueError):
+            continue
 
     rich_users = list(User.objects.filter(id__in=rich_user_ids))
 
@@ -56,10 +61,10 @@ def resolve_mentioned_users(text: str | None) -> list[object]:
             .filter(username_lower__in=lowered_usernames)
             .values("id", "username_lower")
         )
-        by_username: dict[str, list[int]] = {}
+        by_username: dict[str, list[str]] = {}
         for candidate in candidates:
             by_username.setdefault(candidate["username_lower"], []).append(
-                candidate["id"]
+                str(candidate["id"])
             )
 
         unique_ids = [ids[0] for ids in by_username.values() if len(ids) == 1]

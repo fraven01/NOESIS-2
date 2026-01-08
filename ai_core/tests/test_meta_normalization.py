@@ -76,11 +76,11 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
     from ai_core.tool_contracts import ToolContext
 
     context = ToolContext.model_validate(tool_context)
-    assert str(context.tenant_id) == tenant_id
-    assert context.case_id == "case-42"
-    assert context.trace_id == "trace-123"
-    assert context.idempotency_key is None
-    assert context.tenant_schema == "tenant_schema"
+    assert str(context.scope.tenant_id) == tenant_id
+    assert context.business.case_id == "case-42"
+    assert context.scope.trace_id == "trace-123"
+    assert context.scope.idempotency_key is None
+    assert context.scope.tenant_schema == "tenant_schema"
     assert context.metadata["graph_name"] == "info_intake"
     assert context.metadata["graph_version"] == "v9"
     assert context.metadata["requested_at"] == meta["requested_at"]
@@ -122,7 +122,7 @@ def test_normalize_meta_defaults_graph_version(monkeypatch):
     from ai_core.tool_contracts import ToolContext
 
     context = ToolContext.model_validate(tool_context)
-    assert context.idempotency_key == "idem-1"
+    assert context.scope.idempotency_key == "idem-1"
     assert context.metadata["graph_version"] == "v0"
     assert meta["scope_context"]["idempotency_key"] == "idem-1"
 
@@ -148,10 +148,10 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
     from ai_core.tool_contracts import ToolContext
 
     context = ToolContext.model_validate(tool_context)
-    assert str(context.tenant_id) == tenant_id
-    assert context.case_id == "case-b"
-    assert context.trace_id == "trace-b"
-    assert context.idempotency_key == "idem-b"
+    assert str(context.scope.tenant_id) == tenant_id
+    assert context.business.case_id == "case-b"
+    assert context.scope.trace_id == "trace-b"
+    assert context.scope.idempotency_key == "idem-b"
     assert context.metadata["graph_name"] == "info_intake"
     assert context.metadata["graph_version"] == "v0"
     assert context.metadata["requested_at"] == meta["requested_at"]
@@ -181,4 +181,4 @@ def test_normalize_meta_includes_collection_scope(monkeypatch):
     from ai_core.tool_contracts import ToolContext
 
     context = ToolContext.model_validate(meta["tool_context"])
-    assert context.collection_id == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+    assert context.business.collection_id == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"

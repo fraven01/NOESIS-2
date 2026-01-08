@@ -65,9 +65,7 @@ def _make_adapter(session: _FakeSession) -> GoogleSearchAdapter:
 def test_search_success(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_spans: list[dict[str, Any]] = []
 
-    def _capture_span(
-        name: str, *, attributes: dict[str, Any], trace_id: str | None = None
-    ) -> None:
+    def _capture_span(name: str, *, attributes: dict[str, Any]) -> None:
         assert name == "tool.web_search.provider"
         captured_spans.append(dict(attributes))
 
@@ -145,9 +143,7 @@ def test_empty_items(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_spans: list[dict[str, Any]] = []
     monkeypatch.setattr(
         "ai_core.tools.search_adapters.google.record_span",
-        lambda name, *, attributes, trace_id=None: captured_spans.append(
-            dict(attributes)
-        ),
+        lambda name, *, attributes: captured_spans.append(dict(attributes)),
     )
 
     response = _FakeResponse(status_code=200, json_data={})
@@ -164,9 +160,7 @@ def test_empty_items(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_spans: list[dict[str, Any]] = []
 
-    def _capture_span(
-        name: str, *, attributes: dict[str, Any], trace_id: str | None = None
-    ) -> None:
+    def _capture_span(name: str, *, attributes: dict[str, Any]) -> None:
         captured_spans.append(dict(attributes))
 
     monkeypatch.setattr(

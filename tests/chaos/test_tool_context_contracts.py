@@ -110,14 +110,14 @@ def test_tool_context_identity_mutual_exclusion():
             trace_id="trace-006",
             invocation_id="inv-006",
             run_id="run-006",
-            user_id="user-006",  # User Request Hop
+            user_id="550e8400-e29b-41d4-a716-446655440000",  # User Request Hop
             service_id="service-006",  # S2S Hop
             # Both set - INVALID
         )
 
 
 def test_tool_context_backward_compat_properties():
-    """Deprecated properties still work for backward compatibility."""
+    """Deprecated properties are removed from ToolContext."""
     meta = _build_chaos_meta(
         tenant_id="tenant-007",
         trace_id="trace-007",
@@ -132,10 +132,12 @@ def test_tool_context_backward_compat_properties():
     assert context.scope.tenant_id == "tenant-007"
     assert context.business.case_id == "case-007"
 
-    # OLD (deprecated but still works):
-    assert context.tenant_id == "tenant-007"  # delegates to scope
-    assert context.case_id == "case-007"  # delegates to business
-    assert context.run_id == "run-007"  # delegates to scope
+    with pytest.raises(AttributeError):
+        _ = context.tenant_id
+    with pytest.raises(AttributeError):
+        _ = context.case_id
+    with pytest.raises(AttributeError):
+        _ = context.run_id
 
 
 def test_tool_context_runtime_id_coexistence():

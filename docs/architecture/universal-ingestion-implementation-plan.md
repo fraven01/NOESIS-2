@@ -1006,9 +1006,12 @@ headers = {
 from ai_core.ids.http_scope import normalize_task_context
 
 scope = normalize_task_context(
-    request_data,
+    tenant_id=tenant_id,
     service_id="crawler-worker",  # Required!
-    initiated_by_user_id=None,
+    trace_id=trace_id,
+    invocation_id=invocation_id,
+    run_id=run_id,
+    ingestion_run_id=ingestion_run_id,
 )
 ```
 
@@ -1050,9 +1053,12 @@ from ai_core.ids.http_scope import normalize_task_context
 
 meta = {
     "scope_context": normalize_task_context(
-        request_data,
+        tenant_id=tenant_id,
         service_id="crawler-worker",  # Add this
-        initiated_by_user_id=None,
+        trace_id=trace_id,
+        invocation_id=invocation_id,
+        run_id=run_id,
+        ingestion_run_id=ingestion_run_id,
     )
 }
 result = run_crawler_runner(

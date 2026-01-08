@@ -115,7 +115,19 @@ def ingest_document(
         schema_context(scope.tenant_schema) if scope.tenant_schema else nullcontext()
     )
 
-    audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
+    created_by_user_id = scope.user_id
+    initiated_by_user_id = meta.get("initiated_by_user_id")
+    audit_meta_payload = meta.get("audit_meta")
+    if isinstance(audit_meta_payload, Mapping):
+        if not initiated_by_user_id:
+            initiated_by_user_id = audit_meta_payload.get("initiated_by_user_id")
+        if not created_by_user_id:
+            created_by_user_id = audit_meta_payload.get("created_by_user_id")
+    audit_meta = audit_meta_from_scope(
+        scope,
+        created_by_user_id=created_by_user_id,
+        initiated_by_user_id=initiated_by_user_id,
+    )
     with tenant_schema_ctx:
         ingest_result = service.ingest_document(
             tenant=tenant,

@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -126,6 +127,31 @@ class ScopeContext(BaseModel):
                     "ScopeContext cannot include business IDs. "
                     f"Move {', '.join(present)} to BusinessContext."
                 )
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_user_id(cls, data: object) -> object:
+        """Coerce and validate user_id as a UUID string when present."""
+        if isinstance(data, ScopeContext):
+            return data
+        if isinstance(data, Mapping):
+            if "user_id" not in data:
+                return data
+            raw_user_id = data.get("user_id")
+            if raw_user_id in {None, ""}:
+                if raw_user_id is None:
+                    return data
+                payload = dict(data)
+                payload["user_id"] = None
+                return payload
+            try:
+                parsed = UUID(str(raw_user_id))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("user_id must be a UUID string") from exc
+            payload = dict(data)
+            payload["user_id"] = str(parsed)
+            return payload
         return data
 
     @model_validator(mode="after")

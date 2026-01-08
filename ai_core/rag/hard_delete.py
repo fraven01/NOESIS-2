@@ -102,17 +102,9 @@ def _emit_span(
 ) -> None:
     if not trace_id:
         return
-    try:
-        record_span(
-            "rag.hard_delete",
-            trace_id=str(trace_id),
-            attributes=dict(metadata),
-        )
-    except TypeError:
-        try:
-            record_span(str(trace_id), "rag.hard_delete", dict(metadata))  # type: ignore[misc]
-        except Exception:
-            pass
+    attributes = dict(metadata)
+    attributes.setdefault("trace_id", str(trace_id))
+    record_span("rag.hard_delete", attributes=attributes)
 
 
 def _derive_session_salt(
@@ -179,12 +171,9 @@ def hard_delete(  # type: ignore[override]
     """Queue a hard delete for documents in the vector store."""
 
     state_payload = dict(state or {})
-    tool_context = None
-    if isinstance(meta, Mapping):
-        try:
-            tool_context = tool_context_from_meta(meta)
-        except (TypeError, ValueError):
-            tool_context = None
+    if not isinstance(meta, Mapping):
+        raise ValueError("meta with tool_context is required for rag.hard_delete")
+    tool_context = tool_context_from_meta(meta)
 
     def _coerce_str(value: object | None) -> str | None:
         if value is None:
@@ -197,21 +186,11 @@ def hard_delete(  # type: ignore[override]
         except Exception:
             return None
 
-    tenant_id = _coerce_str(state_payload.get("tenant_id")) or (
-        tool_context.scope.tenant_id if tool_context else None
-    )
-    case_id = _coerce_str(state_payload.get("case_id")) or (
-        tool_context.business.case_id if tool_context else None
-    )
-    trace_id = _coerce_str(state_payload.get("trace_id")) or (
-        tool_context.scope.trace_id if tool_context else None
-    )
-    tenant_schema = _coerce_str(state_payload.get("tenant_schema")) or (
-        tool_context.scope.tenant_schema if tool_context else None
-    )
-    ingestion_run_id = _coerce_str(state_payload.get("ingestion_run_id")) or (
-        tool_context.scope.ingestion_run_id if tool_context else None
-    )
+    tenant_id = _coerce_str(tool_context.scope.tenant_id)
+    case_id = _coerce_str(tool_context.business.case_id)
+    trace_id = _coerce_str(tool_context.scope.trace_id)
+    tenant_schema = _coerce_str(tool_context.scope.tenant_schema)
+    ingestion_run_id = _coerce_str(tool_context.scope.ingestion_run_id)
     reason = _coerce_str(state_payload.get("reason"))
     ticket_ref = _coerce_str(state_payload.get("ticket_ref"))
     document_ids = state_payload.get("document_ids") or []

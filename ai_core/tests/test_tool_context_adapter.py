@@ -22,14 +22,14 @@ def test_tool_context_from_scope_preserves_runtime_ids_and_defaults():
     business = BusinessContext(case_id="case-xyz", workflow_id="workflow-1")
     tool_context = tool_context_from_scope(scope, business=business, locale="de-DE")
 
-    assert tool_context.run_id == "run-abc"
-    assert tool_context.ingestion_run_id is None
-    assert tool_context.case_id == "case-xyz"
-    assert tool_context.workflow_id == "workflow-1"
-    assert tool_context.tenant_schema == "tenant-schema"
-    assert tool_context.idempotency_key == "idem-1"
+    assert tool_context.scope.run_id == "run-abc"
+    assert tool_context.scope.ingestion_run_id is None
+    assert tool_context.business.case_id == "case-xyz"
+    assert tool_context.business.workflow_id == "workflow-1"
+    assert tool_context.scope.tenant_schema == "tenant-schema"
+    assert tool_context.scope.idempotency_key == "idem-1"
     assert tool_context.locale == "de-DE"
-    assert tool_context.now_iso == timestamp
+    assert tool_context.scope.timestamp == timestamp
 
 
 def test_tool_context_from_scope_supports_ingestion_runs_and_overrides_now():
@@ -47,12 +47,12 @@ def test_tool_context_from_scope_supports_ingestion_runs_and_overrides_now():
         business=business, now=override_now, budget_tokens=512
     )
 
-    assert tool_context.run_id is None
-    assert tool_context.ingestion_run_id == "ingest-123"
-    assert tool_context.trace_id == "trace-456"
-    assert tool_context.tenant_schema == "tenant-schema-2"
+    assert tool_context.scope.run_id is None
+    assert tool_context.scope.ingestion_run_id == "ingest-123"
+    assert tool_context.scope.trace_id == "trace-456"
+    assert tool_context.scope.tenant_schema == "tenant-schema-2"
     assert tool_context.budget_tokens == 512
-    assert tool_context.now_iso == scope.timestamp
+    assert tool_context.scope.timestamp == scope.timestamp
 
 
 def test_tool_context_from_scope_allows_both_run_ids():
@@ -68,5 +68,5 @@ def test_tool_context_from_scope_allows_both_run_ids():
     business = BusinessContext(case_id="case-789")
     tool_context = scope.to_tool_context(business=business)
 
-    assert tool_context.run_id == "run-1"
-    assert tool_context.ingestion_run_id == "ingest-1"
+    assert tool_context.scope.run_id == "run-1"
+    assert tool_context.scope.ingestion_run_id == "ingest-1"

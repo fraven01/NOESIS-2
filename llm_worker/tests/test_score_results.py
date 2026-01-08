@@ -134,6 +134,12 @@ def test_run_graph_routes_score_results(monkeypatch):
                 "query": "alpha",
                 "results": _sample_results(),
             },
+            "scope_context": {
+                "tenant_id": "tenant-1",
+                "trace_id": "trace-1",
+                "invocation_id": "inv-1",
+                "run_id": "run-1",
+            },
         },
     )
 

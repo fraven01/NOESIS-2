@@ -42,6 +42,8 @@ _Based on architectural analysis 2025-12-31. Pre-MVP; breaking changes and test 
 
 ### P1 - High Value Cleanups (Low-Medium Effort)
 
+- [ ] **RAG vector_client refactor (phased, pre-MVP)**: execute the plan in `roadmap/rag-vector-client-refactor-roadmap.md` (pointers: `ai_core/rag/vector_client.py`, `ai_core/rag/delta.py`, `ai_core/rag/embedding_cache.py`; acceptance: Phase A/B/C completed as defined in the roadmap, tests updated, `ai_core/rag/vector_client.py` significantly reduced)
+
 - [x] **Eliminate Pass-Through Glue Functions**: Remove trivial helpers in favor of Pydantic validators (pointers: `theme/validators.py`, `theme/views.py`; implementation: create `theme/validators.py` with Pydantic models for query params, move validation logic to `@field_validator`, inline formatting helpers or move to templates; note: exclude helpers that encapsulate IO or domain lookups (relocate instead of delete); acceptance: validation in Pydantic models, helpers removed, tests passing)
 
 - [x] **Normalize the Normalizers** BREAKING: Consolidate duplicate conversion functions without changing behavior (pointers: `common/validators.py`, `ai_core/graphs/technical/collection_search.py`, `llm_worker/schemas.py`; implementation: reusable validation helpers for trimmed strings, optional strings, and string sequences; replace only identical normalize_* functions; acceptance: shared validators, no behavior drift, tests updated)
@@ -74,9 +76,10 @@ _Note: Critical logging issues (print() in production) moved to P0. Remaining ob
 
 ## Semantics / IDs
 
+- [x] User identity cleanup (UUID PKs, telemetry separation, initiated_by_user_id propagation) (see `roadmap/backlog-user-identity.md`)
 - [ ] Clean-state graph input schema for collection_search (BREAKING): move graph state to ToolContext only (pointers: `ai_core/graphs/technical/collection_search.py`, `ai_core/views.py`, `theme/views_web_search.py`, `ai_core/tests/graphs/test_collection_search_graph.py`; acceptance: state includes `tool_context` only, no flat context dict access, views build ToolContext, tests updated)
 - [ ] Enforce GraphIOSpec + versioned I/O for collection_search (BREAKING): add GraphIOSpec and validate schema_id/schema_version at boundary (pointers: `ai_core/graph/io.py`, `ai_core/graphs/technical/collection_search.py`, `ai_core/tests/graphs/test_collection_search_graph.py`; acceptance: GraphIOSpec attached to graph, boundary validation enforced, tests updated)
-- [ ] Remove legacy context surface (BREAKING): delete deprecated ToolContext properties and legacy GraphContext (pointers: `ai_core/tool_contracts/base.py`, `ai_core/graph/core.py`, `ai_core/commands/graph_execution.py`; acceptance: no `context.<id>` access, GraphContext removed or replaced, tests updated)
+- [x] Remove legacy context surface (BREAKING): delete deprecated ToolContext properties and legacy GraphContext (pointers: `ai_core/tool_contracts/base.py`, `ai_core/graph/core.py`, `ai_core/commands/graph_execution.py`; acceptance: no `context.<id>` access, GraphContext removed or replaced, tests updated)
 
 - [x] Semantics vNext: keep `case_id` required; standardize defaults (`general` for API views, `dev-case-local` for `/rag-tools`) and ensure that case exists per tenant (`ai_core/graph/schemas.py:normalize_meta`, `ai_core/views.py`, `theme/views.py`, `cases/*`)
 - [x] Hard-break ScopeContext business IDs: reject business identifiers in `ScopeContext` (pointers: `ai_core/contracts/scope.py:ScopeContext.forbid_business_ids`, `ai_core/tests/test_scope_context.py`; acceptance: ScopeContext validation raises when `case_id|collection_id|workflow_id|document_id|document_version_id` appear in input)

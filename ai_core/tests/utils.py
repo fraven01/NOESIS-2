@@ -179,7 +179,7 @@ def make_test_scope_context(
 
     Examples:
         # HTTP-level scope (no case_id required)
-        scope = make_test_scope_context(user_id="user-123")
+        scope = make_test_scope_context(user_id="550e8400-e29b-41d4-a716-446655440000")
 
         # Tool-level context
         scope = make_test_scope_context(service_id="test-worker")
