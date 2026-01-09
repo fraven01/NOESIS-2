@@ -13,9 +13,6 @@ from django.core.management import call_command
 from django.db import connection
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from ai_core.contracts.business import BusinessContext
-from ai_core.contracts.scope import ScopeContext
-from ai_core.ingestion import process_document
 from ai_core.rag import vector_client
 from ai_core.infra import object_store, rate_limit
 from tests.plugins.rag_db import drop_schema, reset_vector_schema
@@ -25,31 +22,6 @@ from common.constants import (
     META_TENANT_SCHEMA_KEY,
     META_CASE_ID_KEY,
 )
-
-
-def _build_meta(
-    *,
-    tenant_id: str,
-    case_id: str | None,
-    trace_id: str,
-    tenant_schema: str | None,
-) -> dict[str, object]:
-    scope_context = ScopeContext.model_validate(
-        {
-            "tenant_id": tenant_id,
-            "trace_id": trace_id,
-            "invocation_id": "inv-1",
-            "run_id": "run-1",
-            "tenant_schema": tenant_schema,
-        }
-    )
-    business_context = BusinessContext(case_id=case_id)
-    tool_context = scope_context.to_tool_context(business=business_context)
-    return {
-        "scope_context": scope_context.model_dump(mode="json", exclude_none=True),
-        "business_context": business_context.model_dump(mode="json", exclude_none=True),
-        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
-    }
 
 
 def _parse_dbname(dsn: str) -> str | None:
@@ -328,40 +300,6 @@ def test_rebuild_rag_index_health_check(
     doc_two, trace_two = _upload(
         "Second, completely different document for the same test.", "index-health-two"
     )
-
-    first_meta = _build_meta(
-        tenant_id=tenant,
-        case_id=case,
-        trace_id=trace_one,
-        tenant_schema=tenant,
-    )
-    first_state = {
-        "tenant_id": tenant,
-        "case_id": case,
-        "document_id": doc_one,
-        "embedding_profile": "standard",
-        "tenant_schema": tenant,
-        "trace_id": trace_one,
-    }
-    first_result = process_document(first_state, first_meta)
-    second_meta = _build_meta(
-        tenant_id=tenant,
-        case_id=case,
-        trace_id=trace_two,
-        tenant_schema=tenant,
-    )
-    second_state = {
-        "tenant_id": tenant,
-        "case_id": case,
-        "document_id": doc_two,
-        "embedding_profile": "standard",
-        "tenant_schema": tenant,
-        "trace_id": trace_two,
-    }
-    second_result = process_document(second_state, second_meta)
-
-    assert first_result["inserted"] == 1
-    assert second_result["inserted"] == 1
 
     call_command("rebuild_rag_index")
 

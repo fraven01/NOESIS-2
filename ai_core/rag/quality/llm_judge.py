@@ -93,7 +93,7 @@ class ChunkQualityEvaluator:
         self,
         *,
         model: str = "quality-eval",  # MODEL_ROUTING.yaml label
-        timeout: int = 15,
+        timeout: int = 60,
         sample_rate: float = 1.0,
         max_workers: int = 4,
     ):
@@ -226,9 +226,15 @@ class ChunkQualityEvaluator:
         context: Any = None,
     ) -> ChunkQualityScore:
         """Evaluate a single chunk."""
+        from ai_core.infra.config import get_config
         from ai_core.infra.circuit_breaker import get_litellm_circuit_breaker
         from ai_core.llm.client import LlmUpstreamError
         from litellm import completion
+
+        cfg = get_config()
+        completion_kwargs = {"api_base": cfg.litellm_base_url}
+        if cfg.litellm_api_key:
+            completion_kwargs["api_key"] = cfg.litellm_api_key
 
         # Build prompt
         prompt = CHUNK_QUALITY_PROMPT.format(
@@ -250,6 +256,7 @@ class ChunkQualityEvaluator:
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"},
                 timeout=self.timeout,
+                **completion_kwargs,
             )
         except Exception:
             breaker.record_failure(reason="litellm_completion")

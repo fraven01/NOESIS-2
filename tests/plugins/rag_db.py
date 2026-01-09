@@ -123,6 +123,13 @@ def _extract_dbname(dsn: str) -> str | None:
     return str(name) if name else None
 
 
+def _is_test_dbname(dbname: str | None) -> bool:
+    if not dbname:
+        return False
+    lowered = dbname.lower()
+    return "_test" in lowered or lowered.startswith("test_")
+
+
 def _with_worker_db(dsn: str) -> str:
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if not worker:
@@ -262,6 +269,11 @@ def rag_test_dsn() -> Iterator[str]:
         "postgresql://postgres:postgres@localhost:5432/postgres",
     )
     dsn = _with_worker_db(dsn)
+    dbname = _extract_dbname(dsn)
+    if not _is_test_dbname(dbname):
+        pytest.skip(
+            "AI_CORE_TEST_DATABASE_URL must point to a test database (name should include '_test' or start with 'test_')."
+        )
     _ensure_pristine_test_database(dsn)
     try:
         conn = psycopg2.connect(dsn)
