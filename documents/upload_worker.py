@@ -188,9 +188,7 @@ class UploadWorker:
         scope = updated_context.scope.model_dump(mode="json", exclude_none=True)
 
         async_result = with_scope_apply_async(
-            signature,
-            scope,
-            task_id=ingestion_run_id
+            signature, scope, task_id=ingestion_run_id
         )
 
         return WorkerPublishResult(
@@ -441,7 +439,9 @@ class UploadWorker:
 
         payload = {
             "scope_context": context.scope.model_dump(mode="json"),
-            "business_context": context.business.model_dump(mode="json", exclude_none=True),
+            "business_context": context.business.model_dump(
+                mode="json", exclude_none=True
+            ),
             "tool_context": context.model_dump(mode="json", exclude_none=True),
             "audit_meta": dict(audit_meta or {}),
         }

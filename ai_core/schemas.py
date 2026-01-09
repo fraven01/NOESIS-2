@@ -930,7 +930,7 @@ class IngestionOverrides(BaseModel):
 
     model_config = ConfigDict(
         extra="allow",  # Permit undocumented fields for backward compatibility
-        frozen=False,   # Allow mutation for dict() conversion
+        frozen=False,  # Allow mutation for dict() conversion
     )
 
     # Documented fields with type safety

@@ -579,5 +579,7 @@ def test_disable_embedding_config():
 
     # Assertions - embedding should be skipped
     assert parser.parse.called, "Parser should have been called"
-    assert not chunker.chunk.called, "Chunker should be skipped when enable_embedding=False"
+    assert (
+        not chunker.chunk.called
+    ), "Chunker should be skipped when enable_embedding=False"
     assert not embedder.called, "Embedder should be skipped when enable_embedding=False"

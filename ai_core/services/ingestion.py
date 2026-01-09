@@ -72,7 +72,7 @@ def _enqueue_ingestion_task(
         task_id = context.scope.ingestion_run_id
     except (TypeError, ValueError):
         scope_dict = {}
-    
+
     with_scope_apply_async(signature, scope_dict, task_id=task_id)
 
 

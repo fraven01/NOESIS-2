@@ -564,7 +564,9 @@ class CrawlerWorker:
         """
         payload: dict[str, Any] = {
             "scope_context": context.scope.model_dump(mode="json"),
-            "business_context": context.business.model_dump(mode="json", exclude_none=True),
+            "business_context": context.business.model_dump(
+                mode="json", exclude_none=True
+            ),
             "tool_context": context.model_dump(mode="json", exclude_none=True),
         }
         if crawl_id:

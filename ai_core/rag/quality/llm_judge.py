@@ -154,7 +154,9 @@ class ChunkQualityEvaluator:
                 continue
             indices_to_eval.append(index)
 
-        max_workers = min(self.max_workers, len(indices_to_eval)) if indices_to_eval else 0
+        max_workers = (
+            min(self.max_workers, len(indices_to_eval)) if indices_to_eval else 0
+        )
 
         if max_workers <= 1:
             for index in indices_to_eval:
@@ -197,9 +199,11 @@ class ChunkQualityEvaluator:
                         scores[index] = self._default_score(chunk["chunk_id"])
 
         scores = [
-            score
-            if score is not None
-            else self._default_score(chunks[index]["chunk_id"])
+            (
+                score
+                if score is not None
+                else self._default_score(chunks[index]["chunk_id"])
+            )
             for index, score in enumerate(scores)
         ]
 

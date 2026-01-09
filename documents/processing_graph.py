@@ -898,7 +898,7 @@ def build_document_processing_graph(
                 meta["chunk_index"] = i
                 if "parent_ref" in chunk:
                     meta["parent_ref"] = chunk["parent_ref"]
-                
+
                 try:
                     repository.add_asset(
                         document=state.document,
@@ -914,8 +914,8 @@ def build_document_processing_graph(
                         extra={
                             "chunk_id": chunk_id,
                             "error": str(exc),
-                            "document_id": str(metadata.document_id)
-                        }
+                            "document_id": str(metadata.document_id),
+                        },
                     )
 
             chunk_stats = dict(chunk_stats or {})
@@ -944,7 +944,7 @@ def build_document_processing_graph(
                         content = getattr(chunk, "content", None)
                         if content is None and isinstance(chunk, dict):
                             content = chunk.get("content")
-                        
+
                         if not content:
                             continue
 
@@ -986,7 +986,7 @@ def build_document_processing_graph(
                             media_type="text/plain",
                             blob=blob,
                             text_description=content,  # Truncated to 2048 by validator
-                            ocr_text=content,          # Truncated to 8192 by validator
+                            ocr_text=content,  # Truncated to 8192 by validator
                             created_at=now,
                             checksum=blob_sha,
                             asset_kind="chunk",
@@ -994,15 +994,15 @@ def build_document_processing_graph(
                         )
 
                         repository.add_asset(asset, workflow_id=workflow_id)
-                        
+
                 except Exception as persist_exc:
                     # Non-blocking failure - log and continue
                     logger.warning(
-                        "chunk_persistence_failed", 
+                        "chunk_persistence_failed",
                         extra={
                             "document_id": str(metadata.document_id),
-                            "error": str(persist_exc)
-                        }
+                            "error": str(persist_exc),
+                        },
                     )
             # --------------------------------------------------------------------------
 

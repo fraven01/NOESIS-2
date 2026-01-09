@@ -58,7 +58,7 @@ class UploadManager:
         task_result = with_scope_apply_async(
             signature,
             context.scope.model_dump(mode="json", exclude_none=True),
-            task_id=ingestion_run_id
+            task_id=ingestion_run_id,
         )
 
         return {

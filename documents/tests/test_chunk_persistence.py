@@ -24,6 +24,7 @@ from documents.processing_graph import (
 )
 from documents.repository import DocumentsRepository
 
+
 def test_chunk_persistence():
     """Test that chunks are persisted to the repository as assets."""
     # Mocks
@@ -90,7 +91,7 @@ def test_chunk_persistence():
     blob = InlineBlob(
         type="inline",
         media_type="text/plain",
-        base64="dGVzdA==", # test
+        base64="dGVzdA==",  # test
         sha256="9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
         size=4,
     )
@@ -119,19 +120,21 @@ def test_chunk_persistence():
 
     # Assertions
     # repository.add_asset should be called twice
-    assert repository.add_asset.call_count == 2, f"Expected 2 calls, got {repository.add_asset.call_count}"
+    assert (
+        repository.add_asset.call_count == 2
+    ), f"Expected 2 calls, got {repository.add_asset.call_count}"
 
     # Verify content of calls
     calls = repository.add_asset.call_args_list
-    
+
     # Check first chunk
-    asset1 = calls[0][0][0] # first arg of first call
+    asset1 = calls[0][0][0]  # first arg of first call
     # Handle auto-unwrapping if mock stores args weirdly, but usually [0][0] is correct
     assert isinstance(asset1, Asset)
     assert asset1.asset_kind == "chunk"
     assert asset1.text_description == chunk1_content
     # Blob check (optional)
-    
+
     # Check second chunk
     asset2 = calls[1][0][0]
     assert asset2.text_description == chunk2_content

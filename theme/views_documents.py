@@ -286,6 +286,7 @@ def document_reingest(request):
         },
     )
 
+
 @csrf_exempt
 def document_delete(request):
     """Handle document deletion via HTMX.

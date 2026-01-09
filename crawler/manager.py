@@ -68,17 +68,16 @@ class CrawlerManager:
                 # But the CrawlerManager currently gathers them.
                 # If we want to use a group, we might need a `with_scope_group_async` or just iterate.
                 # For now, let's iterate to ensure correct context.
-                sig = crawl_url_task.s(url=url, meta=dict(meta), ingestion_overrides=ingestion_overrides)
+                sig = crawl_url_task.s(
+                    url=url, meta=dict(meta), ingestion_overrides=ingestion_overrides
+                )
                 # context.scope is already in meta, but with_scope_apply_async enforces extraction
                 # so we pass scope_dict explicitly to double check.
                 scope_dict = context.scope.model_dump(mode="json", exclude_none=True)
                 res = with_scope_apply_async(sig, scope_dict)
-                
-                dispatched.append({
-                    "url": url,
-                    "task_id": res.id
-                })
-            
+
+                dispatched.append({"url": url, "task_id": res.id})
+
         logger.info(
             "crawler_manager.dispatch_completed",
             extra={

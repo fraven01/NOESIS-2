@@ -30,7 +30,7 @@ def inspect():
                 print(f"    Title: {doc.metadata.get('title', 'N/A')}")
             except Document.DoesNotExist:
                 print("    FOUND: NO")
-                return # Stop if doc not found
+                return  # Stop if doc not found
 
             # 2. Check DocumentAssets (Chunks)
             print("\n[2] Checking DocumentAssets (Chunks)...")

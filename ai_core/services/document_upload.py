@@ -259,13 +259,23 @@ def handle_document_upload(
         )
         metadata_paths = [
             "/".join(
-                [tenant_segment, workflow_segment, "uploads", f"{document_uuid}.meta.json"]
+                [
+                    tenant_segment,
+                    workflow_segment,
+                    "uploads",
+                    f"{document_uuid}.meta.json",
+                ]
             )
         ]
         if case_segment != workflow_segment:
             metadata_paths.append(
                 "/".join(
-                    [tenant_segment, case_segment, "uploads", f"{document_uuid}.meta.json"]
+                    [
+                        tenant_segment,
+                        case_segment,
+                        "uploads",
+                        f"{document_uuid}.meta.json",
+                    ]
                 )
             )
         for metadata_path in metadata_paths:

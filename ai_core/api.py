@@ -556,6 +556,7 @@ def trigger_embedding(
     # ✅ CRITICAL FIX: Calculate embeddings using EmbeddingClient
     if chunk_texts:
         from ai_core.rag.embeddings import EmbeddingClient
+
         embedding_client = EmbeddingClient.from_settings()
         embedding_result = embedding_client.embed(chunk_texts)
 
