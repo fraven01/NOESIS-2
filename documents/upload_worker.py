@@ -17,9 +17,8 @@ from uuid import UUID, uuid4
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.infra import object_store
 from ai_core.infra.serialization import to_jsonable
-from ai_core.ids.http_scope import normalize_task_context
 from ai_core.tasks import run_ingestion_graph
-from ai_core.tool_contracts.base import tool_context_from_meta
+from ai_core.tool_contracts.base import ToolContext
 from documents.activity_service import ActivityTracker
 from documents.contracts import (
     DocumentMeta,
@@ -58,13 +57,8 @@ class UploadWorker:
     def process(
         self,
         upload_file: Any,  # Duck-typed UploadedFile
+        context: ToolContext,
         *,
-        tenant_id: str,
-        case_id: Optional[str] = None,
-        workflow_id: Optional[str] = None,
-        trace_id: Optional[str] = None,
-        invocation_id: Optional[str] = None,
-        user_id: Optional[str] = None,
         document_metadata: Optional[Mapping[str, Any]] = None,
         ingestion_overrides: Optional[Mapping[str, Any]] = None,
     ) -> WorkerPublishResult:
@@ -72,18 +66,20 @@ class UploadWorker:
 
         Args:
             upload_file: File-like object with .read(), .name, .content_type
-            tenant_id: Tenant identifier
-            case_id: Optional case identifier
-            workflow_id: Optional workflow identifier
-            trace_id: Distributed tracing ID
-            invocation_id: Unique invocation ID for this processing run
-            user_id: Optional user identifier for attribution
+            context: Tool execution context (scope + business IDs)
             document_metadata: Optional metadata provided by the uploader
             ingestion_overrides: Optional overrides for the ingestion process
 
         Returns:
             WorkerPublishResult with status and IDs
         """
+        # Extract IDs from context
+        tenant_id = context.scope.tenant_id
+        case_id = context.business.case_id
+        workflow_id = context.business.workflow_id
+        trace_id = context.scope.trace_id
+        user_id = context.scope.user_id
+        ingestion_run_id = context.scope.ingestion_run_id
         # 1. Read file
         file_bytes = upload_file.read()
         if not isinstance(file_bytes, (bytes, bytearray)):
@@ -101,6 +97,16 @@ class UploadWorker:
         raw_meta.setdefault("content_hash", checksum)
         raw_meta.setdefault("content_length", size)
         raw_meta.setdefault("source", "upload")
+        requested_document_id = raw_meta.get("document_id")
+        if requested_document_id is not None:
+            requested_document_id = str(requested_document_id).strip() or None
+            if requested_document_id:
+                try:
+                    UUID(requested_document_id)
+                except (TypeError, ValueError):
+                    requested_document_id = None
+        if requested_document_id:
+            raw_meta["document_id"] = requested_document_id
 
         # 4. Collection ID handling
         collection_id = raw_meta.get("collection_id")
@@ -125,7 +131,10 @@ class UploadWorker:
             collection_identifier=collection_id,
             ingestion_overrides=ingestion_overrides,
             audit_meta=audit_meta,
+            document_id=requested_document_id,
         )
+        if not resolved_document_id and requested_document_id:
+            resolved_document_id = requested_document_id
 
         # 6. Compose state (IDENTICAL to Crawler!)
         state = self._compose_state(
@@ -141,13 +150,17 @@ class UploadWorker:
             ingestion_overrides,
         )
 
-        # 7. Compose meta (IDENTICAL to Crawler!)
-        meta = self._compose_meta(
-            tenant_id,
-            case_id,
-            resolved_workflow_id,
-            trace_id,
-            invocation_id,
+        # 7. Update context with resolved workflow_id if needed
+        updated_context = context
+        if resolved_workflow_id != workflow_id:
+            updated_business = context.business.model_copy(
+                update={"workflow_id": resolved_workflow_id}
+            )
+            updated_context = context.model_copy(update={"business": updated_business})
+
+        # 8. Compose meta from context
+        meta = self._compose_meta_from_context(
+            updated_context,
             audit_meta,
         )
 
@@ -170,11 +183,15 @@ class UploadWorker:
             },
         )
 
-        # 8. Dispatch
+        # 9. Dispatch
         signature = run_ingestion_graph.s(state, meta)
-        context = tool_context_from_meta(meta)
-        scope = context.scope.model_dump(mode="json", exclude_none=True)
-        async_result = with_scope_apply_async(signature, scope)
+        scope = updated_context.scope.model_dump(mode="json", exclude_none=True)
+
+        async_result = with_scope_apply_async(
+            signature,
+            scope,
+            task_id=ingestion_run_id
+        )
 
         return WorkerPublishResult(
             status="published",
@@ -212,6 +229,7 @@ class UploadWorker:
         collection_identifier: Optional[Any],
         ingestion_overrides: Optional[Mapping[str, Any]],
         audit_meta: Mapping[str, Any] | None,
+        document_id: Optional[str],
     ) -> Optional[str]:
         """Register document in DomainService to ensure it exists in DB."""
         try:
@@ -247,6 +265,12 @@ class UploadWorker:
                         collections.append(ensured)
 
                 # We use a no-op dispatcher because we are about to dispatch the graph manually
+                document_uuid = None
+                if document_id:
+                    try:
+                        document_uuid = UUID(str(document_id))
+                    except (TypeError, ValueError):
+                        document_uuid = None
                 result = service.ingest_document(
                     tenant=tenant,
                     source=metadata.get("origin_uri") or filename,
@@ -265,6 +289,7 @@ class UploadWorker:
                         else None
                     ),
                     dispatcher=lambda *args: None,
+                    document_id=document_uuid,
                 )
                 try:
                     ActivityTracker.log(
@@ -350,6 +375,12 @@ class UploadWorker:
         )
 
         # Meta
+        pipeline_cfg = {}
+        raw_pipeline_cfg = raw_meta.get("pipeline_config")
+        if isinstance(raw_pipeline_cfg, Mapping):
+            pipeline_cfg.update(raw_pipeline_cfg)
+        media_type = raw_meta.get("content_type") or "application/octet-stream"
+        pipeline_cfg.setdefault("media_type", media_type)
         meta_obj = DocumentMeta(
             tenant_id=tenant_id,
             workflow_id=workflow_id,
@@ -358,9 +389,7 @@ class UploadWorker:
             origin_uri=raw_meta.get("origin_uri"),
             tags=raw_meta.get("tags") or [],
             external_ref=raw_meta.get("external_ref"),
-            pipeline_config={
-                "media_type": raw_meta.get("content_type") or "application/octet-stream"
-            },
+            pipeline_config=pipeline_cfg,
         )
 
         # Blob (FileBlob)
@@ -369,7 +398,7 @@ class UploadWorker:
             uri=payload_path,
             size=size,
             sha256=checksum,
-            media_type=raw_meta.get("content_type") or "application/octet-stream",
+            media_type=media_type,
         )
 
         normalized_doc = NormalizedDocument(
@@ -385,50 +414,35 @@ class UploadWorker:
         state["normalized_document_input"] = normalized_doc.model_dump(mode="json")
         return state
 
-    def _compose_meta(
+    def _compose_meta_from_context(
         self,
-        tenant_id: str,
-        case_id: Optional[str],
-        workflow_id: str,
-        trace_id: Optional[str],
-        invocation_id: Optional[str],
+        context: ToolContext,
         audit_meta: Mapping[str, Any] | None,
     ) -> Dict[str, Any]:
-        """Compose metadata for the graph execution context.
+        """Compose metadata for the graph execution context from ToolContext.
 
-        BREAKING CHANGE (Option A - Strict Separation):
-        Returns both scope_context (infrastructure) and business_context (domain).
+        Args:
+            context: Tool execution context with scope and business IDs
+            audit_meta: Optional audit metadata (initiated_by_user_id, etc.)
+
+        Returns:
+            Meta dict with scope_context, business_context, and tool_context
         """
-        from ai_core.contracts.business import BusinessContext
-
-        # Build ScopeContext (infrastructure only, no business IDs)
-        scope = normalize_task_context(
-            tenant_id=tenant_id,
-            service_id="upload-worker",
-            trace_id=trace_id,
-            invocation_id=invocation_id,
-        )
-
-        # Build BusinessContext (business domain IDs)
-        business = BusinessContext(case_id=case_id, workflow_id=workflow_id)
+        # Optionally merge initiated_by_user_id into context.metadata
         initiated_by_user_id = None
         if audit_meta:
             initiated_by_user_id = audit_meta.get("initiated_by_user_id")
-        metadata = (
-            {"initiated_by_user_id": initiated_by_user_id}
-            if initiated_by_user_id
-            else None
-        )
-        tool_context = (
-            scope.to_tool_context(business=business, metadata=metadata)
-            if metadata
-            else scope.to_tool_context(business=business)
-        )
+
+        if initiated_by_user_id:
+            # Update context metadata if needed
+            updated_metadata = dict(context.metadata or {})
+            updated_metadata["initiated_by_user_id"] = initiated_by_user_id
+            context = context.model_copy(update={"metadata": updated_metadata})
 
         payload = {
-            "scope_context": scope.model_dump(mode="json"),
-            "business_context": business.model_dump(mode="json", exclude_none=True),
-            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+            "scope_context": context.scope.model_dump(mode="json"),
+            "business_context": context.business.model_dump(mode="json", exclude_none=True),
+            "tool_context": context.model_dump(mode="json", exclude_none=True),
             "audit_meta": dict(audit_meta or {}),
         }
         if initiated_by_user_id:
@@ -452,7 +466,7 @@ class UploadWorker:
         embedding_profile: Optional[str] = None,
         scope: Optional[str] = None,
     ) -> Optional[DocumentCollection]:
-        from documents.contracts import MANUAL_COLLECTION_SLUG
+        from documents.collection_service import DEFAULT_MANUAL_COLLECTION_SLUG
 
         try:
             # Try strictly as UUID
@@ -465,7 +479,7 @@ class UploadWorker:
 
             return service.ensure_collection(
                 tenant=tenant,
-                key=MANUAL_COLLECTION_SLUG,  # Start with manual slug default
+                key=DEFAULT_MANUAL_COLLECTION_SLUG,  # Start with manual slug default
                 collection_id=collection_uuid,
                 embedding_profile=embedding_profile,
                 scope=scope,

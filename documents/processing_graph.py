@@ -7,9 +7,15 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, MutableMapping, Optional
+import base64
+import hashlib
+import uuid
+from datetime import datetime, timezone
 
 if TYPE_CHECKING:
     from documents.api import NormalizedDocumentPayload
+
+from documents.contracts import InlineBlob
 
 try:  # pragma: no cover - exercised via integration tests
     from langgraph.graph import END, START, StateGraph
@@ -813,6 +819,22 @@ def build_document_processing_graph(
         metadata = context.metadata
         workflow_id = metadata.workflow_id
 
+        # Early return if embedding disabled (Store-Only mode)
+        # Skip chunking entirely to avoid wasting time on quality evaluation
+        if not getattr(state.config, "enable_embedding", True):
+            logger.info(
+                "chunk_document.skip_store_only",
+                extra={
+                    "tenant_id": metadata.tenant_id,
+                    "trace_id": metadata.trace_id,
+                    "workflow_id": workflow_id,
+                    "document_id": str(metadata.document_id),
+                    "reason": "enable_embedding_false",
+                },
+            )
+            state.mark_phase("chunk_skipped")
+            return state
+
         parsed_result = state.parsed_result
         if parsed_result is None:
             logger.warning(
@@ -863,6 +885,39 @@ def build_document_processing_graph(
                 action=_chunk_action,
             )
 
+            # Persist chunks as assets for debugging/vis
+            for i, chunk in enumerate(chunks):
+                # Fallback for LateChunker (uses 'text') vs other chunkers ('content')
+                text_content = chunk.get("content") or chunk.get("text")
+                if not text_content:
+                    continue
+
+                chunk_id = chunk.get("chunk_id") or str(uuid.uuid4())
+                meta = dict(chunk.get("metadata") or {})
+                meta["asset_kind"] = "chunk"
+                meta["chunk_index"] = i
+                if "parent_ref" in chunk:
+                    meta["parent_ref"] = chunk["parent_ref"]
+                
+                try:
+                    repository.add_asset(
+                        document=state.document,
+                        asset_id=chunk_id,
+                        media_type="text/plain",
+                        content=InlineBlob(data=text_content.encode("utf-8")),
+                        metadata=meta,
+                        workflow_id=workflow_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "chunk_persistence_failed",
+                        extra={
+                            "chunk_id": chunk_id,
+                            "error": str(exc),
+                            "document_id": str(metadata.document_id)
+                        }
+                    )
+
             chunk_stats = dict(chunk_stats or {})
             chunk_stats["chunk.state"] = pipeline_module.ProcessingState.CHUNKED.value
             chunk_stats.setdefault("chunk.count", len(chunks))
@@ -877,6 +932,79 @@ def build_document_processing_graph(
             state.context = state.context.transition(
                 pipeline_module.ProcessingState.CHUNKED
             )
+
+            # --- Persistence of Chunks to DocumentAsset (Debug/Explorer Visibility) ---
+            if repository is not None:
+                try:
+                    # Local imports to avoid circular dependency
+                    from documents.contracts import Asset, AssetRef
+
+                    for i, chunk in enumerate(chunks):
+                        # Handle both dicts and objects (Pydantic models)
+                        content = getattr(chunk, "content", None)
+                        if content is None and isinstance(chunk, dict):
+                            content = chunk.get("content")
+                        
+                        if not content:
+                            continue
+
+                        # Ensure content is string
+                        if not isinstance(content, str):
+                            content = str(content)
+
+                        # Generate unique asset ID
+                        asset_id = uuid.uuid4()
+                        now = datetime.now(timezone.utc)
+
+                        # Create Blob (Inline text)
+                        blob_content = content.encode("utf-8")
+                        blob_b64 = base64.b64encode(blob_content).decode("ascii")
+                        blob_sha = hashlib.sha256(blob_content).hexdigest()
+
+                        blob = InlineBlob(
+                            type="inline",
+                            media_type="text/plain",
+                            base64=blob_b64,
+                            sha256=blob_sha,
+                            size=len(blob_content),
+                        )
+
+                        # Create Reference
+                        ref = AssetRef(
+                            tenant_id=metadata.tenant_id,
+                            workflow_id=workflow_id,
+                            document_id=metadata.document_id,
+                            collection_id=metadata.collection_id,
+                            asset_id=asset_id,
+                        )
+
+                        # Create Asset
+                        # We use ocr_text to store the content up to 8192 chars for DB searchability
+                        # 'asset_kind' helps identify these as chunks
+                        asset = Asset(
+                            ref=ref,
+                            media_type="text/plain",
+                            blob=blob,
+                            text_description=content,  # Truncated to 2048 by validator
+                            ocr_text=content,          # Truncated to 8192 by validator
+                            created_at=now,
+                            checksum=blob_sha,
+                            asset_kind="chunk",
+                            caption_method="none",
+                        )
+
+                        repository.add_asset(asset, workflow_id=workflow_id)
+                        
+                except Exception as persist_exc:
+                    # Non-blocking failure - log and continue
+                    logger.warning(
+                        "chunk_persistence_failed", 
+                        extra={
+                            "document_id": str(metadata.document_id),
+                            "error": str(persist_exc)
+                        }
+                    )
+            # --------------------------------------------------------------------------
 
             from .pipeline import DocumentChunkArtifact
 
@@ -925,7 +1053,7 @@ def build_document_processing_graph(
                 "trace_id": state.context.metadata.trace_id,
                 "workflow_id": state.context.metadata.workflow_id,
                 "document_id": str(state.context.metadata.document_id),
-                "enable_embedding": getattr(state.config, "enable_embedding", False),
+                "enable_embedding": getattr(state.config, "enable_embedding", True),
                 "embedder_present": embedder is not None,
                 "chunk_artifact_present": state.chunk_artifact is not None,
                 "chunks_count": (
@@ -934,7 +1062,7 @@ def build_document_processing_graph(
             },
         )
 
-        if not getattr(state.config, "enable_embedding", False):
+        if not getattr(state.config, "enable_embedding", True):
             logger.debug(
                 "embed_chunks.skip",
                 extra={
@@ -1157,10 +1285,27 @@ def build_document_processing_graph(
         {"continue": "caption_assets", "end": "cleanup"},
     )
 
-    # Caption -> Chunk (conditional)
+    # Caption -> Chunk (conditional: skip if embedding disabled)
+    def _should_chunk(state: DocumentProcessingState) -> str:
+        """Determine if chunking should run based on lifecycle limits and config."""
+        if state.should_stop("caption_complete"):
+            return "end"
+        # Store-only mode: skip chunking + embedding when disabled.
+        if not getattr(state.config, "enable_embedding", True):
+            logger.info(
+                "graph.skip_chunk_store_only",
+                extra={
+                    "document_id": str(state.context.metadata.document_id),
+                    "trace_id": state.context.metadata.trace_id,
+                    "reason": "enable_embedding_false",
+                },
+            )
+            return "end"
+        return "continue"
+
     graph.add_conditional_edges(
         "caption_assets",
-        lambda state: ("end" if state.should_stop("caption_complete") else "continue"),
+        _should_chunk,
         {"continue": "chunk_document", "end": "cleanup"},
     )
 

@@ -52,7 +52,12 @@
       "Bash(done)",
       "Bash(timeout 60 docker compose:*)",
       "Bash(python3:*)",
-      "Bash(npm run test:py:parallel:*)"
+      "Bash(npm run test:py:parallel:*)",
+      "Bash(npm run dev:up:*)",
+      "Bash(npm run dev:manage shell:*)",
+      "Bash(python -m ruff check:*)",
+      "Bash(python test_upload.py:*)",
+      "Bash(npm run test:py:fast:*)"
     ],
     "deny": [],
     "ask": []

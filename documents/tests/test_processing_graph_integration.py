@@ -482,7 +482,7 @@ def test_early_exit_on_parse_only():
 
 
 def test_disable_embedding_config():
-    """Test that embedding is skipped when enable_embedding=False."""
+    """Test that chunking and embedding are skipped when enable_embedding=False."""
     # Mocks
     parser = MagicMock()
     repository = MagicMock(spec=DocumentsRepository)
@@ -579,5 +579,5 @@ def test_disable_embedding_config():
 
     # Assertions - embedding should be skipped
     assert parser.parse.called, "Parser should have been called"
-    assert chunker.chunk.called, "Chunker should have been called"
+    assert not chunker.chunk.called, "Chunker should be skipped when enable_embedding=False"
     assert not embedder.called, "Embedder should be skipped when enable_embedding=False"

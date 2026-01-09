@@ -114,6 +114,8 @@ def submit_worker_task(
         queue=_resolve_queue(task_payload, priority),
     )
 
+    # Pre-MVP: We don't strictly enforce task_id determinism here yet as per roadmap
+    # but we must respect the new signature (explicit params)
     async_result = with_scope_apply_async(signature, scope_context)
 
     timeout = timeout_s

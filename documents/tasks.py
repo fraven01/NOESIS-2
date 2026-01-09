@@ -58,17 +58,10 @@ def upload_document_task(
 
     worker = UploadWorker()
     context = tool_context_from_meta(meta)
-    user_id = context.scope.user_id
-    workflow_id = context.business.workflow_id
 
     result = worker.process(
         upload,
-        tenant_id=context.scope.tenant_id,
-        case_id=context.business.case_id,  # BREAKING CHANGE: from business_context
-        workflow_id=workflow_id,
-        trace_id=context.scope.trace_id,
-        invocation_id=context.scope.invocation_id,
-        user_id=user_id,
+        context,
         document_metadata=metadata,
         ingestion_overrides=metadata.get("ingestion_overrides"),
     )

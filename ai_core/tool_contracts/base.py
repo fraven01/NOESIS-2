@@ -97,18 +97,34 @@ def tool_context_from_scope(
     business: BusinessContext | None = None,
     *,
     now: datetime | None = None,
-    **overrides: Any,
+    locale: str | None = None,
+    timeouts_ms: int | None = None,
+    budget_tokens: int | None = None,
+    safety_mode: str | None = None,
+    auth: dict[str, Any] | None = None,
+    visibility_override_allowed: bool = False,
+    metadata: dict[str, Any] | None = None,
 ) -> ToolContext:
     """Build a ToolContext from ScopeContext and BusinessContext.
 
     BREAKING CHANGE (Option A):
     New signature requires BusinessContext as separate parameter.
 
+    BREAKING CHANGE (Phase 4):
+    Removed **overrides in favor of explicit parameters. This prevents
+    accidental override of scope/business and provides better type safety.
+
     Args:
         scope: Request correlation scope (WHO, WHEN)
         business: Optional business domain context (WHAT). Defaults to empty.
         now: Override timestamp (for testing). Ignored (scope.timestamp used).
-        **overrides: Additional ToolContext fields (locale, budget_tokens, etc.)
+        locale: Locale string (e.g., "de-DE")
+        timeouts_ms: Timeout in milliseconds
+        budget_tokens: Token budget for LLM calls
+        safety_mode: Safety mode string
+        auth: Authentication metadata
+        visibility_override_allowed: Whether visibility overrides are allowed
+        metadata: Additional runtime metadata
 
     Returns:
         ToolContext with compositional structure
@@ -128,15 +144,17 @@ def tool_context_from_scope(
     if business is None:
         business = BusinessContext()  # Empty business context
 
-    payload: dict[str, Any] = {
-        "scope": scope,
-        "business": business,
-    }
-
-    # Add overrides (locale, timeouts, etc.)
-    payload.update(overrides)
-
-    return ToolContext(**payload)
+    return ToolContext(
+        scope=scope,
+        business=business,
+        locale=locale,
+        timeouts_ms=timeouts_ms,
+        budget_tokens=budget_tokens,
+        safety_mode=safety_mode,
+        auth=auth,
+        visibility_override_allowed=visibility_override_allowed,
+        metadata=metadata or {},
+    )
 
 
 def tool_context_from_meta(meta: Mapping[str, Any]) -> ToolContext:

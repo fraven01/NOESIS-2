@@ -2,42 +2,35 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
 import mimetypes
-from collections.abc import Mapping
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from django.core.files.uploadedfile import UploadedFile
-from django.utils import timezone
 from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.response import Response
 
-from ai_core.contracts.business import BusinessContext
-from ai_core.rag.vector_client import get_default_client
 from documents.collection_service import (
     CollectionService,
     DEFAULT_MANUAL_COLLECTION_LABEL as MANUAL_COLLECTION_LABEL,
     DEFAULT_MANUAL_COLLECTION_SLUG as MANUAL_COLLECTION_SLUG,
 )
+from ai_core.infra import object_store
 from ai_core.tool_contracts.base import tool_context_from_meta
+from common.celery import with_scope_apply_async
 from customers.tenant_context import TenantContext
-from documents.contracts import DocumentRef, InlineBlob, NormalizedDocument
-from documents.domain_service import DocumentDomainService
+from documents.tasks import upload_document_task
 
 from ..ingestion_utils import make_fallback_external_id
 from ..schemas import RagUploadMetadata
 from .graph_support import _error_response
-from .repository import _get_documents_repository
 from .upload_support import (
-    _build_document_meta,
-    _ensure_collection_with_warning,
+    _derive_workflow_id,
     _ensure_document_collection_record,
     _infer_media_type,
-    _map_upload_graph_skip,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,7 +43,7 @@ def handle_document_upload(
     idempotency_key: str | None,
 ) -> Response:
     """
-    Orchestrates the upload of a document, its metadata, and immediate ingestion.
+    Orchestrates the upload of a document and dispatches ingestion to a worker.
 
     This function contains the business logic that was previously in the
     `RagUploadView`.
@@ -107,7 +100,7 @@ def handle_document_upload(
             str(exc), "invalid_metadata", status.HTTP_400_BAD_REQUEST
         )
 
-    metadata_obj = metadata_model.model_dump()
+    metadata_obj.update(metadata_model.model_dump())
 
     tenant_identifier = scope_context.tenant_id
     tenant_obj = None
@@ -165,38 +158,52 @@ def handle_document_upload(
             business_context=business_context,
         )
 
-    tenant = tenant_obj
-    domain_service = (
-        DocumentDomainService(vector_store=get_default_client()) if tenant else None
+    updated_business = business_context
+    updated = False
+
+    if not updated_business.workflow_id:
+        derived_workflow_id = _derive_workflow_id(metadata_obj, business_context)
+        updated_business = updated_business.model_copy(
+            update={"workflow_id": derived_workflow_id}
+        )
+        updated = True
+
+    collection_id = metadata_obj.get("collection_id")
+    if collection_id and not updated_business.collection_id:
+        updated_business = updated_business.model_copy(
+            update={"collection_id": str(collection_id)}
+        )
+        updated = True
+
+    if updated:
+        business_context = updated_business
+
+    ingestion_run_id = scope_context.ingestion_run_id or uuid4().hex
+    if ingestion_run_id != scope_context.ingestion_run_id:
+        scope_context = scope_context.model_copy(
+            update={"ingestion_run_id": ingestion_run_id}
+        )
+
+    tool_context = tool_context.model_copy(
+        update={"scope": scope_context, "business": business_context}
     )
-    ensured_collection = None
-    if metadata_obj.get("collection_id") and domain_service and tenant:
-        if manual_scope_assigned:
-            ensured_collection = domain_service.ensure_collection(
-                tenant=tenant,
-                key=MANUAL_COLLECTION_SLUG,
-                collection_id=UUID(manual_collection_scope),
-                embedding_profile=metadata_obj.get("embedding_profile"),
-                scope=metadata_obj.get("scope"),
-            )
-        else:
-            ensured_collection = _ensure_collection_with_warning(
-                domain_service,
-                tenant,
-                metadata_obj["collection_id"],
-                embedding_profile=metadata_obj.get("embedding_profile"),
-                scope=metadata_obj.get("scope"),
-            )
-        if ensured_collection is not None:
-            metadata_obj["collection_id"] = str(ensured_collection.collection_id)
+    meta["scope_context"] = scope_context.model_dump(mode="json", exclude_none=True)
+    meta["business_context"] = business_context.model_dump(
+        mode="json", exclude_none=True
+    )
+    meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
+
+    original_name = getattr(upload, "name", "") or "upload.bin"
+    if not metadata_obj.get("title"):
+        metadata_obj["title"] = original_name
+    if business_context.workflow_id and "workflow_id" not in metadata_obj:
+        metadata_obj["workflow_id"] = business_context.workflow_id
 
     document_uuid = uuid4()
 
     file_bytes = upload.read()
     if not isinstance(file_bytes, (bytes, bytearray)):
         file_bytes = bytes(file_bytes)
-
-    original_name = getattr(upload, "name", "") or "upload.bin"
 
     supplied_external = metadata_obj.get("external_id")
     if isinstance(supplied_external, str):
@@ -214,9 +221,18 @@ def handle_document_upload(
         )
 
     metadata_obj["external_id"] = external_id
+    external_ref = metadata_obj.get("external_ref")
+    external_ref_payload: dict[str, object] | None = None
+    if isinstance(external_ref, dict):
+        external_ref_payload = dict(external_ref)
+    elif external_ref is None:
+        external_ref_payload = {}
+    if external_ref_payload is not None and external_id:
+        external_ref_payload.setdefault("external_id", external_id)
+        if external_ref_payload:
+            metadata_obj["external_ref"] = external_ref_payload
 
     checksum = hashlib.sha256(file_bytes).hexdigest()
-    encoded_blob = base64.b64encode(file_bytes).decode("ascii")
 
     # Improved MIME type detection
     detected_mime = _infer_media_type(upload)
@@ -229,178 +245,62 @@ def handle_document_upload(
     document_metadata_payload.setdefault("filename", original_name)
     document_metadata_payload.setdefault("content_hash", checksum)
     document_metadata_payload.setdefault("content_type", detected_mime)
-
-    audit_meta = {
-        "created_by_user_id": scope_context.user_id,
-        "initiated_by_user_id": scope_context.user_id,
-        "last_hop_service_id": scope_context.service_id,
-    }
-    audit_meta = {key: value for key, value in audit_meta.items() if value}
-
-    if domain_service and tenant:
-        ingest_result = domain_service.ingest_document(
-            tenant=tenant,
-            source=document_metadata_payload.get("origin_uri")
-            or document_metadata_payload.get("external_id")
-            or original_name,
-            content_hash=checksum,
-            metadata=document_metadata_payload,
-            audit_meta=audit_meta,
-            collections=(
-                (ensured_collection,) if ensured_collection is not None else ()
-            ),
-            embedding_profile=metadata_obj.get("embedding_profile"),
-            scope=metadata_obj.get("scope"),
-            dispatcher=lambda *_: None,
-        )
-        document_uuid = ingest_result.document.id
-        collection_ids = ingest_result.collection_ids
-    else:
-        document_uuid = uuid4()
-        collection_ids: tuple[UUID, ...] = ()
-
-    if not metadata_obj.get("title"):
-        metadata_obj["title"] = original_name
-
-    # BREAKING CHANGE (Option A): Pass business_context to _build_document_meta
-    document_meta = _build_document_meta(
-        scope_context,
-        metadata_obj,
-        external_id,
-        media_type=detected_mime,
-        business_context=business_context,
-    )
-    if not business_context.workflow_id:
-        business_context = business_context.model_copy(
-            update={"workflow_id": document_meta.workflow_id}
-        )
-
-    logger.debug(
-        "upload.collection_resolution",
-        extra={
-            "tenant_id": scope_context.tenant_id,
-            "trace_id": scope_context.trace_id,
-            "invocation_id": scope_context.invocation_id,
-            "collection_ids": collection_ids,
-            "metadata_collection_id": metadata_obj.get("collection_id"),
-        },
-    )
-    ref_payload: dict[str, object] = {
-        "tenant_id": document_meta.tenant_id,
-        "workflow_id": document_meta.workflow_id,
-        "document_id": document_uuid,
-        "collection_id": (
-            metadata_obj.get("collection_id")
-            if metadata_obj.get("collection_id")
-            else (collection_ids[0] if collection_ids else None)
-        ),
-        "version": metadata_obj.get("version"),
-    }
-    document_ref = DocumentRef(**ref_payload)
-
-    blob = InlineBlob(
-        type="inline",
-        media_type=detected_mime,
-        base64=encoded_blob,
-        sha256=checksum,
-        size=len(file_bytes),
-    )
-
-    normalized_document = NormalizedDocument(
-        ref=document_ref,
-        meta=document_meta,
-        blob=blob,
-        checksum=checksum,
-        created_at=timezone.now(),
-        source="upload",
-    )
-
-    ingestion_run_id = uuid4().hex
+    document_metadata_payload.setdefault("source", "upload")
+    document_metadata_payload["external_id"] = external_id
+    document_metadata_payload["document_id"] = str(document_uuid)
 
     try:
-        repository = _get_documents_repository()
-
-        # Prepare input for Universal Ingestion Graph
-        # We pre-build the NormalizedDocument here to handle Django-specific file handling
-        graph_input = {
-            "normalized_document": normalized_document.model_dump(),
-        }
-
-        # BREAKING CHANGE (Option A - Full ToolContext Migration):
-        # Universal ingestion graph now expects nested ToolContext structure
-        business = BusinessContext(
-            case_id=business_context.case_id,
-            workflow_id=business_context.workflow_id,
-            collection_id=(
-                str(ensured_collection.collection_id)
-                if ensured_collection
-                else str(metadata_obj.get("collection_id"))
-            ),
+        tenant_segment = object_store.sanitize_identifier(scope_context.tenant_id)
+        workflow_segment = object_store.sanitize_identifier(
+            business_context.workflow_id or "upload"
         )
-
-        scope_payload = scope_context.model_dump(mode="json", exclude_none=True)
-        graph_state = {
-            "input": graph_input,
-            "context": {
-                "scope": {
-                    **scope_payload,
-                    "invocation_id": scope_context.invocation_id or uuid4().hex,
-                    "ingestion_run_id": ingestion_run_id,
-                },
-                "business": business.model_dump(mode="json"),
-                "metadata": {
-                    # Runtime dependencies passed in metadata
-                    "runtime_repository": repository,
-                    "audit_meta": audit_meta,
-                },
-            },
-        }
-
-        # Invoke Universal Ingestion Graph
-        # Imports are lazy to avoid circular dependency issues during module load if any
-        from ai_core.graphs.technical.universal_ingestion_graph import (
-            UniversalIngestionError as UploadIngestionError,
-            build_universal_ingestion_graph,
+        case_segment = object_store.sanitize_identifier(
+            business_context.case_id or business_context.workflow_id or "upload"
         )
-
-        universal_graph = build_universal_ingestion_graph()
-        result_state = universal_graph.invoke(graph_state)
-
-        output = result_state.get("output") or {}
-        decision = output.get("decision", "error")
-        reason = output.get("reason", "unknown")
-
-        # P1 Fix: Handle both 'error' and 'failed' decisions from the graph
-        if decision in ("error", "failed"):
-            detail = f"Ingestion failed: {reason}"
-            return _error_response(
-                detail,
-                "ingestion_failed",
-                status.HTTP_502_BAD_GATEWAY,
+        metadata_paths = [
+            "/".join(
+                [tenant_segment, workflow_segment, "uploads", f"{document_uuid}.meta.json"]
             )
-
-        if decision == "skipped":
-            transitions = result_state.get("transitions") or {}
-            if not isinstance(transitions, Mapping):
-                transitions = {}
-            skip_reason = output.get("reason_code")
-            if skip_reason:
-                skip_reason = str(skip_reason)
-            if skip_reason and skip_reason.startswith("skip_"):
-                return _map_upload_graph_skip(skip_reason, transitions)
-    except UploadIngestionError as exc:
+        ]
+        if case_segment != workflow_segment:
+            metadata_paths.append(
+                "/".join(
+                    [tenant_segment, case_segment, "uploads", f"{document_uuid}.meta.json"]
+                )
+            )
+        for metadata_path in metadata_paths:
+            object_store.write_json(metadata_path, document_metadata_payload)
+    except Exception:
+        logger.exception(
+            "upload.metadata_persist_failed",
+            extra={
+                "tenant_id": scope_context.tenant_id,
+                "case_id": business_context.case_id,
+                "document_id": str(document_uuid),
+            },
+        )
         return _error_response(
-            str(exc),
-            "ingestion_failed",
+            "Upload metadata persistence failed.",
+            "upload_metadata_persist_failed",
             status.HTTP_502_BAD_GATEWAY,
         )
-    except ValidationError as exc:
-        return _error_response(
-            str(exc), "invalid_upload_payload", status.HTTP_400_BAD_REQUEST
+
+    try:
+        signature = upload_document_task.s(
+            file_bytes=file_bytes,
+            filename=original_name,
+            content_type=detected_mime,
+            metadata=document_metadata_payload,
+            meta=meta,
+        )
+        with_scope_apply_async(
+            signature,
+            scope_context.model_dump(mode="json", exclude_none=True),
+            task_id=ingestion_run_id,
         )
     except Exception:  # pragma: no cover - defensive
         logger.exception(
-            "upload.ingestion_failed",
+            "upload.dispatch_failed",
             extra={
                 "tenant_id": scope_context.tenant_id,
                 "trace_id": scope_context.trace_id,
@@ -409,8 +309,8 @@ def handle_document_upload(
             },
         )
         return _error_response(
-            "Upload ingestion failed.",
-            "ingestion_failed",
+            "Upload dispatch failed.",
+            "upload_dispatch_failed",
             status.HTTP_502_BAD_GATEWAY,
         )
 
@@ -418,8 +318,8 @@ def handle_document_upload(
         "status": "accepted",
         "document_id": str(document_uuid),
         "collection_id": metadata_obj.get("collection_id"),
-        "workflow_id": document_meta.workflow_id,
-        "tenant_id": document_meta.tenant_id,
+        "workflow_id": business_context.workflow_id,
+        "tenant_id": scope_context.tenant_id,
         "trace_id": scope_context.trace_id,
         "ingestion_run_id": ingestion_run_id,
     }

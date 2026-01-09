@@ -191,6 +191,9 @@ def ingestion_submit(request):
         uploaded_file = request.FILES["file"]
         tenant_id, tenant_schema = views._tenant_context_from_request(request)
         case_id = request.POST.get("case_id") or request.headers.get("X-Case-ID")
+        workflow_id = str(request.POST.get("workflow_id") or "").strip()
+        if not workflow_id:
+            workflow_id = "document-upload-manual"
 
         # Resolve manual collection for tenant
         manual_collection_id, _ = views._resolve_manual_collection(
@@ -217,7 +220,7 @@ def ingestion_submit(request):
         business = BusinessContext(
             case_id=case_id,
             collection_id=manual_collection_id,  # Explicitly set collection
-            workflow_id="document-upload-manual",  # Workflow type for tracing
+            workflow_id=workflow_id,
         )
         tool_context = scope.to_tool_context(business=business)
         meta = {
@@ -226,11 +229,17 @@ def ingestion_submit(request):
             "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         }
 
-        # Check for Store Only mode (Archive/No-RAG)
-        store_only = request.POST.get("store_only") == "on"
+        # Check for RAG/Embedding enablement from UI checkbox
+        # Checkbox sends "true" when checked, None when unchecked
+        enable_embedding = request.POST.get("enable_embedding") == "true"
+
+        # Build pipeline config if embedding is explicitly disabled
         metadata_obj = {}
-        if store_only:
+        if not enable_embedding:
+            # Store-Only mode: Skip chunking and embedding
             metadata_obj["pipeline_config"] = {"enable_embedding": False}
+        # Note: If enable_embedding=True, we don't need to set it explicitly
+        # since the dataclass default is now True (after Fix #1)
 
         # Upload document
         upload_response = handle_document_upload(

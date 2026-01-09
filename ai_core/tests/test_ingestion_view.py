@@ -83,22 +83,12 @@ def test_ingestion_submit_real_service_call(settings, tenant_pool):
     request.tenant = tenant
 
     # We DO NOT mock handle_document_upload here.
-    # We DO mock the UNIVERSAL INGESTION GRAPH invocation to avoid full Celery/Graph execution complexity
-    # effectively testing View -> Service glue -> Persistence -> (stop before graph)
+    # We DO mock the async dispatch to avoid running Celery/worker side effects.
 
-    with patch(
-        "ai_core.graphs.technical.universal_ingestion_graph.build_universal_ingestion_graph"
-    ) as mock_build_graph:
-        mock_graph = MagicMock()
-        mock_graph.invoke.return_value = {
-            "output": {"decision": "ingest", "reason": "ok"}
-        }
-        mock_build_graph.return_value = mock_graph
+    with patch("ai_core.services.document_upload.with_scope_apply_async") as mock_apply:
+        mock_apply.return_value.id = "task-123"
+        response = ingestion_submit(request)
 
-        # We also need to mock _enqueue_ingestion_task to avoid Celery
-        with patch("ai_core.services.ingestion._enqueue_ingestion_task"):
-            response = ingestion_submit(request)
-
-            assert response.status_code == 200
-            # If this passes, the issue is elusive.
-            # If it fails with "ingestion_submit.failed", we captured it!
+        assert response.status_code == 200
+        # If this passes, the issue is elusive.
+        # If it fails with "ingestion_submit.failed", we captured it!

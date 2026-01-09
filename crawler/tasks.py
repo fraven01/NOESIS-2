@@ -64,22 +64,24 @@ def crawl_url_task(
 
         # 3. Process
         # worker.process handles fetching, asset extraction, and dispatching ingestion
-        # BREAKING CHANGE (Option A): Business IDs from business_context
         doc_meta = {"source": url}
         if context.business.workflow_id:
             doc_meta["workflow_id"] = context.business.workflow_id
         if context.business.collection_id:
             doc_meta["collection_id"] = context.business.collection_id
 
+        # Add crawl_id to context.metadata if present
+        crawl_id = meta.get("crawl_id")
+        if crawl_id:
+            updated_metadata = dict(context.metadata or {})
+            updated_metadata["crawl_id"] = crawl_id
+            context = context.model_copy(update={"metadata": updated_metadata})
+
         result = worker.process(
             request,
-            tenant_id=tenant_id,
-            case_id=context.business.case_id,
-            crawl_id=meta.get("crawl_id"),
-            trace_id=context.scope.trace_id,
+            context,
             document_metadata=doc_meta,
             ingestion_overrides=ingestion_overrides,
-            meta_overrides=meta,
         )
 
         logger.info(

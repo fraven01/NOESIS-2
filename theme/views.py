@@ -491,6 +491,7 @@ from theme.views_documents import (  # noqa: E402,F401
     document_explorer,
     document_delete,
     document_restore,
+    document_reingest,
 )
 from theme.views_web_search import (  # noqa: E402,F401
     web_search,

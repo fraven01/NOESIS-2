@@ -473,6 +473,8 @@ def trigger_embedding(
         base_meta["trace_id"] = meta_trace
 
     chunk_payloads: list[Chunk] = []
+    chunk_texts: list[str] = []  # For batch embedding
+
     if chunks:
         for chunk in chunks:
             if not isinstance(chunk, Mapping):
@@ -517,8 +519,10 @@ def trigger_embedding(
                 Chunk(
                     content=chunk_content,
                     meta=meta_payload,
+                    embedding=None,  # Will be set after batch embedding
                 )
             )
+            chunk_texts.append(chunk_content)
     else:
         normalized_content = (
             normalized_document.content_normalized
@@ -544,8 +548,23 @@ def trigger_embedding(
                     "document_id": chunk_meta.document_id,
                     "lifecycle_state": chunk_meta.lifecycle_state,
                 },
+                embedding=None,  # Will be set after batch embedding
             )
         )
+        chunk_texts.append(normalized_content)
+
+    # ✅ CRITICAL FIX: Calculate embeddings using EmbeddingClient
+    if chunk_texts:
+        from ai_core.rag.embeddings import EmbeddingClient
+        embedding_client = EmbeddingClient.from_settings()
+        embedding_result = embedding_client.embed(chunk_texts)
+
+        # Assign embeddings to chunks
+        for i, chunk in enumerate(chunk_payloads):
+            if i < len(embedding_result.vectors):
+                chunk_payloads[i] = chunk.model_copy(
+                    update={"embedding": embedding_result.vectors[i]}
+                )
 
     client = vector_client or _resolve_vector_client(vector_client_factory)
     inserted = client.upsert_chunks(chunk_payloads)

@@ -142,7 +142,7 @@ class DocumentPipelineConfig:
     enable_asset_captions: bool = True
     ocr_fallback_confidence: float = 0.5
     use_readability_html_extraction: bool = False
-    enable_embedding: bool = False
+    enable_embedding: bool = True  # Changed from False: Consistent with Universal Graph default
     ocr_renderer: Optional[Callable[..., Any]] = field(default=None, repr=False)
 
     # Upload Validation

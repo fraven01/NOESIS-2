@@ -301,10 +301,21 @@ Canonical tool envelope models live in `ai_core/tool_contracts/base.py`.
 - **Backward compatibility**: Deprecated `@property` accessors delegate to `scope.X` or `business.X` for compatibility.
 - `ai_core/tool_contracts/__init__.py` re-exports the canonical `ToolContext` from `ai_core/tool_contracts/base.py`.
 - Build from scope + business: `scope.to_tool_context(business=business_context)` or `tool_context_from_scope(scope, business=business_context)`.
+- **Context factories use explicit parameters** (since 2026-01-09): No `**overrides` or `**kwargs` - all runtime metadata must be passed as explicit named parameters (`locale`, `timeouts_ms`, `budget_tokens`, `safety_mode`, `auth`, `visibility_override_allowed`, `metadata`).
 
 ### Deprecated identifier key
 
 `request_id` is treated as deprecated alias for `trace_id` in `ai_core/ids/contracts.py:normalize_trace_id`.
+
+### Ingestion overrides schema
+
+**Schema**: `ai_core/schemas.py:IngestionOverrides` (since 2026-01-09)
+
+Typed schema for ingestion process configuration parameters:
+- **Design**: Permissive (`extra="allow"`) for backward compatibility with graph extensions
+- **Documented fields**: `collection_id`, `embedding_profile`, `scope`, `guardrails`, `source`, `raw_document`
+- **Usage**: Validated at entry-points (`crawler/manager.py`), passed as `Mapping[str, Any]` to workers/tasks
+- **⚠️ Agentic Coder Warning**: Docstring contains explicit instruction for Claude/Gemini/etc. to alert developers when NEW fields are added that should be documented
 
 ## Graph execution & state persistence
 

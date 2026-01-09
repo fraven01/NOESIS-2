@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Mapping
@@ -94,6 +95,7 @@ class ChunkQualityEvaluator:
         model: str = "quality-eval",  # MODEL_ROUTING.yaml label
         timeout: int = 15,
         sample_rate: float = 1.0,
+        max_workers: int = 4,
     ):
         """
         Initialize Chunk Quality Evaluator.
@@ -102,6 +104,7 @@ class ChunkQualityEvaluator:
             model: Model name or MODEL_ROUTING.yaml label (e.g., "quality-eval")
             timeout: Timeout for LLM call in seconds
             sample_rate: Sample rate for evaluation (0.0-1.0, 1.0 = all chunks)
+            max_workers: Maximum parallel workers for evaluation
         """
         # Resolve MODEL_ROUTING.yaml label to actual model name
         try:
@@ -120,6 +123,7 @@ class ChunkQualityEvaluator:
 
         self.timeout = timeout
         self.sample_rate = sample_rate
+        self.max_workers = max(1, int(max_workers))
 
     def evaluate(
         self,
@@ -136,33 +140,68 @@ class ChunkQualityEvaluator:
         Returns:
             List of ChunkQualityScore, one per chunk
         """
-        scores = []
+        scores: list[ChunkQualityScore | None] = [None] * len(chunks)
+        indices_to_eval: list[int] = []
 
-        for chunk in chunks:
-            # Sample chunks based on sample_rate
-            if self.sample_rate < 1.0:
-                import random
+        # Sample chunks based on sample_rate
+        if self.sample_rate < 1.0:
+            import random
 
-                if random.random() > self.sample_rate:
-                    # Skip this chunk, return default score
-                    scores.append(self._default_score(chunk["chunk_id"]))
-                    continue
+        for index, chunk in enumerate(chunks):
+            if self.sample_rate < 1.0 and random.random() > self.sample_rate:
+                # Skip this chunk, return default score
+                scores[index] = self._default_score(chunk["chunk_id"])
+                continue
+            indices_to_eval.append(index)
 
-            try:
-                score = self._evaluate_chunk(chunk, context)
-                scores.append(score)
+        max_workers = min(self.max_workers, len(indices_to_eval)) if indices_to_eval else 0
 
-            except Exception as exc:
-                logger.error(
-                    "quality_eval_failed",
-                    extra={
-                        "chunk_id": chunk.get("chunk_id", "unknown"),
-                        "error": str(exc),
-                    },
-                    exc_info=exc,
-                )
-                # Return default score on failure
-                scores.append(self._default_score(chunk["chunk_id"]))
+        if max_workers <= 1:
+            for index in indices_to_eval:
+                chunk = chunks[index]
+                try:
+                    scores[index] = self._evaluate_chunk(chunk, context)
+                except Exception as exc:
+                    logger.error(
+                        "quality_eval_failed",
+                        extra={
+                            "chunk_id": chunk.get("chunk_id", "unknown"),
+                            "error": str(exc),
+                        },
+                        exc_info=exc,
+                    )
+                    # Return default score on failure
+                    scores[index] = self._default_score(chunk["chunk_id"])
+        else:
+            # Preserve input ordering while evaluating in parallel.
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_map = {
+                    executor.submit(self._evaluate_chunk, chunks[index], context): index
+                    for index in indices_to_eval
+                }
+                for future in as_completed(future_map):
+                    index = future_map[future]
+                    chunk = chunks[index]
+                    try:
+                        scores[index] = future.result()
+                    except Exception as exc:
+                        logger.error(
+                            "quality_eval_failed",
+                            extra={
+                                "chunk_id": chunk.get("chunk_id", "unknown"),
+                                "error": str(exc),
+                            },
+                            exc_info=exc,
+                        )
+                        # Return default score on failure
+                        scores[index] = self._default_score(chunk["chunk_id"])
+
+        scores = [
+            score
+            if score is not None
+            else self._default_score(chunks[index]["chunk_id"])
+            for index, score in enumerate(scores)
+        ]
 
         logger.info(
             "quality_eval_completed",

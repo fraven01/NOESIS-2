@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from django.conf import settings
 from django.http import HttpResponse
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
 from customers.tenant_context import TenantRequiredError
@@ -113,6 +115,7 @@ def document_explorer(request):
                 tenant_obj = None
 
         query_params = DocumentSpaceQueryParams.model_validate(request.GET)
+        case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
         requested_collection = query_params.collection
         limit = query_params.limit
         limit_options = [10, 25, 50, 100, 200]
@@ -156,12 +159,16 @@ def document_explorer(request):
             {
                 "tenant_id": tenant_id,
                 "tenant_schema": tenant_schema,
+                "case_id": case_id,
                 "search_term": search_term,
                 "latest_only": latest_only,
                 "limit": limit,
                 "limit_options": limit_options,
                 "cursor": cursor_param,
                 "workflow_filter": workflow_filter,
+                "default_embedding_profile": getattr(
+                    settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
+                ),
                 "query_defaults": query_defaults,
                 "next_query": (
                     {**query_defaults, "cursor": result.next_cursor}
@@ -181,6 +188,103 @@ def document_explorer(request):
             {"documents_error": f"Critical Error: {str(exc)}"},
         )
 
+
+@csrf_exempt
+@require_POST
+def document_reingest(request):
+    """Trigger re-ingestion (chunking + embedding) for a document."""
+    views = _views()
+    document_id = request.POST.get("document_id") or request.GET.get("document_id")
+    if not document_id:
+        return HttpResponse(
+            '<div class="text-xs text-red-600">Document ID required.</div>',
+            status=400,
+        )
+
+    try:
+        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return HttpResponse(
+            f'<div class="text-xs text-red-600">{exc}</div>',
+            status=400,
+        )
+
+    case_id = (
+        request.POST.get("case_id")
+        or request.headers.get("X-Case-ID")
+        or request.GET.get("case_id")
+    )
+    collection_id = request.POST.get("collection_id") or None
+    embedding_profile = request.POST.get("embedding_profile") or getattr(
+        settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
+    )
+
+    user = getattr(request, "user", None)
+    user_id = (
+        str(user.pk)
+        if user
+        and getattr(user, "is_authenticated", False)
+        and getattr(user, "pk", None) is not None
+        else None
+    )
+
+    from uuid import uuid4
+
+    from ai_core.contracts import BusinessContext, ScopeContext
+    from ai_core.services import start_ingestion_run
+
+    scope = ScopeContext(
+        tenant_id=tenant_id,
+        tenant_schema=tenant_schema,
+        trace_id=uuid4().hex,
+        invocation_id=uuid4().hex,
+        run_id=uuid4().hex,
+        user_id=user_id,
+    )
+    business = BusinessContext(
+        case_id=case_id,
+        collection_id=collection_id,
+    )
+    tool_context = scope.to_tool_context(business=business)
+    meta = {
+        "scope_context": scope.model_dump(mode="json", exclude_none=True),
+        "business_context": business.model_dump(mode="json", exclude_none=True),
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+    }
+
+    request_data = {
+        "document_ids": [document_id],
+        "embedding_profile": str(embedding_profile).strip() or "standard",
+        "source": "document_explorer",
+    }
+    if collection_id:
+        request_data["collection_id"] = collection_id
+
+    response = start_ingestion_run(request_data, meta, idempotency_key=None)
+    if response.status_code >= 400:
+        detail = ""
+        if isinstance(getattr(response, "data", None), dict):
+            detail = response.data.get("detail") or response.data.get("error", {}).get(
+                "message", ""
+            )
+        detail = detail or "Re-ingestion failed."
+        return render(
+            request,
+            "theme/partials/_document_reingest_status.html",
+            {"status": "error", "message": detail},
+            status=response.status_code,
+        )
+
+    payload = getattr(response, "data", {}) or {}
+    return render(
+        request,
+        "theme/partials/_document_reingest_status.html",
+        {
+            "status": "queued",
+            "ingestion_run_id": payload.get("ingestion_run_id"),
+            "trace_id": payload.get("trace_id"),
+        },
+    )
 
 @csrf_exempt
 def document_delete(request):

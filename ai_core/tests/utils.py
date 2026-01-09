@@ -49,31 +49,63 @@ class GraphTestMixin:
             "context": context,  # CollectionSearchAdapter expects context at top level
         }
 
-    def make_scope_context(self, **overrides: Any) -> ScopeContext:
-        """Create a valid ScopeContext with defaults."""
-        defaults = {
-            "tenant_id": "test-tenant",
-            "trace_id": "test-trace",
-            "invocation_id": str(uuid.uuid4()),
-            "run_id": "test-run",
-        }
-        defaults.update(overrides)
-        return ScopeContext(**defaults)
+    def make_scope_context(
+        self,
+        *,
+        tenant_id: str = "test-tenant",
+        trace_id: str | None = "test-trace",
+        run_id: str | None = "test-run",
+        ingestion_run_id: str | None = None,
+        user_id: str | None = None,
+        service_id: str | None = None,
+        idempotency_key: str | None = None,
+        invocation_id: str | None = None,
+    ) -> ScopeContext:
+        """Create a valid ScopeContext with defaults.
 
-    def make_tool_context(self, **overrides: Any) -> ToolContext:
+        BREAKING CHANGE (Phase 5):
+        Removed **extra in favor of explicit parameters for type safety.
+        """
+        return ScopeContext(
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            invocation_id=invocation_id or str(uuid.uuid4()),
+            run_id=run_id,
+            ingestion_run_id=ingestion_run_id,
+            user_id=user_id,
+            service_id=service_id,
+            idempotency_key=idempotency_key,
+        )
+
+    def make_tool_context(
+        self,
+        *,
+        tenant_id: str = "test-tenant",
+        trace_id: str | None = "test-trace",
+        case_id: str | None = None,
+        workflow_id: str | None = None,
+        collection_id: str | None = None,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
+        run_id: str | None = "test-run",
+        ingestion_run_id: str | None = None,
+        user_id: str | None = None,
+    ) -> ToolContext:
         """Create a valid ToolContext with defaults."""
-        business_keys = {
-            "case_id",
-            "workflow_id",
-            "collection_id",
-            "document_id",
-            "document_version_id",
-        }
-        business_payload = {
-            key: overrides.pop(key) for key in tuple(business_keys) if key in overrides
-        }
-        scope = self.make_scope_context(**overrides)
-        business = BusinessContext(**business_payload)
+        scope = self.make_scope_context(
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            run_id=run_id,
+            ingestion_run_id=ingestion_run_id,
+            user_id=user_id,
+        )
+        business = BusinessContext(
+            case_id=case_id,
+            workflow_id=workflow_id,
+            collection_id=collection_id,
+            document_id=document_id,
+            document_version_id=document_version_id,
+        )
         return scope.to_tool_context(business=business)
 
 
@@ -113,14 +145,25 @@ def make_test_ids(
 
 def make_test_meta(
     extra: Mapping[str, Any] | None = None,
-    **kwargs: Any,
+    *,
+    tenant_id: str = "test-tenant",
+    case_id: str | None = None,
+    workflow_id: str | None = "test-workflow",
+    trace_id: str | None = "test-trace",
+    run_id: str | None = "test-run",
+    ingestion_run_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Create a standard metadata dictionary for graph execution.
-
-    Accepts all arguments from `make_test_ids` via kwargs.
     """
-    ids = make_test_ids(**kwargs)
+    ids = make_test_ids(
+        tenant_id=tenant_id,
+        case_id=case_id,
+        workflow_id=workflow_id,
+        trace_id=trace_id,
+        run_id=run_id,
+        ingestion_run_id=ingestion_run_id,
+    )
     scope = make_test_scope_context(
         tenant_id=ids.get("tenant_id", "test-tenant-id"),
         trace_id=ids.get("trace_id"),

@@ -14,7 +14,7 @@ from lxml import html
 
 from ai_core.infra import object_store
 from ai_core.infra.serialization import to_jsonable
-from ai_core.ids.http_scope import normalize_task_context
+from ai_core.tool_contracts.base import ToolContext
 from common.logging import get_logger
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.tasks import run_ingestion_graph
@@ -85,19 +85,31 @@ class CrawlerWorker:
     def process(
         self,
         request: FetchRequest,
+        context: ToolContext,
         *,
-        tenant_id: str,
-        case_id: Optional[str] = None,
-        crawl_id: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-        trace_id: Optional[str] = None,
         frontier_state: Optional[Mapping[str, Any]] = None,
         document_id: Optional[str] = None,
         document_metadata: Optional[Mapping[str, Any]] = None,
         ingestion_overrides: Optional[Mapping[str, Any]] = None,
-        meta_overrides: Optional[Mapping[str, Any]] = None,
     ) -> WorkerPublishResult:
-        """Fetch ``request`` and publish the payload to the ingestion graph."""
+        """Fetch request and publish the payload to the ingestion graph.
+
+        Args:
+            request: Fetch request with URL and politeness context
+            context: Tool execution context (scope + business IDs)
+            frontier_state: Optional frontier state for crawl tracking
+            document_id: Optional document ID override
+            document_metadata: Optional metadata for the document
+            ingestion_overrides: Optional overrides for ingestion process
+
+        Returns:
+            WorkerPublishResult with status and task ID
+        """
+        # Extract IDs from context
+        tenant_id = context.scope.tenant_id
+        case_id = context.business.case_id
+        trace_id = context.scope.trace_id
+        crawl_id = context.metadata.get("crawl_id") if context.metadata else None
 
         result = self._fetcher.fetch(request)
         if result.status is not FetchStatus.FETCHED:
@@ -121,14 +133,18 @@ class CrawlerWorker:
             ingestion_overrides=ingestion_overrides,
             crawl_id=crawl_id,
         )
-        meta_payload = self._compose_meta(
-            tenant_id=tenant_id,
-            case_id=case_id,
-            crawl_id=crawl_id,
-            idempotency_key=idempotency_key,
-            trace_id=propagated_trace_id,
+        # Update context with propagated trace_id if different
+        updated_context = context
+        if propagated_trace_id != trace_id:
+            updated_scope = context.scope.model_copy(
+                update={"trace_id": propagated_trace_id}
+            )
+            updated_context = context.model_copy(update={"scope": updated_scope})
+
+        meta_payload = self._compose_meta_from_context(
+            updated_context,
             frontier_state=frontier_state,
-            meta_overrides=meta_overrides,
+            crawl_id=crawl_id,
         )
         if self._ingestion_event_emitter is not None:
             meta_payload.setdefault(
@@ -529,105 +545,35 @@ class CrawlerWorker:
         fallback = f"{prefix}-{hashlib.sha256(str(value or '').encode('utf-8')).hexdigest()[:12]}"
         return object_store.sanitize_identifier(fallback)
 
-    def _compose_meta(
+    def _compose_meta_from_context(
         self,
+        context: ToolContext,
         *,
-        tenant_id: str,
-        case_id: Optional[str],
-        crawl_id: Optional[str],
-        idempotency_key: Optional[str],
-        trace_id: Optional[str],
-        frontier_state: Optional[Mapping[str, Any]],
-        meta_overrides: Optional[Mapping[str, Any]],
+        frontier_state: Optional[Mapping[str, Any]] = None,
+        crawl_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        # BREAKING CHANGE (Option A - Strict Separation):
-        # Extract infrastructure and business IDs from different sources
-        scope_source = {}
-        business_source = {}
-        if isinstance(meta_overrides, Mapping):
-            candidate_scope = meta_overrides.get("scope_context")
-            if isinstance(candidate_scope, Mapping):
-                scope_source = dict(candidate_scope)
-            candidate_business = meta_overrides.get("business_context")
-            if isinstance(candidate_business, Mapping):
-                business_source = dict(candidate_business)
-        initiated_by_user_id = (
-            meta_overrides.get("initiated_by_user_id")
-            if isinstance(meta_overrides, Mapping)
-            else None
-        )
+        """Compose metadata for the graph execution context from ToolContext.
 
-        # Extract business IDs (BREAKING CHANGE: from business_context or parameters)
-        resolved_case_id = case_id or business_source.get("case_id")
-        resolved_workflow_id = business_source.get("workflow_id")
-        resolved_collection_id = business_source.get("collection_id")
+        Args:
+            context: Tool execution context with scope and business IDs
+            frontier_state: Optional frontier state for crawl tracking
+            crawl_id: Optional crawl run identifier
 
-        # Build ScopeContext (infrastructure only)
-        scope = normalize_task_context(
-            tenant_id=tenant_id,
-            service_id="crawler-worker",
-            trace_id=trace_id or scope_source.get("trace_id"),
-            invocation_id=scope_source.get("invocation_id"),
-            run_id=scope_source.get("run_id"),
-            ingestion_run_id=scope_source.get("ingestion_run_id"),
-            idempotency_key=idempotency_key or scope_source.get("idempotency_key"),
-            tenant_schema=scope_source.get("tenant_schema"),
-        )
-
-        # Build BusinessContext (BREAKING CHANGE: business domain IDs)
-        from ai_core.contracts.business import BusinessContext
-
-        business = BusinessContext(
-            case_id=str(resolved_case_id) if resolved_case_id else None,
-            workflow_id=str(resolved_workflow_id) if resolved_workflow_id else None,
-            collection_id=(
-                str(resolved_collection_id) if resolved_collection_id else None
-            ),
-        )
-        metadata = (
-            {"initiated_by_user_id": initiated_by_user_id}
-            if initiated_by_user_id
-            else None
-        )
-        tool_context = (
-            scope.to_tool_context(business=business, metadata=metadata)
-            if metadata
-            else scope.to_tool_context(business=business)
-        )
-
+        Returns:
+            Meta dict with scope_context, business_context, and tool_context
+        """
         payload: dict[str, Any] = {
-            "scope_context": scope.model_dump(mode="json"),
-            "business_context": business.model_dump(mode="json", exclude_none=True),
-            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
-            "crawl_id": crawl_id,
+            "scope_context": context.scope.model_dump(mode="json"),
+            "business_context": context.business.model_dump(mode="json", exclude_none=True),
+            "tool_context": context.model_dump(mode="json", exclude_none=True),
         }
-        if initiated_by_user_id:
-            payload["initiated_by_user_id"] = initiated_by_user_id
+        if crawl_id:
+            payload["crawl_id"] = crawl_id
+        if context.metadata and "initiated_by_user_id" in context.metadata:
+            payload["initiated_by_user_id"] = context.metadata["initiated_by_user_id"]
         if frontier_state:
-            payload.setdefault("frontier", dict(frontier_state))
-        if meta_overrides:
-            filtered_overrides = dict(meta_overrides)
-            # BREAKING CHANGE (Option A): Remove both scope_context and business_context
-            filtered_overrides.pop("scope_context", None)
-            filtered_overrides.pop("business_context", None)
-            for key in (
-                "tenant_id",
-                "case_id",
-                "trace_id",
-                "workflow_id",
-                "collection_id",
-                "idempotency_key",
-                "run_id",
-                "ingestion_run_id",
-                "invocation_id",
-                "user_id",
-                "service_id",
-                "initiated_by_user_id",
-                "document_id",
-                "document_version_id",
-            ):
-                filtered_overrides.pop(key, None)
-            payload.update(filtered_overrides)
+            payload["frontier"] = dict(frontier_state)
+
         return {key: value for key, value in payload.items() if value is not None}
 
     @staticmethod

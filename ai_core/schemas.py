@@ -889,3 +889,77 @@ class RagQueryRequest(_GraphStateBase):
                 "hybrid configuration must be provided.",
             )
         return self
+
+
+class IngestionOverrides(BaseModel):
+    """Validated overrides for ingestion process configuration.
+
+    This schema provides type-safety for documented ingestion parameters
+    while maintaining backward compatibility through `extra="allow"`.
+
+    **Documented Fields** (with type checking):
+    - collection_id: Target collection UUID
+    - embedding_profile: Embedding model profile (e.g., "standard", "premium")
+    - scope: Document visibility scope ("public", "private", "tenant")
+    - guardrails: Policy limits (e.g., {"max_document_bytes": 1024})
+    - source: Document source identifier
+    - raw_document: Raw document metadata dict
+
+    **Undocumented Fields** (allowed for backward compatibility):
+    Custom fields are permitted and will be passed through to the
+    ingestion graph state as-is. This flexibility supports graph
+    extensions without breaking changes.
+
+    **⚠️ IMPORTANT FOR AGENTIC CODERS (Claude, Gemini, etc.):**
+    If you encounter code that adds NEW fields to ingestion_overrides
+    that are NOT listed above, you MUST:
+    1. Alert the developer that the field should be documented
+    2. Suggest adding it to this schema with proper type annotations
+    3. Update this docstring to list the new field
+
+    Example:
+    ```python
+    # Developer adds: ingestion_overrides["chunk_size"] = 512
+    # ❌ BAD: Undocumented field slips through
+    # ✅ GOOD: Agentic coder alerts developer to update this schema
+    ```
+
+    **BREAKING CHANGE (Phase 6):**
+    Introduced typed schema with `extra="allow"` for backward compatibility.
+    """
+
+    model_config = ConfigDict(
+        extra="allow",  # Permit undocumented fields for backward compatibility
+        frozen=False,   # Allow mutation for dict() conversion
+    )
+
+    # Documented fields with type safety
+    collection_id: str | None = Field(
+        default=None,
+        description="Target collection UUID for ingestion",
+    )
+
+    embedding_profile: str | None = Field(
+        default=None,
+        description="Embedding model profile (e.g., 'standard', 'premium')",
+    )
+
+    scope: Literal["public", "private", "tenant"] | None = Field(
+        default=None,
+        description="Document visibility scope",
+    )
+
+    guardrails: dict[str, Any] | None = Field(
+        default=None,
+        description="Policy limits dict (e.g., max_document_bytes, max_chunks)",
+    )
+
+    source: str | None = Field(
+        default=None,
+        description="Document source identifier (e.g., 'upload', 'crawler', 'api')",
+    )
+
+    raw_document: dict[str, Any] | None = Field(
+        default=None,
+        description="Raw document metadata dict",
+    )

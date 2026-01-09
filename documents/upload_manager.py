@@ -40,15 +40,26 @@ class UploadManager:
         # standard API uploads < 100MB this is standard practice.
         file_bytes = upload.read()
 
-        # Dispatch to Celery
-        task_result = upload_document_task.delay(
+        # Extract context for tracing and task_id
+        from uuid import uuid4
+        from common.celery import with_scope_apply_async
+
+        context = tool_context_from_meta(meta)
+        ingestion_run_id = context.scope.ingestion_run_id or uuid4().hex
+
+        # Dispatch to Celery with scope propagation
+        signature = upload_document_task.s(
             file_bytes=file_bytes,
             filename=upload.name,
             content_type=getattr(upload, "content_type", "application/octet-stream"),
             metadata=metadata,
             meta=meta,
         )
-        context = tool_context_from_meta(meta)
+        task_result = with_scope_apply_async(
+            signature,
+            context.scope.model_dump(mode="json", exclude_none=True),
+            task_id=ingestion_run_id
+        )
 
         return {
             "status": "accepted",

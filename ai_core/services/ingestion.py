@@ -65,12 +65,15 @@ def _enqueue_ingestion_task(
     meta: Mapping[str, object],
 ) -> None:
     signature = task.s(state, meta)
+    task_id = None
     try:
         context = tool_context_from_meta(meta)
         scope_dict = context.scope.model_dump(mode="json", exclude_none=True)
+        task_id = context.scope.ingestion_run_id
     except (TypeError, ValueError):
         scope_dict = {}
-    with_scope_apply_async(signature, scope_dict)
+    
+    with_scope_apply_async(signature, scope_dict, task_id=task_id)
 
 
 def _get_partition_document_ids():  # type: ignore[no-untyped-def]

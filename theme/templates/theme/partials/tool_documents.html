@@ -256,6 +256,29 @@
                                 </svg>
                             </a>
 
+                            <!-- Re-ingest Button -->
+                            <form hx-post="{% url 'document_reingest' %}"
+                                hx-target="#reingest-status-{{ doc.document_id }}" hx-swap="innerHTML"
+                                class="inline">
+                                <input type="hidden" name="document_id" value="{{ doc.document_id }}">
+                                <input type="hidden" name="embedding_profile"
+                                    value="{{ default_embedding_profile|default:'standard' }}">
+                                {% if doc.collection_id %}
+                                <input type="hidden" name="collection_id" value="{{ doc.collection_id }}">
+                                {% endif %}
+                                {% if case_id %}
+                                <input type="hidden" name="case_id" value="{{ case_id }}">
+                                {% endif %}
+                                <button type="submit"
+                                    class="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                    title="Re-ingest (chunk + embed)">
+                                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M4 4v6h6M20 20v-6h-6M5 19a9 9 0 0014-7 9 9 0 00-14-7" />
+                                    </svg>
+                                </button>
+                            </form>
+
                             <!-- Delete Dropdown -->
                             <div x-data="{ open: false }" class="relative">
                                 <button @click="open = !open" @click.outside="open = false"
@@ -309,6 +332,8 @@
                             </div>
                         </div>
                     </div>
+
+                    <div id="reingest-status-{{ doc.document_id }}"></div>
 
                     <!-- Technical Metadata Tabs -->
                     <div class="mt-4" x-data="{ activeTab: 'content' }">

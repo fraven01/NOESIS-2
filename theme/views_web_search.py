@@ -340,6 +340,7 @@ def web_search(request):
                 "search": response_data.get("search"),
                 "trace_id": trace_id,
                 "collection_id": collection_id,
+                "case_id": case_id,
             },
         )
 
@@ -428,6 +429,10 @@ def web_search_ingest_selected(request):
         )
         business = BusinessContext(
             case_id=str(data.get("case_id") or "").strip() or None,
+            workflow_id=(
+                str(data.get("workflow_id") or request_model.workflow_id or "").strip()
+                or None
+            ),
             collection_id=collection_id,
         )
         tool_context = scope.to_tool_context(business=business)

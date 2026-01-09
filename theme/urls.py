@@ -73,4 +73,9 @@ urlpatterns = [
         views.document_restore,
         name="document_restore",
     ),
+    path(
+        "rag-tools/document-reingest/",
+        views.document_reingest,
+        name="document_reingest",
+    ),
 ]

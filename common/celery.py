@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime
 from collections.abc import Mapping
 from typing import Any, Mapping as TypingMapping
 
 from celery import Task
 from celery.canvas import Signature
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.result import AsyncResult
 from pydantic import ValidationError
 
 from .constants import HEADER_CANDIDATE_MAP
@@ -804,9 +806,16 @@ def _clone_with_scope(
 def with_scope_apply_async(
     signature: Signature,
     scope: TypingMapping[str, Any],
-    *args: Any,
-    **kwargs: Any,
-):
+    *,
+    task_id: str | None = None,
+    countdown: float | None = None,
+    eta: datetime | None = None,
+    expires: datetime | float | None = None,
+    retry: bool | None = None,
+    retry_policy: dict[str, Any] | None = None,
+    queue: str | None = None,
+    priority: int | None = None,
+) -> AsyncResult:
     """Clone a Celery signature and schedule it (trace headers injected).
 
     Example
@@ -835,8 +844,26 @@ def with_scope_apply_async(
     if _OTEL_AVAILABLE:
         TraceContextTextMapPropagator().inject(otel_headers)
 
+    apply_kwargs: dict[str, Any] = {}
+    if task_id is not None:
+        apply_kwargs["task_id"] = task_id
+    if countdown is not None:
+        apply_kwargs["countdown"] = countdown
+    if eta is not None:
+        apply_kwargs["eta"] = eta
+    if expires is not None:
+        apply_kwargs["expires"] = expires
+    if retry is not None:
+        apply_kwargs["retry"] = retry
+    if retry_policy is not None:
+        apply_kwargs["retry_policy"] = retry_policy
+    if queue is not None:
+        apply_kwargs["queue"] = queue
+    if priority is not None:
+        apply_kwargs["priority"] = priority
+
     if not otel_headers:
-        return signature.apply_async(*args, **kwargs)
+        return signature.apply_async(**apply_kwargs)
 
     scoped_signature = _clone_with_scope(signature, {}, otel_headers)
-    return scoped_signature.apply_async(*args, **kwargs)
+    return scoped_signature.apply_async(**apply_kwargs)

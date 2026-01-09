@@ -28,6 +28,8 @@ class RetrievalAugmentedGenerationInput(retrieve.RetrieveInput):
     schema_id: Literal[RAG_SCHEMA_ID] = RAG_SCHEMA_ID
     schema_version: Literal[RAG_IO_VERSION_STRING] = RAG_IO_VERSION_STRING
 
+    question: str | None = None
+
     model_config = ConfigDict(
         extra="forbid",
         arbitrary_types_allowed=True,
@@ -212,7 +214,7 @@ def _build_compiled_graph(
 
         context = _build_tool_context(working_meta)
         params = retrieve.RetrieveInput.model_validate(
-            graph_input.model_dump(exclude={"schema_id", "schema_version"})
+            graph_input.model_dump(exclude={"schema_id", "schema_version", "question"})
         )
         retrieve_output = retrieve_node(context, params)
 

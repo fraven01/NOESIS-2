@@ -312,6 +312,7 @@ def process_node(
         from documents.captioning import DeterministicCaptioner
         from documents.parsers import create_default_parser_dispatcher
         from ai_core.rag.chunking import RoutingAwareChunker
+        from ai_core.api import trigger_embedding
 
         storage = ObjectStoreStorage()
         captioner = DeterministicCaptioner()
@@ -327,6 +328,7 @@ def process_node(
             storage=storage,
             captioner=captioner,
             chunker=chunker,
+            embedder=trigger_embedding,  # ✅ Fixed: Pass embedder for RAG indexing
         )
 
         sub_input = {

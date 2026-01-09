@@ -48,7 +48,7 @@ ai_core/tasks/
 
 **Acceptance**: New module exists, no behavior change
 
-- [x] Create `ai_core/tasks/` package directory
+- [ ] Create `ai_core/tasks/` package directory
 - [ ] Create `ai_core/tasks/helpers/` subpackage
 - [ ] Create skeleton files with imports and docstrings
 - [ ] Add `__init__.py` with re-exports (placeholder)

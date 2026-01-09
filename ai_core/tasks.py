@@ -3324,13 +3324,6 @@ def run_ingestion_graph(
         # 5. Execute Universal Graph
         # Map legacy/worker state to UniversalIngestionInput
 
-        # Determine source
-        raw_source = ingestion_ctx.source or "upload"
-        if raw_source.startswith("http://") or raw_source.startswith("https://"):
-            source = "crawler"
-        else:
-            source = raw_source
-
         # Extract normalized document (it might be a dict or NormalizedDocument object)
         normalized_doc = working_state.get("normalized_document_input")
         if hasattr(normalized_doc, "model_dump"):
@@ -3346,12 +3339,7 @@ def run_ingestion_graph(
             collection_id = ingestion_ctx.collection_id
 
         input_payload = {
-            "source": source,
-            "mode": "ingest_only",
-            "collection_id": collection_id,
-            "upload_blob": None,  # Provided via normalized_document for upload worker
-            "metadata_obj": None,
-            "normalized_document": normalized_doc,  # Key for Pre-normalized input
+            "normalized_document": normalized_doc,
         }
 
         # BREAKING CHANGE (Option A): Business IDs extracted separately

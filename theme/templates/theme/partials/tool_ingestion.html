@@ -71,6 +71,16 @@
                             <option value="public">Public</option>
                         </select>
                     </div>
+                    <div class="border-t border-slate-200 pt-4">
+                        <label class="flex items-center space-x-3 cursor-pointer group">
+                            <input type="checkbox" name="enable_embedding" value="true" checked
+                                class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-0">
+                            <div class="flex-1">
+                                <span class="text-sm font-medium text-slate-700 group-hover:text-slate-900">Enable RAG / Vector Search</span>
+                                <p class="text-xs text-slate-500 mt-0.5">Uncheck to archive document without indexing (faster, no search)</p>
+                            </div>
+                        </label>
+                    </div>
                     <button type="submit"
                         class="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all">
                         Start Ingestion
