@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from celery import chain, current_app
 from celery.canvas import Signature, _chain
 from django.http import HttpResponse
 from django.test import RequestFactory
+from django_tenants.utils import get_public_schema_name, schema_context
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.infra.pii import mask_text
 from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.policy import get_session_scope
 from ai_core.middleware import PIISessionScopeMiddleware
 from common.celery import ScopedTask, with_scope_apply_async
-from customers.tests.factories import TenantFactory
 
 
-pytestmark = pytest.mark.django_db
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.django_db,
+    pytest.mark.xdist_group("tenant_ops"),
+]
 
 
 @pytest.fixture
@@ -35,12 +43,14 @@ def scope_headers_new_trace(scope_headers_shared: dict[str, str]) -> dict[str, s
 
 @pytest.fixture
 def configure_autotest_tenant():
+    from django.conf import settings
     from customers.models import Tenant
     from django_tenants.utils import get_public_schema_name, schema_context
 
     public_schema = get_public_schema_name()
     with schema_context(public_schema):
-        tenant = Tenant.objects.get(schema_name="autotest")
+        test_schema = getattr(settings, "TEST_TENANT_SCHEMA", "autotest")
+        tenant = Tenant.objects.get(schema_name=test_schema)
         original = {
             "pii_mode": tenant.pii_mode,
             "pii_policy": tenant.pii_policy,
@@ -178,17 +188,28 @@ def test_session_scope_middleware_loads_tenant_from_header_when_missing_request_
     scope_headers_shared,
     tenant_header_source,
     monkeypatch,
+    tenant_pool,
 ):
-    tenant = TenantFactory(
-        schema_name="fallback-tenant",
-        pii_mode="gold",
-        pii_policy="strict",
-        pii_logging_redaction=True,
-        pii_post_response=True,
-        pii_deterministic=True,
-        pii_hmac_secret="header-secret",
-        pii_name_detection=True,
-    )
+    tenant = tenant_pool["alpha"]
+    with schema_context(get_public_schema_name()):
+        tenant.pii_mode = "gold"
+        tenant.pii_policy = "strict"
+        tenant.pii_logging_redaction = True
+        tenant.pii_post_response = True
+        tenant.pii_deterministic = True
+        tenant.pii_hmac_secret = "header-secret"
+        tenant.pii_name_detection = True
+        tenant.save(
+            update_fields=[
+                "pii_mode",
+                "pii_policy",
+                "pii_logging_redaction",
+                "pii_post_response",
+                "pii_deterministic",
+                "pii_hmac_secret",
+                "pii_name_detection",
+            ]
+        )
     monkeypatch.setattr(
         "ai_core.middleware.pii_session.get_current_tenant", lambda: None
     )
@@ -282,7 +303,7 @@ def test_session_scope_middleware_changes_token_with_new_trace(
 
 
 def test_middleware_uses_tenant_specific_profiles(
-    configure_autotest_tenant, scope_headers_shared
+    configure_autotest_tenant, scope_headers_shared, tenant_pool
 ):
     tenant_disabled = configure_autotest_tenant(
         pii_mode="off",
@@ -290,14 +311,22 @@ def test_middleware_uses_tenant_specific_profiles(
         pii_deterministic=False,
         pii_hmac_secret="",
     )
-    tenant_enabled = TenantFactory(
-        schema_name="tenant-beta",
-        pii_mode="gold",
-        pii_policy="strict",
-        pii_deterministic=True,
-        pii_hmac_secret="beta-secret",
-        pii_name_detection=True,
-    )
+    tenant_enabled = tenant_pool["beta"]
+    with schema_context(get_public_schema_name()):
+        tenant_enabled.pii_mode = "gold"
+        tenant_enabled.pii_policy = "strict"
+        tenant_enabled.pii_deterministic = True
+        tenant_enabled.pii_hmac_secret = "beta-secret"
+        tenant_enabled.pii_name_detection = True
+        tenant_enabled.save(
+            update_fields=[
+                "pii_mode",
+                "pii_policy",
+                "pii_deterministic",
+                "pii_hmac_secret",
+                "pii_name_detection",
+            ]
+        )
     factory = RequestFactory()
     responses: list[str] = []
 
@@ -357,7 +386,7 @@ def test_request_to_task_chain_preserves_session_scope(
         abstract = False
         name = "tests.capture_scope_task"
 
-        def run(self, step: str) -> str:  # type: ignore[override]
+        def run(self, step: str, meta: dict[str, object] | None = None) -> str:  # type: ignore[override]
             config = get_pii_config()
             masked = mask_text(
                 "Email a@b.de bitte prüfen",
@@ -409,25 +438,43 @@ def test_request_to_task_chain_preserves_session_scope(
         request_tokens.append(masked)
         tenant_obj = getattr(request, "tenant", None)
         tenant_kwarg = getattr(tenant_obj, "id", None)
+        tenant_scope_id = (
+            str(tenant_kwarg)
+            if tenant_kwarg is not None
+            else request.META["HTTP_X_TENANT_ID"]
+        )
         scope = {
-            "tenant_id": (
-                tenant_kwarg
-                if tenant_kwarg is not None
-                else request.META["HTTP_X_TENANT_ID"]
-            ),
+            "tenant_id": tenant_scope_id,
             "case_id": request.META["HTTP_X_CASE_ID"],
             "trace_id": request.META["HTTP_X_TRACE_ID"],
             "session_salt": "||".join(
                 (
                     request.META["HTTP_X_TRACE_ID"],
                     request.META["HTTP_X_CASE_ID"],
-                    request.META["HTTP_X_TENANT_ID"],
+                    tenant_scope_id,
                 )
             ),
         }
+        scope_context = ScopeContext.model_validate(
+            {
+                "tenant_id": str(scope["tenant_id"]),
+                "trace_id": scope["trace_id"],
+                "invocation_id": uuid4().hex,
+                "run_id": uuid4().hex,
+            }
+        )
+        business_context = BusinessContext(case_id=scope["case_id"])
+        tool_context = scope_context.to_tool_context(business=business_context)
+        meta = {
+            "scope_context": scope_context.model_dump(mode="json", exclude_none=True),
+            "business_context": business_context.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+        }
         pipeline = chain(
-            capture_task.s(step="producer"),
-            capture_task.s(step="worker"),
+            capture_task.s(step="producer", meta=meta),
+            capture_task.s(step="worker", meta=meta),
         )
         with_scope_apply_async(pipeline, scope)
         return HttpResponse(masked)
@@ -453,7 +500,7 @@ def test_request_to_task_chain_preserves_session_scope(
             (
                 scope_headers_shared["HTTP_X_TRACE_ID"],
                 scope_headers_shared["HTTP_X_CASE_ID"],
-                scope_headers_shared["HTTP_X_TENANT_ID"],
+                tenant_scope_id,
             )
         ),
     )

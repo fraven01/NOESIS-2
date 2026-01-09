@@ -4,7 +4,7 @@ Kurzleitfaden für die Entfernung von RAG-Dokumenten in Produktions-tenants. All
 
 > **Neu:** Die zuvor manuelle Hard-Delete-Prozedur ist jetzt als Celery-Task `rag.hard_delete` verfügbar. Der Task kapselt SQL-Löschung, Audit-Log und Cache-Vacuumierung. Die untenstehende SQL-Variante bleibt als Fallback dokumentiert.
 >
-> **Worker-Hinweis:** Die Queue `rag_delete` wird von den Standard-Workern verarbeitet (`celery -A noesis2 worker -l info -Q celery,rag_delete`). Prüfe vor einem Lauf, dass der Worker aktiv ist.
+> **Worker-Hinweis:** Die Queue `rag_delete` wird von den Standard-Workern verarbeitet (`celery -A noesis2 worker -l info -Q agents-high,agents-low,crawler,celery,ingestion,ingestion-bulk,dead_letter,rag_delete`). Prüfe vor einem Lauf, dass der Worker aktiv ist.
 
 ## E1 Soft-Delete (Standardweg)
 1. **Dokumente markieren:**
@@ -42,13 +42,36 @@ Kurzleitfaden für die Entfernung von RAG-Dokumenten in Produktions-tenants. All
    - Die Response enthält `trace_id` und `job_id` für das Audit. `X-Trace-Id` wird zusätzlich als Header zurückgegeben.
 4. **Direkter Task-Aufruf (Alternative):**
    ```python
+   from ai_core.contracts.business import BusinessContext
+   from ai_core.contracts.scope import ScopeContext
    from ai_core.rag.hard_delete import hard_delete
 
+   scope = ScopeContext.model_validate(
+       {
+           "tenant_id": tenant_id,
+           "trace_id": "trace-123",
+           "invocation_id": "inv-123",
+           "run_id": "run-123",
+       }
+   )
+   business = BusinessContext(case_id=case_id)
+   tool_context = scope.to_tool_context(business=business)
+   meta = {
+       "scope_context": scope.model_dump(mode="json", exclude_none=True),
+       "business_context": business.model_dump(mode="json", exclude_none=True),
+       "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+   }
+   state = {
+       "tenant_id": tenant_id,
+       "document_ids": document_ids,
+       "reason": "cleanup",
+       "ticket_ref": "TCK-1234",
+       "case_id": case_id,
+       "trace_id": scope.trace_id,
+   }
    hard_delete.delay(
-       tenant_id,
-       document_ids,
-       reason="cleanup",
-       ticket_ref="TCK-1234",
+       state,
+       meta,
        actor={"internal_key": "<SERVICE-KEY>"},
    )
    ```

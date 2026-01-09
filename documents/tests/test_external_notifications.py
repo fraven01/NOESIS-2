@@ -19,7 +19,11 @@ from documents.tasks import send_pending_email_deliveries
 from users.tests.factories import UserFactory
 
 
-pytestmark = pytest.mark.django_db
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.django_db,
+    pytest.mark.xdist_group("tenant_ops"),
+]
 
 
 def test_comment_mention_emits_notification_event(test_tenant_schema_name):

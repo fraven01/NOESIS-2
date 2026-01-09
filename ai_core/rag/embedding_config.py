@@ -64,6 +64,7 @@ class EmbeddingProfileConfig:
 
     id: str
     model: str
+    model_version: str
     dimension: int
     vector_space: str
     chunk_hard_limit: int
@@ -131,6 +132,15 @@ def _coerce_chunk_limit(raw: object, *, context: str) -> int:
         )
 
     return limit
+
+
+def _coerce_model_version(raw: object, *, context: str) -> str:
+    if raw is None:
+        return "v1"
+    text = str(raw).strip()
+    if not text:
+        return "v1"
+    return text
 
 
 def _parse_vector_spaces(
@@ -259,10 +269,14 @@ def _parse_embedding_profiles(
             chunk_limit_raw,
             context=f"Embedding profile '{profile_id}'",
         )
+        model_version = _coerce_model_version(
+            raw_config.get("model_version"), context=f"Embedding profile '{profile_id}'"
+        )
 
         parsed[profile_id] = EmbeddingProfileConfig(
             id=str(profile_id),
             model=model,
+            model_version=model_version,
             dimension=dimension,
             vector_space=vector_space_id,
             chunk_hard_limit=chunk_hard_limit,
@@ -368,10 +382,23 @@ def get_embedding_profile(profile_id: str) -> EmbeddingProfileConfig:
         return EmbeddingProfileConfig(
             id=fallback_profile.id,
             model=fallback_profile.model,
+            model_version=fallback_profile.model_version,
             dimension=fallback_profile.dimension,
             vector_space=fallback_profile.vector_space,
             chunk_hard_limit=_DEFAULT_PROFILE_CHUNK_LIMIT,
         )
+
+
+def build_embedding_model_version(profile: EmbeddingProfileConfig) -> str:
+    """Return the full model version label for the profile."""
+
+    return f"{profile.model}:{profile.model_version}"
+
+
+def build_vector_space_id(profile_id: str, model_version: str) -> str:
+    """Return the canonical vector space identifier for a model version."""
+
+    return f"rag/{profile_id}@{model_version}"
 
 
 __all__ = [
@@ -380,6 +407,8 @@ __all__ = [
     "EmbeddingProfileConfig",
     "EmbeddingConfigErrorCode",
     "VectorSpaceConfig",
+    "build_embedding_model_version",
+    "build_vector_space_id",
     "get_embedding_configuration",
     "get_embedding_profile",
     "get_vector_space",

@@ -14,6 +14,7 @@ from django.utils import timezone
 from ai_core.authz.visibility import Visibility
 from ai_core.contracts.scope import ScopeContext
 from ai_core.infra.observability import record_span
+from ai_core.tool_contracts.base import tool_context_from_meta
 from common.celery import ScopedTask
 from common.logging import get_logger
 from documents.domain_service import DocumentDomainService
@@ -101,17 +102,21 @@ def _emit_span(
 ) -> None:
     if not trace_id:
         return
-    try:
-        record_span(
-            "rag.hard_delete",
-            trace_id=str(trace_id),
-            attributes=dict(metadata),
-        )
-    except TypeError:
-        try:
-            record_span(str(trace_id), "rag.hard_delete", dict(metadata))  # type: ignore[misc]
-        except Exception:
-            pass
+    attributes = dict(metadata)
+    attributes.setdefault("trace_id", str(trace_id))
+    record_span("rag.hard_delete", attributes=attributes)
+
+
+def _derive_session_salt(
+    trace_id: str | None,
+    case_id: str | None,
+    tenant_id: str | None,
+) -> str | None:
+    parts = [trace_id, case_id, tenant_id]
+    filtered = [str(part) for part in parts if part]
+    if filtered:
+        return "||".join(filtered)
+    return None
 
 
 def _build_scope(
@@ -156,26 +161,48 @@ def _dispatch_delete_to_reaper(payload: Mapping[str, object]) -> None:
     base=ScopedTask,
     name="rag.hard_delete",
     queue="rag_delete",
-    accepts_scope=True,
 )
 def hard_delete(  # type: ignore[override]
-    tenant_id: str,
-    document_ids: Sequence[object],
-    reason: str,
-    ticket_ref: str,
+    state: Mapping[str, object],
+    meta: Mapping[str, object] | None = None,
     *,
     actor: Mapping[str, object] | None = None,
-    tenant_schema: str | None = None,
-    case_id: str | None = None,
-    trace_id: str | None = None,  # noqa: ARG001
-    ingestion_run_id: str | None = None,
-    session_salt: str | None = None,
-    session_scope: Sequence[str] | None = None,  # noqa: ARG001
 ) -> Mapping[str, object]:
     """Queue a hard delete for documents in the vector store."""
 
+    state_payload = dict(state or {})
+    if not isinstance(meta, Mapping):
+        raise ValueError("meta with tool_context is required for rag.hard_delete")
+    tool_context = tool_context_from_meta(meta)
+
+    def _coerce_str(value: object | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip()
+            return candidate or None
+        try:
+            return str(value).strip() or None
+        except Exception:
+            return None
+
+    tenant_id = _coerce_str(tool_context.scope.tenant_id)
+    case_id = _coerce_str(tool_context.business.case_id)
+    trace_id = _coerce_str(tool_context.scope.trace_id)
+    tenant_schema = _coerce_str(tool_context.scope.tenant_schema)
+    ingestion_run_id = _coerce_str(tool_context.scope.ingestion_run_id)
+    reason = _coerce_str(state_payload.get("reason"))
+    ticket_ref = _coerce_str(state_payload.get("ticket_ref"))
+    document_ids = state_payload.get("document_ids") or []
+    if not isinstance(document_ids, (list, tuple, set)):
+        document_ids = [document_ids]
+
     if not tenant_id:
         raise ValueError("tenant_id is required for rag.hard_delete")
+    if not reason:
+        raise ValueError("reason is required for rag.hard_delete")
+    if not ticket_ref:
+        raise ValueError("ticket_ref is required for rag.hard_delete")
 
     operator, actor_mode = _resolve_actor(actor)
     requested_ids = _normalise_document_ids(document_ids)
@@ -236,6 +263,7 @@ def hard_delete(  # type: ignore[override]
     if tenant_schema:
         log_payload["tenant_schema"] = tenant_schema
 
+    session_salt = _derive_session_salt(trace_id, case_id, tenant_id)
     if session_salt:
         log_payload["session_salt"] = session_salt
 

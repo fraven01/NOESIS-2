@@ -40,8 +40,8 @@ der Worker-Standard (derzeit 3).
 
 `SearchCandidate.detected_date` muss einen Zeitzonen-Offset enthalten. Naive
 Zeitstempel führen zu einem Validierungsfehler. Aware Werte werden intern nach
-UTC normalisiert, wodurch `.model_dump_json()` ISO-8601-Werte mit Offset
-(`+00:00` bzw. `Z`) erzeugt.
+UTC normalisiert, wobei `.model_dump_json()` UTC als `Z` serialisiert. Eingaben
+akzeptieren `Z` und `+00:00`.
 
 ## HybridResult Beispiel
 
@@ -135,6 +135,62 @@ Langfuse zur Auswertung verfügbar.
 werden als `CUSTOM_*` serialisiert und erlauben tenantspezifische Metriken ohne
 den Enum anzupassen.
 
+## Coverage Dimensions (Vollständiger Enum)
+
+Der `CoverageDimension` Enum definiert alle unterstützten Facetten für die Coverage-Berechnung:
+
+| Dimension | Beschreibung | Beispiel-Keywords |
+| --- | --- | --- |
+| `LEGAL` | Rechtliche und Compliance-Aspekte | legal, gesetz, policy, compliance, gdpr |
+| `TECHNICAL` | Technische Architektur und Systeme | technical, system, architecture, api, protocol |
+| `PROCEDURAL` | Prozesse und Workflows | process, procedure, workflow, steps |
+| `DATA_CATEGORIES` | Datenkategorien und PII | data category, pii, personal data, classification |
+| `MONITORING_SURVEILLANCE` | Monitoring und Überwachung | monitor, surveillance, observe, watch |
+| `LOGGING_AUDIT` | Logging und Audit-Trails | audit, logging, log |
+| `ANALYTICS_REPORTING` | Analytics und Reporting | analytics, report, metric, dashboard |
+| `ACCESS_PRIVACY_SECURITY` | Zugriff, Datenschutz, Sicherheit | privacy, security, access, permission, control |
+| `API_INTEGRATION` | API-Integration und Endpoints | api, integration, endpoint, sdk |
+
+**Hinweis**: Custom-Facets (außerhalb des Enums) müssen in `custom_facets` statt `facet_coverage` übergeben werden.
+
+### Facet-Keyword-Mapping (Heuristik)
+
+Der Hybrid-Reranking-Graph verwendet ein Keyword-Mapping (`_FACET_KEYWORDS` in `hybrid_search_and_score.py`) für heuristische Facet-Detection, wenn keine expliziten Coverage-Werte vom LLM geliefert werden:
+
+```python
+_FACET_KEYWORDS = {
+    CoverageDimension.LEGAL: (
+        "legal", "gesetz", "policy", "compliance", "regulation", "gdpr"
+    ),
+    CoverageDimension.TECHNICAL: (
+        "technical", "system", "architecture", "api", "protocol"
+    ),
+    CoverageDimension.PROCEDURAL: (
+        "process", "procedure", "workflow", "steps"
+    ),
+    CoverageDimension.DATA_CATEGORIES: (
+        "data category", "pii", "personal data", "classification"
+    ),
+    CoverageDimension.MONITORING_SURVEILLANCE: (
+        "monitor", "surveillance", "observe", "watch"
+    ),
+    CoverageDimension.LOGGING_AUDIT: (
+        "audit", "logging", "log"
+    ),
+    CoverageDimension.ANALYTICS_REPORTING: (
+        "analytics", "report", "metric", "dashboard"
+    ),
+    CoverageDimension.ACCESS_PRIVACY_SECURITY: (
+        "privacy", "security", "access", "permission", "control"
+    ),
+    CoverageDimension.API_INTEGRATION: (
+        "api", "integration", "endpoint", "sdk"
+    ),
+}
+```
+
+**Verwendung**: Wenn ein Kandidat keine expliziten `facet_coverage`-Werte hat, prüft das System die Keywords im Titel/Snippet gegen diese Mapping-Tabelle und schätzt Coverage-Werte (0.0–1.0) basierend auf Keyword-Vorkommen.
+
 ## Typische Validierungsfehler
 
 | Fehler | Ursache | Behebung |
@@ -159,6 +215,32 @@ angezeigt werden können.
 Der Worker ruft das Score-Task mit `temperature = 0.3` und einem expliziten
 `max_tokens`-Budget auf (Standard `2000`). Über `control.max_tokens` kann dieser
 Wert pro Request angepasst werden.
+
+## Tuning-Parameter (Hybrid Search & Score)
+
+Die folgenden Konstanten steuern das Reranking-Verhalten in `llm_worker/graphs/hybrid_search_and_score.py`:
+
+| Parameter | Default | Beschreibung |
+| --- | --- | --- |
+| `RAG_CACHE_TTL_S` | `300` | Cache-TTL für RAG-Summaries (5 Minuten) |
+| `LLM_CACHE_TTL_S` | `3600` | Cache-TTL für LLM-Scores (1 Stunde) |
+| `MMR_LAMBDA` | `0.7` | Diversity vs. Relevance Trade-off (0.0 = max diversity, 1.0 = max relevance) |
+| `MMR_LIMIT` | `20` | Maximale Anzahl Kandidaten für MMR-Filterung |
+| `RRF_K` | `90` | Reciprocal Rank Fusion K-Parameter (höher = konservativer) |
+| `MIN_DIVERSITY_BUCKETS` | `3` | Minimale Anzahl unterschiedlicher Domain-Typen in Ergebnissen |
+| `MAX_KEY_POINTS` | `5` | Maximale Anzahl Key-Points in RAG-Summaries |
+| `MIN_KEY_POINTS` | `3` | Minimale Anzahl Key-Points in RAG-Summaries |
+| `DEFAULT_FRESHNESS_DAYS` | `365` | Standard-Aktualitätsgrenze (1 Jahr) |
+| `SOFTWARE_FRESHNESS_DAYS` | `1095` | Software-Docs-Aktualitätsgrenze (3 Jahre) |
+| `MAX_REASON_LENGTH` | `280` | Maximale Länge für Score-Reasoning |
+| `FRESHNESS_PENALTY_PER_MONTH` | `2.0` | Score-Penalty pro Monat Alter |
+| `DOMAIN_REDUNDANCY_PENALTY` | `0.85` | Multiplikator für Domain-Duplikate (z. B. zweites Ergebnis von derselben Domain) |
+| `POLICY_PRIORITY_SCALE` | `0.1` | Bonus-Skala für Domain-Policy-Priorität |
+
+**Hinweise**:
+- `MMR_LAMBDA`: Bei 0.7 werden Relevanz und Diversity balanciert. Höhere Werte (z. B. 0.9) priorisieren Relevanz.
+- `RRF_K`: Höhere Werte (z. B. 120) machen Ranking konservativer (stabilere Positionen).
+- `FRESHNESS_PENALTY_PER_MONTH`: Bei 2.0 verliert ein 6 Monate altes Dokument 12 Punkte Scoring.
 
 ## Migration Hinweis
 

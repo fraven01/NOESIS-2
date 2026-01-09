@@ -6,6 +6,9 @@ import pytest
 from celery.exceptions import TimeoutError as CeleryTimeoutError
 
 from ai_core import ingestion
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
+from ai_core.tool_contracts import ToolContext
 from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
 from ai_core.tools import InputError
 
@@ -164,6 +167,25 @@ def _patch_perf_counter(monkeypatch, start: float, end: float) -> None:
     monkeypatch.setattr(ingestion.time, "perf_counter", fake_perf_counter)
 
 
+def _build_meta(state: Dict[str, Any]) -> Dict[str, Any]:
+    scope = ScopeContext(
+        tenant_id=state["tenant_id"],
+        trace_id=state["trace_id"],
+        invocation_id="inv-1",
+        run_id=state["run_id"],
+        idempotency_key=state.get("idempotency_key"),
+        tenant_schema=state.get("tenant_schema"),
+        service_id="ingestion-task",
+    )
+    business = BusinessContext(case_id=state.get("case_id"))
+    tool_context = ToolContext(scope=scope, business=business)
+    return {
+        "scope_context": scope.model_dump(mode="json", exclude_none=True),
+        "business_context": business.model_dump(mode="json", exclude_none=True),
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+    }
+
+
 @pytest.mark.django_db
 def test_run_ingestion_success(monkeypatch):
     (
@@ -200,16 +222,20 @@ def test_run_ingestion_success(monkeypatch):
     captured_signatures = _patch_group(monkeypatch, async_result)
     _patch_perf_counter(monkeypatch, 10.0, 10.5)
 
+    state = {
+        "tenant_id": "tenant-a",
+        "case_id": "case-b",
+        "document_ids": list(valid_ids),
+        "embedding_profile": "standard",
+        "run_id": "run-123",
+        "trace_id": "trace-xyz",
+        "idempotency_key": "idem-1",
+    }
+    meta = _build_meta(state)
     response = ingestion.run_ingestion.run(
-        tenant="tenant-a",
-        case="case-b",
-        document_ids=list(valid_ids),
-        embedding_profile="standard",
-        run_id="run-123",
-        trace_id="trace-xyz",
-        idempotency_key="idem-1",
+        state,
+        meta,
         timeout_seconds=5.0,
-        session_salt="sess-456",
     )
 
     assert response["status"] == "dispatched"
@@ -222,8 +248,28 @@ def test_run_ingestion_success(monkeypatch):
     assert response["duration_ms"] == pytest.approx(500.0)
 
     assert dummy_process.calls == [
-        ("tenant-a", "case-b", "doc-1", "standard", None, "trace-xyz"),
-        ("tenant-a", "case-b", "doc-2", "standard", None, "trace-xyz"),
+        (
+            {
+                "tenant_id": "tenant-a",
+                "case_id": "case-b",
+                "document_id": "doc-1",
+                "embedding_profile": "standard",
+                "tenant_schema": None,
+                "trace_id": "trace-xyz",
+            },
+            meta,
+        ),
+        (
+            {
+                "tenant_id": "tenant-a",
+                "case_id": "case-b",
+                "document_id": "doc-2",
+                "embedding_profile": "standard",
+                "tenant_schema": None,
+                "trace_id": "trace-xyz",
+            },
+            meta,
+        ),
     ]
     assert len(captured_signatures) == 1
     assert len(captured_signatures[0]) == len(valid_ids)
@@ -237,7 +283,7 @@ def test_run_ingestion_success(monkeypatch):
             "trace_id": "trace-xyz",
             "idempotency_key": "idem-1",
             "embedding_profile": "standard",
-            "vector_space_id": "global",
+            "vector_space_id": "rag/standard@v1",
             "case_status": None,
             "case_phase": None,
         }
@@ -256,13 +302,13 @@ def test_run_ingestion_success(monkeypatch):
     assert end_call["trace_id"] == "trace-xyz"
     assert end_call["idempotency_key"] == "idem-1"
     assert end_call["embedding_profile"] == "standard"
-    assert end_call["vector_space_id"] == "global"
+    assert end_call["vector_space_id"] == "rag/standard@v1"
     assert end_call["case_status"] is None
     assert end_call["case_phase"] is None
     assert apply_async_calls == []
     assert schema_calls == [
         {
-            "id": "global",
+            "id": "rag/standard@v1",
             "schema": "rag",
             "backend": "pgvector",
             "dimension": 1536,
@@ -314,14 +360,18 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
 
     monkeypatch.setattr(ingestion, "_collect_partial_results", fake_collect)
 
+    state = {
+        "tenant_id": "tenant-a",
+        "case_id": "case-b",
+        "document_ids": list(valid_ids),
+        "embedding_profile": "standard",
+        "run_id": "run-timeout",
+        "trace_id": "trace-timeout",
+        "idempotency_key": "timeout-id",
+    }
     response = ingestion.run_ingestion.run(
-        tenant="tenant-a",
-        case="case-b",
-        document_ids=list(valid_ids),
-        embedding_profile="standard",
-        run_id="run-timeout",
-        trace_id="trace-timeout",
-        idempotency_key="timeout-id",
+        state,
+        _build_meta(state),
         timeout_seconds=3.0,
         dead_letter_queue="dlq-test",
     )
@@ -361,7 +411,7 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     assert end_calls[0]["duration_ms"] == pytest.approx(400.0)
     assert schema_calls == [
         {
-            "id": "global",
+            "id": "rag/standard@v1",
             "schema": "rag",
             "backend": "pgvector",
             "dimension": 1536,
@@ -416,14 +466,18 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     monkeypatch.setattr(ingestion, "_determine_failed_documents", flaky_determine)
 
     with pytest.raises(RuntimeError, match="aggregation failed"):
+        state = {
+            "tenant_id": "tenant-a",
+            "case_id": "case-b",
+            "document_ids": list(valid_ids),
+            "embedding_profile": "standard",
+            "run_id": "run-exc",
+            "trace_id": "trace-exc",
+            "idempotency_key": "exc-id",
+        }
         ingestion.run_ingestion.run(
-            tenant="tenant-a",
-            case="case-b",
-            document_ids=list(valid_ids),
-            embedding_profile="standard",
-            run_id="run-exc",
-            trace_id="trace-exc",
-            idempotency_key="exc-id",
+            state,
+            _build_meta(state),
             timeout_seconds=2.5,
             dead_letter_queue="dlq-exc",
         )
@@ -449,7 +503,7 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     assert end_calls[0]["duration_ms"] == pytest.approx(600.0)
     assert schema_calls == [
         {
-            "id": "global",
+            "id": "rag/standard@v1",
             "schema": "rag",
             "backend": "pgvector",
             "dimension": 1536,
@@ -485,13 +539,17 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
     _patch_group(monkeypatch, async_result)
     _patch_perf_counter(monkeypatch, 40.0, 40.4)
 
+    state = {
+        "tenant_id": "tenant-a",
+        "case_id": "case-b",
+        "document_ids": list(valid_ids),
+        "embedding_profile": "standard",
+        "run_id": "run-contract",
+        "trace_id": "trace-contract",
+    }
     response = ingestion.run_ingestion.run(
-        tenant="tenant-a",
-        case="case-b",
-        document_ids=list(valid_ids),
-        embedding_profile="standard",
-        run_id="run-contract",
-        trace_id="trace-contract",
+        state,
+        _build_meta(state),
         dead_letter_queue="dlq-contract",
     )
 
@@ -519,7 +577,7 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
     assert end_calls[0]["duration_ms"] == pytest.approx(400.0)
     assert schema_calls == [
         {
-            "id": "global",
+            "id": "rag/standard@v1",
             "schema": "rag",
             "backend": "pgvector",
             "dimension": 1536,

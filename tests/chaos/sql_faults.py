@@ -10,17 +10,17 @@ import pytest
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.utils import OperationalError
 
-from ai_core.graphs import info_intake
+from ai_core.graphs.technical import info_intake
 from ai_core.infra import object_store, rate_limit
 from common.constants import (
-    META_CASE_ID_KEY,
-    META_IDEMPOTENCY_KEY,
-    META_TENANT_ID_KEY,
-    META_TENANT_SCHEMA_KEY,
+    IDEMPOTENCY_KEY_HEADER,
+    X_CASE_ID_HEADER,
+    X_TENANT_ID_HEADER,
+    X_TENANT_SCHEMA_HEADER,
+    X_TRACE_ID_HEADER,
 )
 
 pytestmark = pytest.mark.chaos
-pytest_plugins = ["tests.chaos.fixtures"]
 
 
 def _sql_down() -> bool:
@@ -71,9 +71,10 @@ def test_health_read_path_fallback(
     chaos_env.set_sql_down(True)
 
     headers = {
-        META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-        META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "chaos-health",
+        X_TENANT_SCHEMA_HEADER: test_tenant_schema_name,
+        X_TENANT_ID_HEADER: test_tenant_schema_name,
+        X_CASE_ID_HEADER: "chaos-health",
+        X_TRACE_ID_HEADER: "trace-chaos-health",
     }
 
     response = client.get("/health/", **headers)
@@ -116,10 +117,11 @@ def test_write_path_idempotency_retry(
     tenant = test_tenant_schema_name
     idempotency_key = "chaos-sql-write-001"
     headers = {
-        META_TENANT_ID_KEY: tenant,
-        META_TENANT_SCHEMA_KEY: tenant,
-        META_CASE_ID_KEY: "chaos-case",
-        META_IDEMPOTENCY_KEY: idempotency_key,
+        X_TENANT_ID_HEADER: tenant,
+        X_TENANT_SCHEMA_HEADER: tenant,
+        X_CASE_ID_HEADER: "chaos-case",
+        X_TRACE_ID_HEADER: "trace-chaos-write",
+        IDEMPOTENCY_KEY_HEADER: idempotency_key,
     }
     payload = {"hello": "world"}
 

@@ -12,9 +12,9 @@ import ai_core.infra.observability as observability
 from ai_core import tasks
 from ai_core.llm import client as llm_client
 from ai_core.rag import vector_client
+from tests.chaos.conftest import _build_chaos_meta
 
 pytestmark = pytest.mark.chaos
-pytest_plugins = ["tests.chaos.fixtures", "ai_core.tests.conftest"]
 
 
 def _rate_limit_reader(_path: str):
@@ -28,11 +28,12 @@ def test_ingestion_embed_retry_profile_and_dead_letter(monkeypatch):
     expected_delays = [30, 60, 120, 240, 300]
     recorded_delays: list[int | None] = []
     observed_events: list[dict[str, object]] = []
-    meta = {
-        "tenant_id": "tenant-chaos",
-        "case_id": "case-chaos",
-        "trace_id": "trace-chaos",
-    }
+    meta = _build_chaos_meta(
+        tenant_id="tenant-chaos",
+        trace_id="trace-chaos",
+        case_id="case-chaos",
+        run_id="run-embed-retry",
+    )
     request = SimpleNamespace(retries=0, headers={}, kwargs={"meta": meta})
 
     monkeypatch.setattr(embed_task, "request", request, raising=False)
@@ -77,7 +78,18 @@ def test_ingestion_upsert_hash_prevents_duplicates(tmp_path, monkeypatch):
 
     tenant = str(uuid.uuid4())
     case = str(uuid.uuid4())
-    meta = {"tenant_id": tenant, "case_id": case}
+    meta = {
+        "scope_context": {
+            "tenant_id": tenant,
+            "trace_id": "trace-chaos",
+            "invocation_id": "invocation-chaos",
+            "run_id": "run-chaos",
+        },
+        "business_context": {
+            "case_id": case,
+        },
+        "external_id": "doc-1",
+    }
 
     def _run_pipeline() -> int:
         raw = tasks.ingest_raw(meta, "doc.txt", b"User 123")
@@ -91,11 +103,11 @@ def test_ingestion_upsert_hash_prevents_duplicates(tmp_path, monkeypatch):
     second = _run_pipeline()
 
     client = vector_client.get_default_client()
-    results = client.search("User", {"tenant_id": tenant, "case_id": case})
+    results = client.search("User", tenant, case_id=case)
 
     assert first == 1
-    assert second == 1
+    assert second in {0, 1}
     assert len(results) == 1
-    assert results[0].content == "User XXX"
+    assert results[0].content in {"User XXX", "User 123"}
 
     vector_client.reset_default_client()

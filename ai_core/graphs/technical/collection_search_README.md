@@ -209,7 +209,11 @@ graph_state = {
     "auto_ingest": False,  # User wählt manuell aus
 }
 
-state, result = graph.run(graph_state)
+scope = ScopeContext(...)
+business = BusinessContext(...)
+tool_context = scope.to_tool_context(business=business)
+meta = {"tool_context": tool_context.model_dump(mode="json", exclude_none=True)}
+state, result = graph.run(graph_state, meta=meta)
 
 # User sieht Ergebnisse mit Scores
 # User wählt URLs aus
@@ -228,7 +232,11 @@ graph_state = {
     "auto_ingest_min_score": 60.0,    # Min Score 60
 }
 
-state, result = graph.run(graph_state)
+scope = ScopeContext(...)
+business = BusinessContext(...)
+tool_context = scope.to_tool_context(business=business)
+meta = {"tool_context": tool_context.model_dump(mode="json", exclude_none=True)}
+state, result = graph.run(graph_state, meta=meta)
 
 # result["outcome"] == "auto_ingest_triggered"
 # result["ingestion"]["count"] == 10
@@ -314,7 +322,7 @@ Jeder Node emittiert strukturierte Spans mit:
 
 ## Weitere Informationen
 
-- **Architektur**: [docs/architektur/overview.md](../../docs/architektur/overview.md)
+- **Architektur**: [docs/architecture/overview.md](../../docs/architecture/overview.md)
 - **Tool-Contracts**: [docs/agents/tool-contracts.md](../../docs/agents/tool-contracts.md)
 - **RAG-Architektur**: [docs/rag/overview.md](../../docs/rag/overview.md)
 - **Embedding-Profile**: [docs/rag/configuration.md](../../docs/rag/configuration.md)

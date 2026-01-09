@@ -6,6 +6,7 @@ from common.logging import get_logger
 from crawler.fetcher import FetchRequest
 from crawler.http_fetcher import HttpFetcher
 from crawler.worker import CrawlerWorker
+from ai_core.tool_contracts.base import tool_context_from_meta
 
 logger = get_logger(__name__)
 
@@ -25,12 +26,8 @@ def crawl_url_task(
         meta: Context metadata (tenant_id, case_id, etc.).
         ingestion_overrides: Optional overrides for the ingestion process.
     """
-    # BREAKING CHANGE (Option A - Strict Separation):
-    # Business IDs now in business_context, not scope_context
-    scope_context = meta.get("scope_context", {})
-    business_context = meta.get("business_context", {})
-
-    tenant_id = scope_context.get("tenant_id")
+    context = tool_context_from_meta(meta)
+    tenant_id = context.scope.tenant_id
     if not tenant_id:
         logger.error("crawl_url_task.missing_tenant_id", extra={"url": url})
         return {"status": "error", "reason": "missing_tenant_id"}
@@ -67,22 +64,24 @@ def crawl_url_task(
 
         # 3. Process
         # worker.process handles fetching, asset extraction, and dispatching ingestion
-        # BREAKING CHANGE (Option A): Business IDs from business_context
         doc_meta = {"source": url}
-        if business_context.get("workflow_id"):
-            doc_meta["workflow_id"] = business_context.get("workflow_id")
-        if business_context.get("collection_id"):
-            doc_meta["collection_id"] = business_context.get("collection_id")
+        if context.business.workflow_id:
+            doc_meta["workflow_id"] = context.business.workflow_id
+        if context.business.collection_id:
+            doc_meta["collection_id"] = context.business.collection_id
+
+        # Add crawl_id to context.metadata if present
+        crawl_id = meta.get("crawl_id")
+        if crawl_id:
+            updated_metadata = dict(context.metadata or {})
+            updated_metadata["crawl_id"] = crawl_id
+            context = context.model_copy(update={"metadata": updated_metadata})
 
         result = worker.process(
             request,
-            tenant_id=tenant_id,
-            case_id=business_context.get("case_id"),
-            crawl_id=meta.get("crawl_id"),
-            trace_id=scope_context.get("trace_id"),
+            context,
             document_metadata=doc_meta,
             ingestion_overrides=ingestion_overrides,
-            meta_overrides=meta,
         )
 
         logger.info(

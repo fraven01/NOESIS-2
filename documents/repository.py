@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import UUID, uuid4
@@ -25,6 +27,7 @@ from .contracts import (
     NormalizedDocument,
     InlineBlob,
     FileBlob,
+    LocalFileBlob,
 )
 from .logging_utils import (
     asset_log_fields,
@@ -1856,6 +1859,20 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                 sha256=sha256,
                 size=size,
                 media_type=blob.media_type,  # Preserve media_type
+            )
+
+        if isinstance(blob, LocalFileBlob):
+            payload = Path(blob.path).read_bytes()
+            sha256 = hashlib.sha256(payload).hexdigest()
+            if owner_checksum is not None and owner_checksum != sha256:
+                raise ValueError(checksum_error)
+            uri, _, size = self._storage.put(payload)
+            return FileBlob(
+                type="file",
+                uri=uri,
+                sha256=sha256,
+                size=size,
+                media_type=blob.media_type,
             )
 
         blob_sha = getattr(blob, "sha256", None)

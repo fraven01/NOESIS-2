@@ -4,7 +4,7 @@
 Accepted
 
 ## Kontext
-Cases (UUID PK, `external_id`, `status`, `phase`) dienen als fachliche Container. Graph-Kontexte (`GraphContextPayload`) verlangen `case_id`, und `assert_case_active` blockiert geschlossene Cases.
+Cases (UUID PK, `external_id`, `status`, `phase`) dienen als fachliche Container. Graph-Boundaries (GraphIOSpec + ToolContext) verlangen `case_id`, und `assert_case_active` blockiert geschlossene Cases.
 
 ## Entscheidung
 - `case_id` repräsentiert den langfristigen fachlichen Vorgang (Wochen/Monate) und bündelt mehrere Workflows.

@@ -38,10 +38,13 @@ from documents.contracts import InlineBlob, NormalizedDocument
 from documents.normalization import canonical_hash, normalize_url
 
 from ai_core.contracts.crawler_runner import (
+    CrawlerControlState,
+    CrawlerGraphState,
     CrawlerRunContext,
     CrawlerRunError,
     CrawlerStateBundle,
 )
+from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.contracts.payloads import (
     FrontierData,
     GuardrailLimitsData,
@@ -77,10 +80,11 @@ def build_crawler_state(
     workflow_id = context.workflow_id
     repository = context.repository
     meta = context.meta
-    scope_meta = meta["scope_context"]
+    tool_context = tool_context_from_meta(meta)
+    scope_meta = tool_context.scope
     # BREAKING CHANGE (Option A - Strict Separation):
     # Business IDs (case_id, workflow_id) now in business_context
-    business_meta = meta.get("business_context", {})
+    business_meta = tool_context.business
 
     builds: list[CrawlerStateBundle] = []
     for origin in request_data.origins or []:
@@ -274,7 +278,7 @@ def build_crawler_state(
             max_document_bytes=limits.max_document_bytes,
         )
         guardrail_signals = GuardrailSignalsData(
-            tenant_id=str(scope_meta.get("tenant_id")),
+            tenant_id=str(scope_meta.tenant_id),
             provider=source.provider,
             canonical_source=source.canonical_source,
             host=descriptor.host,
@@ -321,13 +325,13 @@ def build_crawler_state(
 
         normalized_document_input = NormalizedDocument(
             ref={
-                "tenant_id": str(scope_meta.get("tenant_id")),
+                "tenant_id": str(scope_meta.tenant_id),
                 "workflow_id": str(workflow_id),
                 "document_id": document_uuid,
                 "collection_id": collection_id_str,
             },
             meta={
-                "tenant_id": str(scope_meta.get("tenant_id")),
+                "tenant_id": str(scope_meta.tenant_id),
                 "workflow_id": str(workflow_id),
                 "title": origin.title or request_data.title,
                 "language": origin.language or request_data.language,
@@ -343,9 +347,9 @@ def build_crawler_state(
         )
 
         if snapshot_requested and body_bytes:
-            tenant_id = str(scope_meta.get("tenant_id"))
+            tenant_id = str(scope_meta.tenant_id)
             # BREAKING CHANGE (Option A): case_id from business_context
-            case_id = str(business_meta.get("case_id"))
+            case_id = str(business_meta.case_id)
             snapshot_path, snapshot_sha256 = _write_snapshot(
                 object_store,
                 tenant=tenant_id,
@@ -356,52 +360,44 @@ def build_crawler_state(
             snapshot_path = None
             snapshot_sha256 = None
 
-        state: dict[str, object] = {
-            "tenant_id": scope_meta.get("tenant_id"),
-            "case_id": business_meta.get(
-                "case_id"
-            ),  # BREAKING CHANGE (Option A): from business_context
-            "workflow_id": workflow_id,
-            "external_id": source.external_id,
-            "origin_uri": source.canonical_source,
-            "provider": source.provider,
-            "frontier": frontier_data.model_dump(mode="json"),
-            "fetch": fetch_payload.model_dump(mode="json"),
-            "guardrails": guardrail_payload.model_dump(mode="json"),
-            "document_id": document_id,
-            "collection_id": request_data.collection_id,
-            "normalized_document_input": normalized_document_input.model_dump(
-                mode="json"
-            ),
-        }
-        control: dict[str, object] = {
-            "snapshot": snapshot_requested,
-            "snapshot_label": snapshot_label,
-            "fetch": fetch_used,
-            "tags": list(tags),
-            "shadow_mode": bool(request_data.shadow_mode or dry_run),
-            "dry_run": dry_run,
-            "mode": request_data.mode,
-        }
-        if review:
-            control["review"] = review
-            control["manual_review"] = review
-        if request_data.force_retire:
-            control["force_retire"] = True
-        if request_data.recompute_delta:
-            control["recompute_delta"] = True
-        state["control"] = control
+        control = CrawlerControlState(
+            snapshot=snapshot_requested,
+            snapshot_label=snapshot_label,
+            fetch=fetch_used,
+            tags=tags,
+            shadow_mode=bool(request_data.shadow_mode or dry_run),
+            dry_run=dry_run,
+            mode=request_data.mode,
+            review=review or None,
+            manual_review=review or None,
+            force_retire=True if request_data.force_retire else None,
+            recompute_delta=True if request_data.recompute_delta else None,
+        )
 
         baseline_data, previous_status = _load_baseline_context(
-            scope_meta.get("tenant_id"),
+            scope_meta.tenant_id,
             workflow_id,
             document_id,
             repository,
             lifecycle_store,
         )
-        state["baseline"] = baseline_data
-        if previous_status:
-            state["previous_status"] = previous_status
+        state = CrawlerGraphState(
+            tenant_id=scope_meta.tenant_id,
+            case_id=business_meta.case_id,  # BREAKING CHANGE (Option A): from business_context
+            workflow_id=workflow_id,
+            external_id=source.external_id,
+            origin_uri=source.canonical_source,
+            provider=source.provider,
+            frontier=frontier_data.model_dump(mode="json"),
+            fetch=fetch_payload.model_dump(mode="json"),
+            guardrails=guardrail_payload.model_dump(mode="json"),
+            document_id=document_id,
+            collection_id=request_data.collection_id,
+            normalized_document_input=normalized_document_input.model_dump(mode="json"),
+            control=control,
+            baseline=baseline_data,
+            previous_status=previous_status,
+        )
 
         builds.append(
             CrawlerStateBundle(

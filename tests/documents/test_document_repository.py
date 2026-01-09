@@ -13,6 +13,7 @@ from documents.contracts import (
     DocumentRef,
     FileBlob,
     InlineBlob,
+    LocalFileBlob,
     NormalizedDocument,
 )
 from documents.repository import InMemoryDocumentsRepository
@@ -142,6 +143,31 @@ def test_upsert_idempotency_preserves_latest_payload():
         repo.get("tenant-a", doc_id, "v1", workflow_id=second.ref.workflow_id).checksum
         == "c" * 64
     )
+
+
+def test_upsert_materializes_local_file_blob(tmp_path):
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    payload = b"hello staging"
+    blob_path = tmp_path / "staged.bin"
+    blob_path.write_bytes(payload)
+    checksum = hashlib.sha256(payload).hexdigest()
+
+    blob = LocalFileBlob(
+        type="local_file", path=str(blob_path), media_type="text/plain"
+    )
+    doc = _make_document(tenant_id="tenant-a", checksum=checksum, blob=blob)
+
+    stored = repo.upsert(doc)
+    assert isinstance(stored.blob, FileBlob)
+
+    blob_path.unlink()
+    fetched = repo.get(
+        "tenant-a", stored.ref.document_id, workflow_id=stored.ref.workflow_id
+    )
+    assert fetched is not None
+    assert isinstance(fetched.blob, FileBlob)
+    assert storage.get(fetched.blob.uri) == payload
 
 
 def test_get_prefer_latest_returns_most_recent_version():

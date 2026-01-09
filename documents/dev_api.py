@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Mapping
 from uuid import UUID
 
@@ -20,6 +21,9 @@ from documents.domain_service import DocumentDomainService
 from documents.lifecycle import DocumentLifecycleState
 from documents.models import Document
 from documents.serializers import DocumentSerializer
+
+
+logger = logging.getLogger(__name__)
 
 
 def _require_debug() -> None:
@@ -146,7 +150,10 @@ class DocumentDevViewSet(viewsets.ViewSet):
                     )
                 except Exception as exc:
                     # Log but proceed with DB delete since this is a dev tool
-                    print(f"Vector cleanup failed for {doc_id}: {exc}")
+                    logger.warning(
+                        "dev_api.vector_cleanup_failed",
+                        extra={"document_id": doc_id, "error": str(exc)},
+                    )
 
                 document.delete()
                 return Response(
@@ -176,7 +183,13 @@ class DocumentDevViewSet(viewsets.ViewSet):
                         reason="soft_delete_dev_api",
                     )
                 except Exception as exc:
-                    print(f"Vector lifecycle update failed for {document.id}: {exc}")
+                    logger.warning(
+                        "dev_api.vector_lifecycle_update_failed",
+                        extra={
+                            "document_id": str(document.id),
+                            "error": str(exc),
+                        },
+                    )
 
                 return Response(
                     {

@@ -189,7 +189,7 @@ class DocumentDomainService:
         if created_by_user_id:
             try:
                 User = apps.get_model("users", "User")
-                created_by_user = User.objects.get(pk=int(created_by_user_id))
+                created_by_user = User.objects.get(pk=created_by_user_id)
             except Exception:
                 logger.warning(
                     "documents.created_by_user_missing",

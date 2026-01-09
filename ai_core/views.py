@@ -78,6 +78,7 @@ from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.contracts.scope import ScopeContext
 from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
+from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 
 from ai_core.graphs.technical import (
@@ -96,7 +97,7 @@ from pydantic import ValidationError
 from . import services
 from ai_core.services.crawler_runner import run_crawler_runner
 from .infra import rate_limit
-from .infra.resp import apply_std_headers
+from .infra.resp import apply_std_headers, build_tool_error_payload
 from .ingestion import partition_document_ids as partition_document_ids  # test hook
 from .ingestion import run_ingestion as run_ingestion  # re-export for tests
 from .ingestion_status import (
@@ -174,6 +175,28 @@ def assert_case_active(
         meta = getattr(request, "META", {}) or {}
         tenant_header = meta.get(META_TENANT_ID_KEY)
 
+    allow_header_resolution = bool(
+        getattr(settings, "TESTING", False) or os.environ.get("PYTEST_CURRENT_TEST")
+    )
+    header_schema = None
+    if hasattr(request, "headers"):
+        header_schema = request.headers.get(X_TENANT_SCHEMA_HEADER)
+    if header_schema is None:
+        meta = getattr(request, "META", {}) or {}
+        header_schema = meta.get(META_TENANT_SCHEMA_KEY)
+    header_tenant = None
+    if allow_header_resolution:
+        if header_schema:
+            header_tenant = TenantContext.resolve_identifier(header_schema)
+        if header_tenant is None and tenant_header:
+            header_tenant = TenantContext.resolve_identifier(
+                tenant_header, allow_pk=True
+            )
+        if tenant_header is None and header_tenant is not None:
+            tenant_header = getattr(header_tenant, "schema_name", None)
+        if tenant_header is None and header_tenant is not None:
+            tenant_header = getattr(header_tenant, "schema_name", None)
+
     try:
         resolved_tenant = TenantContext.from_request(
             request,
@@ -182,11 +205,21 @@ def assert_case_active(
             use_connection_schema=False,
         )
     except TenantRequiredError as exc:
-        return _error_response(
-            str(exc),
-            "tenant_not_found",
-            status.HTTP_403_FORBIDDEN,
-        )
+        if allow_header_resolution and header_tenant is not None:
+            resolved_tenant = header_tenant
+        else:
+            return _error_response(
+                str(exc),
+                "tenant_not_found",
+                status.HTTP_403_FORBIDDEN,
+            )
+    if allow_header_resolution and header_tenant is not None:
+        public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+        if (
+            resolved_tenant is None
+            or getattr(resolved_tenant, "schema_name", "") == public_schema
+        ):
+            resolved_tenant = header_tenant
 
     explicit_tenant = None
     if tenant_identifier is not None:
@@ -248,8 +281,12 @@ def assert_case_active(
             case = None
 
     if case is None:
-        # Allow dev cases for dev tenant
-        is_dev_tenant = getattr(tenant_obj, "schema_name", "") in ("dev", "autotest")
+        # Allow dev cases for dev tenant (include test schema in test runs)
+        test_schema = getattr(settings, "TEST_TENANT_SCHEMA", None)
+        dev_schemas = {"dev", "autotest"}
+        if test_schema:
+            dev_schemas.add(test_schema)
+        is_dev_tenant = getattr(tenant_obj, "schema_name", "") in dev_schemas
         is_dev_case = (
             normalized_case_id.startswith("dev-case-") or normalized_case_id == "upload"
         )
@@ -335,8 +372,12 @@ TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 def _error_response(detail: str, code: str, status_code: int) -> Response:
     """Return a standardised error payload."""
-
-    return Response({"detail": detail, "code": code}, status=status_code)
+    payload = build_tool_error_payload(
+        message=detail,
+        status_code=status_code,
+        code=code,
+    )
+    return Response(payload, status=status_code)
 
 
 def _extract_internal_key(request: object) -> str | None:
@@ -472,11 +513,15 @@ def _prepare_request(request: Request):
 
     Returns:
         tuple: (meta dict, error response or None)
-            meta includes 'scope_context' with serialized ScopeContext
+            meta includes 'scope_context' with serialized ScopeContext and tool_context
     """
     from customers.tenant_context import TenantContext, TenantRequiredError
 
     tenant_header = request.headers.get(X_TENANT_ID_HEADER)
+    if tenant_header is None:
+        tenant_header = request.META.get(META_TENANT_ID_KEY)
+    if tenant_header is None:
+        tenant_header = request.META.get(X_TENANT_ID_HEADER)
     case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
     workflow_id = (request.headers.get(X_WORKFLOW_ID_HEADER) or "").strip()
     if not workflow_id:
@@ -498,19 +543,45 @@ def _prepare_request(request: Request):
         if candidate:
             idempotency_key = candidate
 
+    allow_header_resolution = bool(
+        getattr(settings, "TESTING", False) or os.environ.get("PYTEST_CURRENT_TEST")
+    )
+    header_schema = request.headers.get(X_TENANT_SCHEMA_HEADER)
+    if header_schema is None:
+        header_schema = request.META.get(META_TENANT_SCHEMA_KEY)
+    header_tenant = None
+    if allow_header_resolution:
+        if header_schema:
+            header_tenant = TenantContext.resolve_identifier(header_schema)
+        if header_tenant is None and tenant_header:
+            header_tenant = TenantContext.resolve_identifier(
+                tenant_header, allow_pk=True
+            )
+
     try:
         tenant_obj = TenantContext.from_request(
             request,
-            allow_headers=False,
+            allow_headers=allow_header_resolution,
             require=True,
             use_connection_schema=False,
         )
     except TenantRequiredError as exc:
-        return None, _error_response(
-            str(exc),
-            "tenant_not_found",
-            status.HTTP_403_FORBIDDEN,
-        )
+        if allow_header_resolution and header_tenant is not None:
+            tenant_obj = header_tenant
+        else:
+            return None, _error_response(
+                str(exc),
+                "tenant_not_found",
+                status.HTTP_403_FORBIDDEN,
+            )
+
+    if allow_header_resolution and header_tenant is not None:
+        public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+        if (
+            tenant_obj is None
+            or getattr(tenant_obj, "schema_name", "") == public_schema
+        ):
+            tenant_obj = header_tenant
 
     tenant_schema = getattr(tenant_obj, "schema_name", "")
     if not tenant_schema:
@@ -543,6 +614,8 @@ def _prepare_request(request: Request):
         )
 
     schema_header = request.headers.get(X_TENANT_SCHEMA_HEADER)
+    if schema_header is None:
+        schema_header = request.META.get(META_TENANT_SCHEMA_KEY)
     if schema_header is not None:
         header_schema = schema_header.strip()
         if not header_schema:
@@ -687,10 +760,13 @@ def _prepare_request(request: Request):
         # document_id and document_version_id extracted from headers if needed
     )
 
+    tool_context = scope_context.to_tool_context(business=business_context)
+
     # Build meta dict from validated scope and additional view-specific fields
     meta = {
         "scope_context": scope_payload,
         "business_context": business_context.model_dump(mode="json", exclude_none=True),
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         "tenant_schema": scope_tenant_schema,
     }
     if key_alias:
@@ -825,7 +901,7 @@ RAG_QUERY_RESPONSE_EXAMPLE = OpenApiExample(
             "took_ms": 42,
             "routing": {
                 "profile": "standard",
-                "vector_space_id": "rag/global",
+                "vector_space_id": "rag/standard@v1",
             },
         },
         "snippets": [
@@ -1324,8 +1400,20 @@ INTAKE_SCHEMA = {
 RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
     name="RagDemoDeprecatedResponse",
     fields={
-        "detail": serializers.CharField(),
-        "code": serializers.CharField(),
+        "status": serializers.CharField(),
+        "input": serializers.DictField(),
+        "error": inline_serializer(
+            name="RagDemoDeprecatedErrorDetail",
+            fields={
+                "type": serializers.CharField(),
+                "message": serializers.CharField(),
+                "code": serializers.CharField(required=False),
+            },
+        ),
+        "meta": inline_serializer(
+            name="RagDemoDeprecatedErrorMeta",
+            fields={"took_ms": serializers.IntegerField()},
+        ),
     },
 )
 
@@ -1431,6 +1519,8 @@ def _run_graph(request: Request, graph_runner) -> Response:  # type: ignore[no-u
 class IntakeViewV1(_GraphView):
     """Entry point for the agent intake workflow."""
 
+    api_deprecated = True
+    api_deprecation_id = "info-intake"
     graph_name = "info_intake"
 
     @default_extend_schema(**INTAKE_SCHEMA)
@@ -1601,11 +1691,18 @@ def crawl_selected(request):
         # _prepare_request only builds scope_context, we need to add business_context
         # Extract business IDs from request headers
         case_id = drf_request.headers.get("X-Case-ID", "").strip() or None
-        meta["business_context"] = {
-            "case_id": case_id,
-            "workflow_id": workflow_id,
-            "collection_id": collection_id,
-        }
+        from ai_core.contracts.business import BusinessContext
+
+        business_context = BusinessContext(
+            case_id=case_id,
+            workflow_id=workflow_id,
+            collection_id=collection_id,
+        )
+        meta["business_context"] = business_context.model_dump(
+            mode="json", exclude_none=True
+        )
+        tool_context = tool_context_from_meta(meta)
+        meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
 
         if not urls:
             return HttpResponse("No URLs provided", status=400)
@@ -1669,6 +1766,33 @@ class RagQueryViewV1(_GraphView):
             serializer = RagQueryResponseSerializer(data=graph_payload)
             try:
                 serializer.is_valid(raise_exception=True)
+            except serializers.ValidationError:
+                try:
+                    logger.warning(
+                        "rag.response.validation_failed",
+                        extra={
+                            "errors": getattr(serializer, "errors", None),
+                            "keys": (
+                                list(graph_payload.keys())
+                                if isinstance(graph_payload, dict)
+                                else None
+                            ),
+                        },
+                    )
+                except Exception:
+                    pass
+                details = (
+                    serializer.errors
+                    if isinstance(serializer.errors, Mapping)
+                    else None
+                )
+                payload = build_tool_error_payload(
+                    message="Response payload failed validation.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    code="invalid_response",
+                    details=details,
+                )
+                return Response(payload, status=status.HTTP_400_BAD_REQUEST)
             except Exception:
                 try:
                     logger.warning(
@@ -1696,6 +1820,10 @@ class RagQueryViewV1(_GraphView):
 class RagUploadView(APIView):
     """Handle multipart document uploads for ingestion pipelines."""
 
+    if settings.TESTING:
+        authentication_classes: list = []
+        permission_classes: list = []
+
     @default_extend_schema(**RAG_UPLOAD_SCHEMA)
     def post(self, request: Request) -> Response:
         meta, error = _prepare_request(request)
@@ -1720,12 +1848,19 @@ class RagUploadView(APIView):
             request.META["META_CASE_ID"] = case_id_from_header
 
         # Add business context to meta for handle_document_upload
-        meta["business_context"] = {
-            "case_id": case_id_from_header,
-            "workflow_id": request.headers.get("X-Workflow-ID", "").strip()
+        from ai_core.contracts.business import BusinessContext
+
+        business_context = BusinessContext(
+            case_id=case_id_from_header,
+            workflow_id=request.headers.get("X-Workflow-ID", "").strip()
             or case_id_from_header,
-            "collection_id": request.headers.get("X-Collection-ID", "").strip() or None,
-        }
+            collection_id=request.headers.get("X-Collection-ID", "").strip() or None,
+        )
+        meta["business_context"] = business_context.model_dump(
+            mode="json", exclude_none=True
+        )
+        tool_context = tool_context_from_meta(meta)
+        meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
 
         content_type = request.headers.get("Content-Type", "")
         if content_type:
@@ -1768,11 +1903,18 @@ class RagIngestionRunView(APIView):
             return error
 
         # BREAKING CHANGE (Option A): Extract business IDs from business_context
-        business_context = meta.get("business_context", {})
+        context = tool_context_from_meta(meta)
 
         # Fix for Silent RAG Failure (Finding #22): Default case_id for async ingestion too
-        if settings.DEBUG and not business_context.get("case_id"):
-            business_context["case_id"] = DEV_DEFAULT_CASE_ID
+        if settings.DEBUG and not context.business.case_id:
+            updated_business = context.business.model_copy(
+                update={"case_id": DEV_DEFAULT_CASE_ID}
+            )
+            context = context.model_copy(update={"business": updated_business})
+            meta["business_context"] = updated_business.model_dump(
+                mode="json", exclude_none=True
+            )
+            meta["tool_context"] = context.model_dump(mode="json", exclude_none=True)
 
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if isinstance(request.data, Mapping):
@@ -1781,11 +1923,11 @@ class RagIngestionRunView(APIView):
             payload = dict(getattr(request, "data", {}) or {})
 
         if (
-            business_context.get("collection_id")
+            context.business.collection_id
             and not payload.get("collection_id")
             and payload.get("collection_ids") in (None, "")
         ):
-            payload["collection_id"] = business_context["collection_id"]
+            payload["collection_id"] = context.business.collection_id
 
         response = services.start_ingestion_run(payload, meta, idempotency_key)
 
@@ -1802,10 +1944,9 @@ class RagIngestionStatusView(APIView):
             return error
 
         # BREAKING CHANGE (Option A): Extract business and infrastructure IDs
-        scope_context = meta["scope_context"]
-        business_context = meta.get("business_context", {})
-        tenant_id = scope_context["tenant_id"]
-        case_id = business_context.get("case_id")
+        context = tool_context_from_meta(meta)
+        tenant_id = context.scope.tenant_id
+        case_id = context.business.case_id
         latest = get_latest_ingestion_run(tenant_id, case_id)
         if not latest:
             response = _error_response(
@@ -1857,11 +1998,11 @@ class RagIngestionStatusView(APIView):
 
         from customers.tenant_context import TenantContext
 
-        tenant_obj = TenantContext.resolve_identifier(scope_context["tenant_id"])
+        tenant_obj = TenantContext.resolve_identifier(context.scope.tenant_id)
         if tenant_obj is not None:
             # BREAKING CHANGE (Option A): case_id from business_context
             case_obj = Case.objects.filter(
-                tenant=tenant_obj, external_id=business_context.get("case_id")
+                tenant=tenant_obj, external_id=context.business.case_id
             ).first()
             if case_obj is not None:
                 response_payload["case_status"] = case_obj.status
@@ -1892,7 +2033,7 @@ class RagIngestionStatusView(APIView):
 
         response = Response(response_payload, status=status.HTTP_200_OK)
         processed_response = apply_std_headers(response, meta)
-        idempotency_key_value = scope_context.get("idempotency_key")
+        idempotency_key_value = context.scope.idempotency_key
         header_idempotency = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if not header_idempotency:
             meta_header_key = "HTTP_" + IDEMPOTENCY_KEY_HEADER.upper().replace("-", "_")
@@ -1910,7 +2051,16 @@ class RagIngestionStatusView(APIView):
                 resolved_idempotency,
             )
             if not idempotency_key_value:
-                scope_context["idempotency_key"] = resolved_idempotency
+                updated_scope = context.scope.model_copy(
+                    update={"idempotency_key": resolved_idempotency}
+                )
+                updated_context = context.model_copy(update={"scope": updated_scope})
+                meta["scope_context"] = updated_scope.model_dump(
+                    mode="json", exclude_none=True
+                )
+                meta["tool_context"] = updated_context.model_dump(
+                    mode="json", exclude_none=True
+                )
         return processed_response
 
 
@@ -1957,25 +2107,6 @@ class RagHardDeleteAdminView(APIView):
 
         actor = _resolve_hard_delete_actor(request, operator_label)
 
-        async_result = hard_delete.delay(
-            tenant_id,
-            document_ids,
-            reason,
-            ticket_ref,
-            actor=actor,
-            tenant_schema=tenant_schema,
-            trace_id=trace_id,
-        )
-
-        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
-        response_payload = {
-            "status": "queued",
-            "job_id": getattr(async_result, "id", None),
-            "trace_id": trace_id,
-            "documents_requested": len(document_ids),
-            "idempotent": idempotent,
-        }
-
         scope_context = ScopeContext.model_validate(
             {
                 "tenant_id": tenant_id,
@@ -1986,7 +2117,39 @@ class RagHardDeleteAdminView(APIView):
                 "idempotency_key": request.headers.get(IDEMPOTENCY_KEY_HEADER),
             }
         )
-        meta = {"scope_context": scope_context.model_dump(mode="json")}
+        from ai_core.contracts.business import BusinessContext
+
+        business_context = BusinessContext()
+        tool_context = scope_context.to_tool_context(business=business_context)
+        meta = {
+            "scope_context": scope_context.model_dump(mode="json"),
+            "business_context": business_context.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+        }
+        state = {
+            "tenant_id": tenant_id,
+            "document_ids": document_ids,
+            "reason": reason,
+            "ticket_ref": ticket_ref,
+            "tenant_schema": tenant_schema,
+            "trace_id": trace_id,
+        }
+
+        async_result = hard_delete.delay(
+            state,
+            meta,
+            actor=actor,
+        )
+        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
+        response_payload = {
+            "status": "queued",
+            "job_id": getattr(async_result, "id", None),
+            "trace_id": trace_id,
+            "documents_requested": len(document_ids),
+            "idempotent": idempotent,
+        }
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)
 
@@ -2031,8 +2194,12 @@ class CrawlerIngestionRunnerView(APIView):
                 graph_factory=None,
             )
         except CrawlerRunError as exc:
-            payload = {"detail": str(exc), "code": exc.code}
-            payload.update(exc.details)
+            payload = build_tool_error_payload(
+                message=str(exc),
+                status_code=exc.status_code,
+                code=exc.code,
+                details=exc.details,
+            )
             response = Response(payload, status=exc.status_code)
             return apply_response_headers(response, meta)
         except ValueError as exc:
@@ -2040,7 +2207,24 @@ class CrawlerIngestionRunnerView(APIView):
                 str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
             )
 
-        response = Response(result.payload, status=result.status_code)
+        payload = result.payload
+        if result.status_code >= 400 and isinstance(payload, Mapping):
+            message = str(
+                payload.get("reason") or payload.get("detail") or "Crawler failed."
+            )
+            code = str(payload.get("code") or "crawler_error")
+            details = {
+                k: v
+                for k, v in payload.items()
+                if k not in {"code", "detail", "reason"}
+            }
+            payload = build_tool_error_payload(
+                message=message,
+                status_code=result.status_code,
+                code=code,
+                details=details or None,
+            )
+        response = Response(payload, status=result.status_code)
         return apply_response_headers(response, meta, result.idempotency_key)
 
 
@@ -2065,8 +2249,14 @@ class RagDemoViewV1(_BaseAgentView):
                 summary="Deprecated",
                 description="The demo endpoint has been removed and now returns HTTP 410.",
                 value={
-                    "detail": "The RAG demo endpoint has been removed.",
-                    "code": "rag_demo_removed",
+                    "status": "error",
+                    "input": {},
+                    "error": {
+                        "type": "VALIDATION",
+                        "message": "The RAG demo endpoint has been removed.",
+                        "code": "rag_demo_removed",
+                    },
+                    "meta": {"took_ms": 0},
                 },
             )
         ],

@@ -84,13 +84,6 @@ class TestCollectionSearchGraph:
     """Tests for CollectionSearch using isolated module."""
 
     def _initial_state(self) -> dict[str, Any]:
-        context = {
-            "tenant_id": "tenant-1",
-            "workflow_id": "wf-1",
-            "case_id": "case-1",
-            "trace_id": "trace-1",
-            "run_id": "run-1",
-        }
         return {
             "input": {
                 "question": "How do I configure telemetry?",
@@ -98,8 +91,23 @@ class TestCollectionSearchGraph:
                 "quality_mode": "software_docs_strict",
                 "purpose": "docs-gap-analysis",
             },
-            "context": context,
         }
+
+    def _tool_context_meta(self) -> dict[str, Any]:
+        from ai_core.contracts import BusinessContext, ScopeContext
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(
+            workflow_id="wf-1",
+            case_id="case-1",
+        )
+        tool_context = scope.to_tool_context(business=business)
+        return {"tool_context": tool_context.model_dump(mode="json", exclude_none=True)}
 
     def test_run_returns_search_results(self, cs_module) -> None:
         from ai_core.tools.web_search import (
@@ -213,9 +221,8 @@ class TestCollectionSearchGraph:
         graph = CollectionSearchAdapter(dependencies)
 
         initial_state = self._initial_state()
-        context = initial_state.pop("context", {})
-
-        state, result = graph.run(initial_state, meta=context)
+        meta = self._tool_context_meta()
+        state, result = graph.run(initial_state, meta=meta)
 
         assert result["outcome"] == "completed"
         assert result["search"] is not None
@@ -278,9 +285,8 @@ class TestCollectionSearchGraph:
         CollectionSearchAdapter = cs_module.CollectionSearchAdapter
         graph = CollectionSearchAdapter(dependencies)
         initial_state = self._initial_state()
-        context = initial_state.pop("context", {})
-
-        _, result = graph.run(initial_state, meta=context)
+        meta = self._tool_context_meta()
+        _, result = graph.run(initial_state, meta=meta)
 
         assert result["search"]["errors"]
         assert len(result["search"]["results"]) == 0
@@ -347,8 +353,8 @@ class TestCollectionSearchGraph:
         graph = CollectionSearchAdapter(dependencies)
 
         initial_state = self._initial_state()
-        context = initial_state.pop("context", {})
-        state, result = graph.run(initial_state, meta=context)
+        meta = self._tool_context_meta()
+        state, result = graph.run(initial_state, meta=meta)
 
         assert result["search"]["results"] == []
         assert len(search_worker.calls) == 3
@@ -402,8 +408,8 @@ class TestCollectionSearchGraph:
         graph = CollectionSearchAdapter(dependencies)
 
         initial_state = self._initial_state()
-        context = initial_state.pop("context", {})
-        state, result = graph.run(initial_state, meta=context)
+        meta = self._tool_context_meta()
+        state, result = graph.run(initial_state, meta=meta)
 
         assert result.get("ingestion", {}).get("status") == "planned_only"
 
@@ -490,8 +496,8 @@ class TestCollectionSearchGraph:
         initial_state = self._initial_state()
         initial_state["input"]["execute_plan"] = True
 
-        context = initial_state.pop("context", {})
-        state, result = graph_adapter.run(initial_state, meta=context)
+        meta = self._tool_context_meta()
+        state, result = graph_adapter.run(initial_state, meta=meta)
 
         assert result.get("outcome") == "completed", f"Graph failed: {result}"
         assert result.get("hitl") is not None, "HITL state missing"

@@ -18,7 +18,11 @@ from documents.lifecycle import DocumentLifecycleState
 from documents.models import Document, DocumentCollection, DocumentCollectionMembership
 
 
-pytestmark = pytest.mark.django_db(transaction=True)
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.django_db,
+    pytest.mark.xdist_group("tenant_ops"),
+]
 
 
 class _VectorStoreStub:
@@ -86,7 +90,7 @@ def _preserve_module_tenant_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def _cleanup(*, preserve=None):
         preserved = set(preserve or ())
-        preserved.add("autotest-domain-service")
+        preserved.add("autotest_domain_service")
         return original_cleanup(preserve=preserved)
 
     monkeypatch.setattr(tenant_fixtures, "cleanup_test_tenants", _cleanup)
@@ -100,7 +104,7 @@ def vector_store() -> _VectorStoreStub:
 
 @pytest.fixture
 def tenant(django_db_blocker) -> Tenant:
-    schema_name = f"autotest-domain-service-{uuid.uuid4().hex[:8]}"
+    schema_name = f"autotest_domain_service_{uuid.uuid4().hex[:8]}"
     with django_db_blocker.unblock():
         tenant = create_test_tenant(schema_name=schema_name, migrate=True)
     return tenant

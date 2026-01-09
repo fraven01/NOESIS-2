@@ -196,10 +196,35 @@ def update_case_from_collection_search(
 
     safe_state = _normalise_mapping(graph_state)
     transitions = _coerce_transitions(safe_state.get("transitions"))
-    context = _normalise_mapping(safe_state.get("context"))
-    workflow_id = str(context.get("workflow_id") or "")
-    trace_id = str(context.get("trace_id") or "")
-    collection_scope = str(context.get("collection_scope") or "")
+    tool_context = safe_state.get("tool_context")
+    workflow_id = ""
+    trace_id = ""
+    collection_scope = ""
+    if tool_context is not None:
+        try:
+            from ai_core.tool_contracts import ToolContext
+
+            if isinstance(tool_context, ToolContext):
+                parsed = tool_context
+            elif isinstance(tool_context, Mapping):
+                parsed = ToolContext.model_validate(tool_context)
+            else:
+                parsed = None
+        except Exception:
+            parsed = None
+        if parsed:
+            workflow_id = str(parsed.business.workflow_id or "")
+            trace_id = str(parsed.scope.trace_id or "")
+            collection_scope = str(parsed.business.collection_id or "")
+
+    if not workflow_id or not trace_id or not collection_scope:
+        context = _normalise_mapping(safe_state.get("context"))
+        if not workflow_id:
+            workflow_id = str(context.get("workflow_id") or "")
+        if not trace_id:
+            trace_id = str(context.get("trace_id") or "")
+        if not collection_scope:
+            collection_scope = str(context.get("collection_scope") or "")
     if not collection_scope:
         input_section = _normalise_mapping(safe_state.get("input"))
         collection_scope = str(input_section.get("collection_scope") or "")

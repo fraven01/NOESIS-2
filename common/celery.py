@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import logging
+import os
+import time
+from datetime import datetime
 from collections.abc import Mapping
 from typing import Any, Mapping as TypingMapping
 
 from celery import Task
 from celery.canvas import Signature
+from celery.exceptions import SoftTimeLimitExceeded
+from celery.result import AsyncResult
+from pydantic import ValidationError
 
 from .constants import HEADER_CANDIDATE_MAP
 from .logging import bind_log_context, clear_log_context
@@ -13,11 +20,48 @@ from ai_core.infra.pii_flags import (
     load_tenant_pii_config,
     set_pii_config,
 )
+from ai_core.infra.observability import emit_event, record_span, update_observation
+from ai_core.infra import rate_limit as tenant_rate_limit
 from ai_core.infra.policy import (
     clear_session_scope,
     set_session_scope,
     get_session_scope,
 )
+from ai_core.metrics.task_metrics import record_task_retry
+from ai_core.tool_contracts.base import ToolContext, tool_context_from_meta
+from ai_core.tools.errors import (
+    InputError,
+    PermanentError,
+    RateLimitedError,
+    TransientError,
+    UpstreamError,
+)
+
+try:  # pragma: no cover - defensive import when Django isn't available
+    from django.db import DatabaseError, OperationalError
+except Exception:  # pragma: no cover - optional for tests
+    DatabaseError = None  # type: ignore[assignment]
+    OperationalError = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    from ai_core.rag.embeddings import (
+        EmbeddingClientError,
+        EmbeddingProviderUnavailable,
+        EmbeddingTimeoutError,
+    )
+except Exception:  # pragma: no cover - optional dependency
+    EmbeddingClientError = None  # type: ignore[assignment]
+    EmbeddingProviderUnavailable = None  # type: ignore[assignment]
+    EmbeddingTimeoutError = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    from ai_core.llm.client import LlmUpstreamError, RateLimitError as LlmRateLimitError
+except Exception:  # pragma: no cover - optional dependency
+    LlmUpstreamError = None  # type: ignore[assignment]
+    LlmRateLimitError = None  # type: ignore[assignment]
+
+
+logger = logging.getLogger(__name__)
 
 
 try:
@@ -55,12 +99,13 @@ class ContextTask(Task):
         self._request_override = self._REQUEST_OVERRIDE_SENTINEL
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
-        import sys
-
-        sys.stderr.write(f"DEBUG: ContextTask.__call__ ENTERED for {self.name}\n")
-        sys.stderr.flush()
         clear_log_context()
         context = self._gather_context(args, kwargs)
+        request = getattr(self, "request", None)
+        task_id = getattr(request, "id", None) if request is not None else None
+        if task_id:
+            task_id = self._normalize(task_id)
+            context["task_id"] = task_id
         if context:
             bind_log_context(**context)
 
@@ -68,15 +113,64 @@ class ContextTask(Task):
         if _OTEL_AVAILABLE:
             # Extract W3C trace context from headers and activate it
             request_headers = getattr(self.request, "headers", None) or {}
-            # Ensure headers are a dict
             if not isinstance(request_headers, dict):
                 request_headers = {}
             ctx = TraceContextTextMapPropagator().extract(carrier=request_headers)
             token = otel_context.attach(ctx)
 
+        task_name = getattr(self, "name", None) or type(self).__name__
+        queue = _resolve_task_queue(self, kwargs)
+        queue_time_ms = _resolve_queue_time_ms(request)
+        start_perf = time.perf_counter()
+        retry_count = int(getattr(request, "retries", 0)) if request is not None else 0
+        start_payload: dict[str, Any] = {
+            "task_id": task_id,
+            "task_name": task_name,
+            "queue": queue,
+            "task.queue_time_ms": queue_time_ms,
+            "task.retry_count": retry_count,
+        }
+
+        record_span(
+            f"task.{task_name}.start",
+            attributes={**context, **start_payload},
+        )
+        logger.info("celery.task.start", extra=start_payload)
+
+        exc: BaseException | None = None
         try:
+            pre_execute = getattr(self, "_pre_execute", None)
+            if callable(pre_execute):
+                pre_execute(args, kwargs)
             return super().__call__(*args, **kwargs)
+        except BaseException as caught:
+            exc = caught
+            raise
         finally:
+            duration_ms = (time.perf_counter() - start_perf) * 1000.0
+            retry_count = (
+                int(getattr(request, "retries", 0)) if request is not None else 0
+            )
+            end_payload = {
+                **start_payload,
+                "task.duration_ms": duration_ms,
+                "task.retry_count": retry_count,
+                "task.status": "error" if exc is not None else "ok",
+            }
+            if exc is not None:
+                end_payload["error.type"] = exc.__class__.__name__
+                end_payload["error.message"] = str(exc)
+
+            record_span(
+                f"task.{task_name}.end",
+                attributes={**context, **end_payload},
+            )
+
+            if exc is not None:
+                logger.error("celery.task.failure", extra=end_payload, exc_info=True)
+            else:
+                logger.info("celery.task.end", extra=end_payload)
+
             if _OTEL_AVAILABLE and token is not None:
                 otel_context.detach(token)
             clear_log_context()
@@ -100,6 +194,8 @@ class ContextTask(Task):
 
         if args and not kwargs.get("meta"):
             context.update(self._from_meta(args[0]))
+            if len(args) > 1:
+                context.update(self._from_meta(args[1]))
 
         return {key: value for key, value in context.items() if value}
 
@@ -130,26 +226,22 @@ class ContextTask(Task):
 
         context: dict[str, str] = {}
 
-        scope_context = meta.get("scope_context")
-        if not isinstance(scope_context, Mapping):
+        try:
+            tool_context = tool_context_from_meta(meta)
+        except (TypeError, ValueError):
             return {}
 
-        # BREAKING CHANGE (Option A): Extract business_context for business IDs
-        business_context = meta.get("business_context")
-        if not isinstance(business_context, Mapping):
-            business_context = {}
-
         # Infrastructure IDs from scope_context
-        trace_id = scope_context.get("trace_id")
+        trace_id = tool_context.scope.trace_id
         if trace_id:
             context["trace_id"] = self._normalize(trace_id)
 
-        tenant = scope_context.get("tenant_id")
+        tenant = tool_context.scope.tenant_id
         if tenant:
             context["tenant_id"] = self._normalize(tenant)
 
         # Business IDs from business_context (BREAKING CHANGE)
-        case = business_context.get("case_id")
+        case = tool_context.business.case_id
         if case:
             context["case_id"] = self._normalize(case)
 
@@ -163,36 +255,41 @@ class ContextTask(Task):
         if tool_context is None:
             return {}
 
-        context_data: dict[str, Any] | None = None
+        tenant_id = None
+        case_id = None
+        trace_id = None
+        idempotency_key = None
 
-        if isinstance(tool_context, Mapping):
-            context_data = dict(tool_context)
+        if isinstance(tool_context, ToolContext):
+            scope = tool_context.scope
+            business = tool_context.business
+            tenant_id = scope.tenant_id
+            trace_id = scope.trace_id
+            idempotency_key = scope.idempotency_key
+            case_id = business.case_id
+        elif isinstance(tool_context, Mapping):
+            scope_data = tool_context.get("scope")
+            business_data = tool_context.get("business")
+            if isinstance(scope_data, Mapping):
+                tenant_id = scope_data.get("tenant_id")
+                trace_id = scope_data.get("trace_id")
+                idempotency_key = scope_data.get("idempotency_key")
+            if isinstance(business_data, Mapping):
+                case_id = business_data.get("case_id")
         else:
-            attributes = {}
-            for field in ("tenant_id", "case_id", "trace_id", "idempotency_key"):
-                if hasattr(tool_context, field):
-                    attributes[field] = getattr(tool_context, field)
-            if attributes:
-                context_data = attributes
-
-        if not context_data:
             return {}
 
         context: dict[str, str] = {}
 
-        tenant_id = context_data.get("tenant_id")
         if tenant_id:
-            context["tenant"] = self._normalize(tenant_id)
+            context["tenant_id"] = self._normalize(tenant_id)
 
-        case_id = context_data.get("case_id")
         if case_id:
             context["case_id"] = self._normalize(case_id)
 
-        trace_id = context_data.get("trace_id")
         if trace_id:
             context["trace_id"] = self._normalize(trace_id)
 
-        idempotency_key = context_data.get("idempotency_key")
         if idempotency_key:
             context["idempotency_key"] = self._normalize(idempotency_key)
 
@@ -213,69 +310,67 @@ class ScopedTask(ContextTask):
     helpers. ``session_salt`` acts as the entropy source that keeps masking
     tokens stable for a single trace/case combination, while ``session_scope``
     lets producers override the tuple entirely when they already derived a
-    canonical scope upstream. Both parameters are therefore plumbed through to
-    worker tasks so the masking layer can associate emitted tokens with the
-    right tenant/case context.
+    canonical scope upstream. Scope values are derived from meta/tool_context
+    (or explicit scope kwargs) without being forwarded into task signatures.
     """
 
     abstract = True
 
-    # Tasks must explicitly opt-in to receiving scope kwargs in ``run``.
-    accepts_scope = False
-
-    _SCOPE_FIELDS = ("tenant_id", "case_id", "trace_id", "session_salt")
+    # PII-session scope fields (not ScopeContext fields).
+    _PII_SESSION_FIELDS = ("tenant_id", "case_id", "trace_id", "session_salt")
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
-        import sys
-
-        sys.stderr.write(f"DEBUG: ScopedTask.__call__ ENTERED for {self.name}\n")
-        sys.stderr.flush()
         call_kwargs = dict(kwargs)
         scope_kwargs: dict[str, Any] = {}
-        provided_scope_fields: dict[str, bool] = {}
-        for field in self._SCOPE_FIELDS:
+        for field in self._PII_SESSION_FIELDS:
             if field in call_kwargs:
-                provided_scope_fields[field] = True
                 scope_kwargs[field] = call_kwargs.pop(field)
-            else:
-                provided_scope_fields[field] = False
 
         explicit_scope = call_kwargs.pop("session_scope", None)
 
-        tenant_id = scope_kwargs.get("tenant_id")
-        case_id = scope_kwargs.get("case_id")
-        trace_id = scope_kwargs.get("trace_id")
-        session_salt = scope_kwargs.get("session_salt")
+        context = self._gather_context(args, call_kwargs)
+
+        def _coerce_text(value: Any) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                candidate = value.strip()
+                return candidate or None
+            try:
+                return str(value).strip() or None
+            except Exception:
+                return None
+
+        tenant_id = _coerce_text(scope_kwargs.get("tenant_id")) or _coerce_text(
+            context.get("tenant_id")
+        )
+        case_id = _coerce_text(scope_kwargs.get("case_id")) or _coerce_text(
+            context.get("case_id")
+        )
+        trace_id = _coerce_text(scope_kwargs.get("trace_id")) or _coerce_text(
+            context.get("trace_id")
+        )
+        session_salt = _coerce_text(scope_kwargs.get("session_salt"))
         scope_override: tuple[str, str, str] | None = None
 
         if isinstance(explicit_scope, (list, tuple)) and len(explicit_scope) == 3:
             tenant_scope_val, case_scope_val, salt_scope_val = explicit_scope
             scope_override = (
-                str(tenant_scope_val) if tenant_scope_val is not None else "",
-                str(case_scope_val) if case_scope_val is not None else "",
-                str(salt_scope_val) if salt_scope_val is not None else "",
+                _coerce_text(tenant_scope_val) or "",
+                _coerce_text(case_scope_val) or "",
+                _coerce_text(salt_scope_val) or "",
             )
             if not case_id and case_scope_val:
-                case_id = case_scope_val
+                case_id = scope_override[1] or None
             if not session_salt and salt_scope_val:
-                session_salt = salt_scope_val
+                session_salt = scope_override[2] or None
 
         if not session_salt:
-            salt_parts = [
-                str(value) for value in (trace_id, case_id, tenant_id) if value
-            ]
-            session_salt = "||".join(salt_parts) if salt_parts else None
-
-        if session_salt:
-            scope_kwargs["session_salt"] = session_salt
-
-        for field, value in (
-            ("tenant_id", tenant_id),
-            ("case_id", case_id),
-            ("trace_id", trace_id),
-        ):
-            if value is not None:
-                scope_kwargs.setdefault(field, value)
+            session_salt = _derive_session_salt_from_ids(
+                trace_id=trace_id,
+                case_id=case_id,
+                tenant_id=tenant_id,
+            )
 
         tenant_config = load_tenant_pii_config(tenant_id) if tenant_id else None
 
@@ -314,20 +409,6 @@ class ScopedTask(ContextTask):
                 scoped_config = tenant_config
             set_pii_config(scoped_config)
 
-        # Forward scope keyword arguments only to tasks that explicitly opted in
-        # via ``accepts_scope``. This keeps the masking/logging context intact
-        # while avoiding unexpected keyword arguments for tasks that do not
-        # handle scope-aware parameters.
-        accepts_scope = bool(getattr(self, "accepts_scope", False))
-        if accepts_scope:
-            for field in self._SCOPE_FIELDS:
-                value = scope_kwargs.get(field)
-                if value is not None:
-                    call_kwargs.setdefault(field, value)
-
-            if explicit_scope is not None:
-                call_kwargs.setdefault("session_scope", explicit_scope)
-
         try:
             return super().__call__(*args, **call_kwargs)
         finally:
@@ -335,15 +416,355 @@ class ScopedTask(ContextTask):
             clear_session_scope()
 
 
-_SCOPE_KWARG_KEYS = ("tenant_id", "case_id", "trace_id", "session_salt")
+def _filter_retry_classes(*classes: Any) -> tuple[type[BaseException], ...]:
+    return tuple(candidate for candidate in classes if isinstance(candidate, type))
 
 
-def _derive_session_salt(scope: TypingMapping[str, Any]) -> str | None:
-    session_salt = scope.get("session_salt")
-    if session_salt:
-        return str(session_salt)
+_RETRYABLE_EXCEPTIONS = _filter_retry_classes(
+    TransientError,
+    RateLimitedError,
+    UpstreamError,
+    EmbeddingTimeoutError,
+    EmbeddingClientError,
+    LlmUpstreamError,
+    LlmRateLimitError,
+    TimeoutError,
+    SoftTimeLimitExceeded,
+    ConnectionError,
+    OperationalError,
+    DatabaseError,
+)
 
-    salt_parts = [scope.get("trace_id"), scope.get("case_id"), scope.get("tenant_id")]
+_NON_RETRYABLE_EXCEPTIONS = _filter_retry_classes(
+    InputError,
+    PermanentError,
+    ValidationError,
+    EmbeddingProviderUnavailable,
+)
+
+
+def _is_instance(
+    exc: BaseException, candidates: tuple[type[BaseException], ...]
+) -> bool:
+    for candidate in candidates:
+        if isinstance(exc, candidate):
+            return True
+    return False
+
+
+def _retry_reason_category(exc: BaseException) -> str:
+    if _is_instance(exc, _filter_retry_classes(RateLimitedError, LlmRateLimitError)):
+        return "rate_limit"
+    if _is_instance(
+        exc,
+        _filter_retry_classes(
+            EmbeddingTimeoutError,
+            TimeoutError,
+            SoftTimeLimitExceeded,
+        ),
+    ):
+        return "timeout"
+    if _is_instance(exc, _filter_retry_classes(OperationalError, DatabaseError)):
+        return "db_error"
+    if _is_instance(
+        exc,
+        _filter_retry_classes(UpstreamError, EmbeddingClientError, LlmUpstreamError),
+    ):
+        return "api_error"
+    if _is_instance(exc, _filter_retry_classes(ConnectionError)):
+        return "network"
+    if _is_instance(exc, _filter_retry_classes(TransientError)):
+        return "transient"
+    return "unknown"
+
+
+def _resolve_agent_id(task: Task, kwargs: dict[str, Any]) -> str:
+    graph_name = kwargs.get("graph_name")
+    if graph_name:
+        return str(graph_name)
+    task_name = getattr(task, "name", None)
+    return str(task_name) if task_name else "unknown"
+
+
+def _resolve_priority(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip().lower()
+    except Exception:
+        return None
+    return text or None
+
+
+def _resolve_priority_from_kwargs(kwargs: dict[str, Any]) -> str | None:
+    for key in ("priority", "task_priority"):
+        value = _resolve_priority(kwargs.get(key))
+        if value:
+            return value
+    meta = kwargs.get("meta")
+    if isinstance(meta, Mapping):
+        for key in ("priority", "task_priority"):
+            value = _resolve_priority(meta.get(key))
+            if value:
+                return value
+    return None
+
+
+def _coerce_timestamp(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if candidate <= 0:
+        return None
+    if candidate > 1e12:
+        candidate /= 1000.0
+    return candidate
+
+
+def _resolve_queue_time_ms(request: Any) -> float | None:
+    if request is None:
+        return None
+
+    sent_at: float | None = None
+    headers = getattr(request, "headers", None)
+    if isinstance(headers, Mapping):
+        for key in ("sent_at", "sentat", "sent-at", "timestamp"):
+            sent_at = _coerce_timestamp(headers.get(key))
+            if sent_at is not None:
+                break
+
+    if sent_at is None:
+        sent_at = _coerce_timestamp(getattr(request, "sent_at", None))
+
+    if sent_at is None:
+        return None
+
+    start_time = _coerce_timestamp(getattr(request, "time_start", None))
+    if start_time is None:
+        start_time = time.time()
+
+    queue_time = (start_time - sent_at) * 1000.0
+    if queue_time < 0:
+        return 0.0
+    return queue_time
+
+
+def _resolve_task_queue(task: Task, kwargs: dict[str, Any]) -> str | None:
+    delivery_info = getattr(task.request, "delivery_info", None)
+    if isinstance(delivery_info, Mapping):
+        queue = (
+            delivery_info.get("routing_key")
+            or delivery_info.get("queue")
+            or delivery_info.get("exchange")
+        )
+        if queue:
+            return str(queue)
+
+    task_name = getattr(task, "name", None) or ""
+    return _select_queue_for_task(task_name, _resolve_priority_from_kwargs(kwargs))
+
+
+def _resolve_rate_limit_scope(queue: str | None) -> str | None:
+    if not queue:
+        return None
+    if queue == "ingestion-bulk":
+        return None
+    if queue.startswith("agents-"):
+        return "agents"
+    if queue == "ingestion":
+        return "ingestion"
+    return None
+
+
+def _select_queue_for_task(task_name: str, priority: str | None) -> str | None:
+    if task_name == "llm_worker.tasks.run_graph":
+        if priority in {"low", "background", "bulk"}:
+            return "agents-low"
+        return "agents-high"
+    if task_name.startswith("ai_core.tasks.") or task_name.startswith(
+        "ai_core.ingestion."
+    ):
+        if priority in {"low", "background", "bulk"}:
+            return "ingestion-bulk"
+        return "ingestion"
+    return None
+
+
+def route_task(  # noqa: D401
+    name: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    options: dict[str, Any],
+    task: Any = None,
+    **_other: Any,
+) -> dict[str, Any] | None:
+    """Route tasks to queues based on declared priority."""
+
+    if options.get("queue"):
+        return None
+
+    queue = _select_queue_for_task(name, _resolve_priority_from_kwargs(kwargs))
+    if not queue:
+        return None
+
+    return {"queue": queue, "routing_key": queue}
+
+
+class RetryableTask(ScopedTask):
+    """ScopedTask with centralized retry handling and observability hooks."""
+
+    abstract = True
+    autoretry_for = _RETRYABLE_EXCEPTIONS
+    dont_autoretry_for = _NON_RETRYABLE_EXCEPTIONS
+    max_retries = 3
+    retry_backoff = True
+    retry_backoff_max = 300
+    retry_jitter = True
+
+    def _pre_execute(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        if not _rate_limit_enabled():
+            return
+        context = self._gather_context(args, kwargs)
+        tenant_id = context.get("tenant_id") or context.get("tenant")
+        if not tenant_id:
+            return
+        queue = _resolve_task_queue(self, kwargs)
+        scope = _resolve_rate_limit_scope(queue)
+        if not scope:
+            return
+        if tenant_rate_limit.check_scoped(str(tenant_id), scope):
+            return
+        retry_after_ms = _compute_retry_after_ms()
+        raise RateLimitedError(
+            code="rate_limit",
+            message="Tenant rate limit exceeded",
+            context={
+                "tenant_id": str(tenant_id),
+                "rate_limit_scope": scope,
+                "queue": queue,
+            },
+            retry_after_ms=retry_after_ms,
+        )
+
+    def on_retry(  # noqa: D401
+        self,
+        exc: BaseException,
+        task_id: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        einfo: Any,
+    ) -> None:
+        reason_category = _retry_reason_category(exc)
+        retry_count = int(getattr(self.request, "retries", 0))
+        attempt = retry_count + 1
+        task_name = getattr(self, "name", None)
+        agent_id = _resolve_agent_id(self, kwargs)
+        context = self._gather_context(args, kwargs)
+        if "tenant" in context and "tenant_id" not in context:
+            context["tenant_id"] = context["tenant"]
+
+        payload: dict[str, Any] = {
+            "task_id": task_id,
+            "task_name": task_name,
+            "agent_id": agent_id,
+            "retry_count": retry_count,
+            "attempt": attempt,
+            "max_retries": getattr(self, "max_retries", None),
+            "reason_category": reason_category,
+            "exc_type": exc.__class__.__name__,
+            "exc_message": str(exc),
+            "task.retry_count": retry_count,
+            **context,
+        }
+
+        delivery_info = getattr(self.request, "delivery_info", None)
+        if isinstance(delivery_info, Mapping):
+            payload["queue"] = delivery_info.get("routing_key") or delivery_info.get(
+                "exchange"
+            )
+
+        retry_after_ms = getattr(exc, "retry_after_ms", None)
+        if retry_after_ms is not None:
+            payload["retry_after_ms"] = retry_after_ms
+
+        upstream_status = getattr(exc, "upstream_status", None)
+        if upstream_status is not None:
+            payload["upstream_status"] = upstream_status
+
+        if einfo is not None:
+            traceback = getattr(einfo, "traceback", None)
+            if traceback:
+                payload["traceback"] = str(traceback)
+
+        try:
+            record_task_retry(agent_id=agent_id, reason_category=reason_category)
+        except Exception:
+            logger.debug("task.retry.metrics_failed", exc_info=True)
+
+        try:
+            update_observation(
+                tags=["task", "retry"],
+                metadata={
+                    "task.retry.count": retry_count,
+                    "task.retry.attempt": attempt,
+                    "task.retry.reason": reason_category,
+                    "task.retry.exception": exc.__class__.__name__,
+                    "task.name": getattr(self, "name", None),
+                },
+            )
+        except Exception:
+            logger.debug("task.retry.span_failed", exc_info=True)
+
+        try:
+            record_span(
+                f"task.{task_name or agent_id}.retry.{attempt}",
+                attributes=payload,
+            )
+        except Exception:
+            logger.debug("task.retry.record_span_failed", exc_info=True)
+
+        try:
+            emit_event("task.retry", payload)
+        except Exception:
+            logger.debug("task.retry.event_failed", exc_info=True)
+
+        logger.warning("celery.task.retry", extra=payload)
+        return super().on_retry(exc, task_id, args, kwargs, einfo)
+
+
+def _rate_limit_enabled() -> bool:
+    env_value = os.getenv("CELERY_TENANT_RATE_LIMIT_ENABLED")
+    if env_value is not None:
+        lowered = env_value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    try:  # pragma: no cover - optional settings
+        from django.conf import settings
+
+        return bool(getattr(settings, "CELERY_TENANT_RATE_LIMIT_ENABLED", False))
+    except Exception:
+        return False
+
+
+def _compute_retry_after_ms(now: float | None = None) -> int:
+    timestamp = now if now is not None else time.time()
+    window_start = int(timestamp) - (int(timestamp) % 60)
+    ttl = 60 - (timestamp - window_start)
+    return max(0, int(ttl * 1000))
+
+
+def _derive_session_salt_from_ids(
+    *,
+    trace_id: str | None,
+    case_id: str | None,
+    tenant_id: str | None,
+) -> str | None:
+    salt_parts = [trace_id, case_id, tenant_id]
     filtered = [str(part) for part in salt_parts if part]
     if filtered:
         return "||".join(filtered)
@@ -385,42 +806,64 @@ def _clone_with_scope(
 def with_scope_apply_async(
     signature: Signature,
     scope: TypingMapping[str, Any],
-    *args: Any,
-    **kwargs: Any,
-):
-    """Clone a Celery signature and schedule it with the given scope.
+    *,
+    task_id: str | None = None,
+    countdown: float | None = None,
+    eta: datetime | None = None,
+    expires: datetime | float | None = None,
+    retry: bool | None = None,
+    retry_policy: dict[str, Any] | None = None,
+    queue: str | None = None,
+    priority: int | None = None,
+) -> AsyncResult:
+    """Clone a Celery signature and schedule it (trace headers injected).
 
     Example
     -------
     >>> from celery import chain
-    >>> scoped = with_scope_apply_async(
-    ...     chain(task_a.s(), task_b.s()),
-    ...     {"tenant_id": "t-1", "case_id": "c-1", "trace_id": "tr-1"},
-    ... )
+    >>> meta = {
+    ...     "scope_context": {
+    ...         "tenant_id": "t-1",
+    ...         "trace_id": "tr-1",
+    ...         "invocation_id": "inv-1",
+    ...         "run_id": "run-1",
+    ...     },
+    ...     "business_context": {"case_id": "c-1"},
+    ... }
+    >>> signature = chain(task_a.s(state={}, meta=meta), task_b.s(state={}, meta=meta))
+    >>> scoped = with_scope_apply_async(signature, {})  # trace headers only
 
-    All tasks in the chain receive ``tenant_id``, ``case_id`` and
-    ``session_salt`` keyword arguments so they can establish the masking scope.
+    Scope context must be supplied via meta/tool_context; this helper only
+    injects trace headers for observability.
     """
 
     if not isinstance(signature, Signature):
         raise TypeError("signature must be a celery Signature instance")
 
-    scope_kwargs: dict[str, Any] = {}
-    for key in _SCOPE_KWARG_KEYS:
-        value = scope.get(key)
-        if value:
-            scope_kwargs[key] = value
-
-    derived_salt = _derive_session_salt(scope)
-    if derived_salt:
-        scope_kwargs.setdefault("session_salt", derived_salt)
-
     otel_headers: dict[str, str] = {}
     if _OTEL_AVAILABLE:
         TraceContextTextMapPropagator().inject(otel_headers)
 
-    if not scope_kwargs and not otel_headers:
-        return signature.apply_async(*args, **kwargs)
+    apply_kwargs: dict[str, Any] = {}
+    if task_id is not None:
+        apply_kwargs["task_id"] = task_id
+    if countdown is not None:
+        apply_kwargs["countdown"] = countdown
+    if eta is not None:
+        apply_kwargs["eta"] = eta
+    if expires is not None:
+        apply_kwargs["expires"] = expires
+    if retry is not None:
+        apply_kwargs["retry"] = retry
+    if retry_policy is not None:
+        apply_kwargs["retry_policy"] = retry_policy
+    if queue is not None:
+        apply_kwargs["queue"] = queue
+    if priority is not None:
+        apply_kwargs["priority"] = priority
 
-    scoped_signature = _clone_with_scope(signature, scope_kwargs, otel_headers)
-    return scoped_signature.apply_async(*args, **kwargs)
+    if not otel_headers:
+        return signature.apply_async(**apply_kwargs)
+
+    scoped_signature = _clone_with_scope(signature, {}, otel_headers)
+    return scoped_signature.apply_async(**apply_kwargs)

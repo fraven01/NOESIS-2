@@ -3,18 +3,23 @@
 from dataclasses import dataclass, field
 from typing import Callable, Set
 
-from django.core.management import call_command
 from django_tenants.utils import get_public_schema_name, schema_context
 
-from customers.models import Domain, Tenant
+from customers.models import Tenant
+from testsupport.tenant_fixtures import (
+    _advisory_lock,
+    bootstrap_tenant_schema,
+    ensure_tenant_domain,
+)
 
 
-def ensure_tenant(schema_name: str, **fields) -> Tenant:
-    """Return an existing tenant or create one with a fully migrated schema."""
+def ensure_tenant(schema_name: str, *, migrate: bool = True, **fields) -> Tenant:
+    """Return an existing tenant or create one with an optionally migrated schema."""
 
     if not schema_name:
         raise ValueError("schema_name is required")
 
+    domain = fields.pop("domain", "testserver")
     payload = {
         "schema_name": schema_name,
         "name": fields.pop("name", f"Tenant {schema_name}"),
@@ -22,36 +27,24 @@ def ensure_tenant(schema_name: str, **fields) -> Tenant:
     payload.update(fields)
     public_schema = get_public_schema_name()
     with schema_context(public_schema):
-        tenant, created = Tenant.objects.get_or_create(
-            schema_name=schema_name,
-            defaults=payload,
-        )
-        if not created:
-            updates = {
-                key: value
-                for key, value in payload.items()
-                if getattr(tenant, key) != value
-            }
-            if updates:
-                for key, value in updates.items():
-                    setattr(tenant, key, value)
-                tenant.save(update_fields=list(updates.keys()))
-        tenant.create_schema(check_if_exists=True)
-        call_command(
-            "migrate_schemas",
-            tenant=True,
-            schema_name=tenant.schema_name,
-            interactive=False,
-            verbosity=0,
-        )
-        domain_obj, _created = Domain.objects.get_or_create(
-            domain="testserver",
-            defaults={"tenant": tenant, "is_primary": True},
-        )
-        if domain_obj.tenant_id != tenant.id:
-            domain_obj.tenant = tenant
-            domain_obj.is_primary = True
-            domain_obj.save(update_fields=["tenant", "is_primary"])
+        with _advisory_lock(f"tenant:{schema_name}"):
+            tenant, created = Tenant.objects.get_or_create(
+                schema_name=schema_name,
+                defaults=payload,
+            )
+            if not created:
+                updates = {
+                    key: value
+                    for key, value in payload.items()
+                    if getattr(tenant, key) != value
+                }
+                if updates:
+                    for key, value in updates.items():
+                        setattr(tenant, key, value)
+                    tenant.save(update_fields=list(updates.keys()))
+    bootstrap_tenant_schema(tenant, migrate=migrate)
+    if domain:
+        ensure_tenant_domain(tenant, domain=domain)
     return tenant
 
 

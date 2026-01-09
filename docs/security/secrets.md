@@ -22,7 +22,7 @@ Sichere Geheimnisse verhindern Datenverlust und Ausfälle. Dieses Dokument defin
 | `LANGFUSE_PUBLIC_KEY` | Browser-Key für LiteLLM GUI Trace | Nicht gesetzt | CI-Secret | Secret Manager Version |
 | `LANGFUSE_SECRET_KEY` | Privater Key für LiteLLM Trace Upload | Nicht gesetzt | CI-Secret | Secret Manager Version |
 
-Weitere Schlüssel wie `GEMINI_API_KEY`, `LITELLM_MASTER_KEY`, `AI_CORE_RATE_LIMIT_QUOTA` folgen denselben Quellen und werden nicht im Image gespeichert.
+Weitere Schlüssel wie `GEMINI_API_KEY`, `LITELLM_MASTER_KEY`, `AI_CORE_RATE_LIMIT_QUOTA`, `AI_CORE_RATE_LIMIT_AGENTS_QUOTA`, `AI_CORE_RATE_LIMIT_INGESTION_QUOTA` folgen denselben Quellen und werden nicht im Image gespeichert.
 
 ## PII-Redaction und Log-Scopes
 - Web- und Worker-Services setzen `LOG_SCOPE=tenant` und entfernen personenbezogene Daten vor Log-Schreibungen. Maskierung erfolgt über die Middleware aus `ai_core.pii`.

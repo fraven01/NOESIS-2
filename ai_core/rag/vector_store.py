@@ -573,11 +573,9 @@ def _emit_retrieval_span(
             update_observation(tags=["rag", "retrieval"], metadata=metadata)
 
         _emit_obs()
-        record_span(
-            "rag.hybrid.search",
-            trace_id=trace_id,
-            attributes=metadata,
-        )
+        if trace_id:
+            metadata["trace_id"] = trace_id
+        record_span("rag.hybrid.search", attributes=metadata)
     except Exception:
         pass
 

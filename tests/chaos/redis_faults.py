@@ -21,16 +21,14 @@ from common import logging as common_logging
 from common.celery import with_scope_apply_async
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
-    META_CASE_ID_KEY,
-    META_IDEMPOTENCY_KEY,
-    META_TENANT_ID_KEY,
-    META_TENANT_SCHEMA_KEY,
     X_CASE_ID_HEADER,
     X_TENANT_ID_HEADER,
+    X_TENANT_SCHEMA_HEADER,
+    X_TRACE_ID_HEADER,
 )
+from tests.chaos.conftest import _build_chaos_meta
 
 pytestmark = pytest.mark.chaos
-pytest_plugins = ["tests.chaos.fixtures"]
 
 
 def _redis_down() -> bool:
@@ -119,10 +117,11 @@ def test_ping_graceful_degradation(
 
     tenant = test_tenant_schema_name
     headers = {
-        META_TENANT_SCHEMA_KEY: tenant,
-        META_TENANT_ID_KEY: tenant,
-        META_CASE_ID_KEY: "chaos-ping",  # request headers use canonical API keys
-        META_IDEMPOTENCY_KEY: "chaos-ping-001",
+        X_TENANT_SCHEMA_HEADER: tenant,
+        X_TENANT_ID_HEADER: tenant,
+        X_CASE_ID_HEADER: "chaos-ping",
+        X_TRACE_ID_HEADER: "trace-chaos-ping",
+        IDEMPOTENCY_KEY_HEADER: "chaos-ping-001",
     }
 
     with caplog.at_level("WARNING", logger="ai_core.infra.rate_limit"):
@@ -136,20 +135,41 @@ def test_ping_graceful_degradation(
     assert any("fail-open" in record.message for record in caplog.records)
 
 
-def _produce_agents_task(scope: dict[str, str]) -> bool:
-    """Attempt to enqueue an agents task and record failures for observability."""
+def _produce_agents_task(meta: dict[str, object]) -> bool:
+    """Attempt to enqueue an agents task with new meta structure.
+
+    Args:
+        meta: Meta dict with scope_context and business_context (new compositional structure)
+
+    Returns:
+        True if task was successfully enqueued, False on Redis/broker failure
+    """
 
     logger = common_logging.get_logger("tests.chaos.agents")
 
+    # Extract IDs from new compositional structure
+    scope_context = meta.get("scope_context", {})
+    business_context = meta.get("business_context", {})
+    if isinstance(scope_context, dict):
+        tenant_id = scope_context.get("tenant_id")
+        trace_id = scope_context.get("trace_id")
+    else:
+        tenant_id = None
+        trace_id = None
+    if isinstance(business_context, dict):
+        case_id = business_context.get("case_id")
+    else:
+        case_id = None
+
     try:
         pipeline = chain(signature("ai_core.tasks.ingest_raw"))
-        with_scope_apply_async(pipeline, scope)
+        with_scope_apply_async(pipeline, meta)
         observability.emit_event(  # pragma: no cover - defensive success path
             {
                 "event": "agents.queue.scheduled",
-                "tenant": scope.get("tenant_id"),
-                "case_id": scope.get("case_id"),
-                "trace_id": scope.get("trace_id"),
+                "tenant": tenant_id,
+                "case_id": case_id,
+                "trace_id": trace_id,
             }
         )
         return True
@@ -157,17 +177,17 @@ def _produce_agents_task(scope: dict[str, str]) -> bool:
         observability.emit_event(
             {
                 "event": "agents.queue.backoff",
-                "tenant": scope.get("tenant_id"),
-                "case_id": scope.get("case_id"),
-                "trace_id": scope.get("trace_id"),
+                "tenant": tenant_id,
+                "case_id": case_id,
+                "trace_id": trace_id,
                 "error": str(exc),
             }
         )
         logger.warning(
             "agents.queue.backoff",
             error=str(exc),
-            tenant=scope.get("tenant_id"),
-            case=scope.get("case_id"),
+            tenant=tenant_id,
+            case=case_id,
         )
         return False
 
@@ -194,14 +214,15 @@ def test_task_producer_backoff_logs_metrics(
 
     monkeypatch.setattr(observability, "emit_event", _record)
 
-    scope = {
-        "tenant_id": test_tenant_schema_name,
-        "case_id": "chaos-case",
-        "trace_id": "chaos-trace",
-    }
+    meta = _build_chaos_meta(
+        tenant_id=test_tenant_schema_name,
+        trace_id="chaos-trace",
+        case_id="chaos-case",
+        run_id="run-chaos-backoff",
+    )
 
     with capture_logs() as logs:
-        success = _produce_agents_task(scope)
+        success = _produce_agents_task(meta)
 
     assert success is False
     assert any(
@@ -226,13 +247,14 @@ def test_agent_error_records_langfuse_tags(
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "secret-key")
     monkeypatch.setenv("LITELLM_API_KEY", "token")
 
-    scope = {
-        "tenant_id": test_tenant_schema_name,
-        "case_id": "chaos-agent-error",
-        "trace_id": "chaos-agent-trace",
-    }
+    meta = _build_chaos_meta(
+        tenant_id=test_tenant_schema_name,
+        trace_id="chaos-agent-trace",
+        case_id="chaos-agent-error",
+        run_id="run-chaos-agent-error",
+    )
 
-    success = _produce_agents_task(scope)
+    success = _produce_agents_task(meta)
 
     assert success is False
     assert langfuse_mock.sample_rate == "1.0"
@@ -245,5 +267,6 @@ def test_agent_error_records_langfuse_tags(
         span.metadata.get("error_type") == "redis.down" for span in agent_spans
     ), "Expected Langfuse span metadata to tag error_type=redis.down"
     assert any(
-        span.metadata.get("tenant_id") == scope["tenant_id"] for span in agent_spans
+        span.metadata.get("tenant_id") == test_tenant_schema_name
+        for span in agent_spans
     ), "Expected Langfuse span metadata to include tenant_id"

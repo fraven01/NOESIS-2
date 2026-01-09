@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import Any, Callable
 from common.object_store import ObjectStore, set_default_object_store_factory
 
 BASE_PATH = Path(".ai_core_store")
+
+LOGGER = logging.getLogger(__name__)
 
 
 __all__ = [
@@ -51,7 +54,7 @@ class FilesystemObjectStore(ObjectStore):
 
         sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", value)[:128]
         if not sanitized:
-            print(f"DEBUG: unsafe_identifier value={value!r}")
+            LOGGER.warning("object_store.unsafe_identifier", extra={"value": value})
             raise ValueError("unsafe_identifier")
         return sanitized
 

@@ -102,4 +102,4 @@ def test_rag_ingestion_status_returns_404_when_empty(
 
     assert response.status_code == 404
     payload = response.json()
-    assert payload["code"] == "ingestion_status_not_found"
+    assert payload["error"]["code"] == "ingestion_status_not_found"

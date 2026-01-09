@@ -128,9 +128,9 @@ def _emit_profile_resolution(
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
+        metadata["trace_id"] = str(trace_id)
         record_span(
             "rag.profile.resolve",
-            trace_id=str(trace_id),
             attributes=metadata,
         )
 

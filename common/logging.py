@@ -48,6 +48,7 @@ _CONTEXT_FIELDS: tuple[str, ...] = (
     "span_id",
     "case_id",
     "tenant_id",
+    "task_id",
     "key_alias",
     "collection_id",
     "workflow_id",
@@ -321,7 +322,7 @@ def _ensure_trace_keys(
                 continue
             event_dict[field] = mask_value(raw_value) if mask else str(raw_value)
 
-    for key in ("trace_id", "span_id", "case_id", "tenant_id"):
+    for key in ("trace_id", "span_id", "case_id", "tenant_id", "task_id"):
         event_dict.setdefault(key, None)
 
     return event_dict
@@ -436,6 +437,15 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
 
         for key, raw_value in list(event_dict.items()):
             if not isinstance(raw_value, str):
+                continue
+
+            # Exempt known system identifiers from heuristic redaction
+            if key in _CONTEXT_FIELDS or key in {
+                "sha256_prefix",
+                "checksum_prefix",
+                "logging.googleapis.com/spanId",
+                "logging.googleapis.com/trace",
+            }:
                 continue
 
             # Always try structured masking for JSON-like strings to ensure keys such as
@@ -905,6 +915,22 @@ def configure_django_logging(logging_settings: dict[str, object] | None) -> None
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     """Return a structlog logger bound to service context."""
 
+    if _CONFIGURED:
+        stream = _CONFIGURED_STREAM
+        if stream is not None and getattr(stream, "closed", False):
+            configure_logging()
+        else:
+            root_logger = logging.getLogger()
+            for handler in root_logger.handlers:
+                if not isinstance(handler, logging.StreamHandler):
+                    continue
+                handler_stream = getattr(handler, "stream", None)
+                if handler_stream is not None and getattr(
+                    handler_stream, "closed", False
+                ):
+                    configure_logging()
+                    break
+
     logger = structlog.get_logger(name) if name else structlog.get_logger()
 
     if isinstance(logger, structlog._config.BoundLoggerLazyProxy):  # type: ignore[attr-defined]
@@ -928,6 +954,7 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
         "span_id": None,
         "case_id": None,
         "tenant_id": None,
+        "task_id": None,
         "workflow_id": None,
         "run_id": None,
         "ingestion_run_id": None,

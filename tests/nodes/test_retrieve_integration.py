@@ -6,18 +6,31 @@ from ai_core.contracts.business import BusinessContext
 from ai_core.contracts.scope import ScopeContext
 from ai_core.nodes import retrieve
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.embedding_config import EmbeddingProfileConfig, VectorSpaceConfig
 from ai_core.rag.vector_store import VectorStoreRouter
 from ai_core.tool_contracts import ContextError, ToolContext
 
 
-class _DummyProfile:
-    def __init__(self, vector_space: str) -> None:
-        self.vector_space = vector_space
-
-
 class _DummyConfig:
-    def __init__(self, profile: str, vector_space: str) -> None:
-        self.embedding_profiles = {profile: _DummyProfile(vector_space)}
+    def __init__(self, profile: str, model_version: str) -> None:
+        self.vector_spaces = {
+            "global": VectorSpaceConfig(
+                id="global",
+                backend="pgvector",
+                schema="rag",
+                dimension=1536,
+            )
+        }
+        self.embedding_profiles = {
+            profile: EmbeddingProfileConfig(
+                id=profile,
+                model="dummy-model",
+                model_version=model_version,
+                dimension=1536,
+                vector_space="global",
+                chunk_hard_limit=512,
+            )
+        }
 
 
 class _HybridSearchResult:
@@ -201,14 +214,14 @@ def _tool_context(
     )
 
 
-def _patch_routing(monkeypatch, profile: str = "standard", space: str = "rag/global"):
+def _patch_routing(monkeypatch, profile: str = "standard", model_version: str = "v1"):
     monkeypatch.setattr(
         "ai_core.nodes.retrieve.resolve_embedding_profile",
         lambda *, tenant_id, process=None, doc_class=None, collection_id=None, workflow_id=None: profile,
     )
     monkeypatch.setattr(
-        "ai_core.nodes.retrieve.get_embedding_configuration",
-        lambda: _DummyConfig(profile, space),
+        "ai_core.rag.vector_space_resolver.get_embedding_configuration",
+        lambda: _DummyConfig(profile, model_version),
     )
 
 
@@ -220,8 +233,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     case = "case-7"
     vector_chunks = [
         Chunk(
-            "Vector Match A",
-            {
+            content="Vector Match A",
+            meta={
                 "id": "doc-1",
                 "score": 0.9,
                 "source": "vector",
@@ -230,8 +243,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
             },
         ),
         Chunk(
-            "Vector Match B",
-            {
+            content="Vector Match B",
+            meta={
                 "id": "doc-2",
                 "score": 0.4,
                 "source": "vector",
@@ -242,8 +255,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     ]
     lexical_chunks = [
         Chunk(
-            "Lexical Match A",
-            {
+            content="Lexical Match A",
+            meta={
                 "id": "doc-1",
                 "score": 0.7,
                 "source": "lexical",
@@ -252,8 +265,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
             },
         ),
         Chunk(
-            "Lexical Match B",
-            {
+            content="Lexical Match B",
+            meta={
                 "id": "doc-3",
                 "score": 0.8,
                 "source": "lexical",
@@ -343,7 +356,7 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert meta_payload.alpha == pytest.approx(0.55)
     assert meta_payload.min_sim == pytest.approx(0.35)
     assert meta_payload.routing.profile == "standard"
-    assert meta_payload.routing.vector_space_id == "rag/global"
+    assert meta_payload.routing.vector_space_id == "rag/standard@v1"
     assert meta_payload.visibility_effective == "active"
 
 
@@ -354,8 +367,8 @@ def test_retrieve_includes_parent_context(monkeypatch):
     case = "case-parent"
     doc_uuid = "11111111-1111-1111-1111-111111111111"
     chunk = Chunk(
-        "Parented chunk",
-        {
+        content="Parented chunk",
+        meta={
             "id": "doc-parent",
             "document_id": doc_uuid,
             "score": 0.9,
@@ -408,8 +421,8 @@ def _run_visibility_scenario(
     tenant = "tenant-visibility"
     case = "case-vis"
     active_chunk = Chunk(
-        "Active",
-        {
+        content="Active",
+        meta={
             "id": "doc-active",
             "score": 0.91,
             "source": "vector",
@@ -418,8 +431,8 @@ def _run_visibility_scenario(
         },
     )
     deleted_chunk = Chunk(
-        "Deleted",
-        {
+        content="Deleted",
+        meta={
             "id": "doc-deleted",
             "score": 0.42,
             "source": "vector",
@@ -532,8 +545,8 @@ def test_retrieve_scoped_router_without_schema(monkeypatch, caplog):
     response = _HybridSearchResult(
         [
             Chunk(
-                "Scoped",
-                {
+                content="Scoped",
+                meta={
                     "id": "doc-1",
                     "score": 0.8,
                     "source": "vector",
@@ -565,8 +578,8 @@ def test_retrieve_warns_without_for_tenant(monkeypatch, caplog):
     response = _HybridSearchResult(
         [
             Chunk(
-                "Unscoped",
-                {
+                content="Unscoped",
+                meta={
                     "id": "doc-2",
                     "score": 0.7,
                     "source": "vector",
@@ -597,8 +610,8 @@ def test_retrieve_raises_on_incompatible_for_tenant(monkeypatch):
     response = _HybridSearchResult(
         [
             Chunk(
-                "Fallback",
-                {
+                content="Fallback",
+                meta={
                     "id": "doc-3",
                     "score": 0.6,
                     "source": "vector",

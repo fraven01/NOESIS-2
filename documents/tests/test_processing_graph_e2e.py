@@ -34,7 +34,6 @@ from documents.processing_graph import (
 from documents.parsers import ParserDispatcher, ParserRegistry
 from documents.parsers_markdown import MarkdownDocumentParser
 from documents.parsers_text import TextDocumentParser
-from documents.cli import SimpleDocumentChunker
 
 
 @pytest.mark.django_db
@@ -73,7 +72,13 @@ class TestDocumentProcessingGraphE2E:
     @pytest.fixture
     def chunker(self):
         """Create real chunker."""
-        return SimpleDocumentChunker()
+        from ai_core.rag.chunking import HybridChunker, ChunkerConfig, ChunkerMode
+
+        config = ChunkerConfig(
+            mode=ChunkerMode.LATE,
+            enable_quality_metrics=False,  # Disable for E2E test performance
+        )
+        return HybridChunker(config)
 
     def test_e2e_full_pipeline_with_db_persistence(
         self, tenant, collection, real_repository, parser, chunker

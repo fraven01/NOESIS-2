@@ -15,6 +15,7 @@ from pydantic import (
     field_validator,
 )
 
+from common.validators import normalise_str_sequence, optional_str, require_trimmed_str
 from llm_worker.utils.normalisation import clamp_score, ensure_aware_utc, coerce_enum
 
 
@@ -47,12 +48,7 @@ class ScoringContext(BaseModel):
     )
     @classmethod
     def _require_trimmed(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("value must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("value must not be empty")
-        return candidate
+        return require_trimmed_str(value)
 
     @field_validator("jurisdiction", mode="before")
     @classmethod
@@ -67,31 +63,17 @@ class ScoringContext(BaseModel):
     @field_validator("preferred_sources", "disallowed_sources", mode="before")
     @classmethod
     def _normalise_sources(cls, value: Any) -> list[str]:
-        if value in (None, "", []):
-            return []
-        if isinstance(value, str):
-            candidate = value.strip()
-            return [candidate] if candidate else []
-        if isinstance(value, (list, tuple, set)):
-            cleaned: list[str] = []
-            for item in value:
-                if item in (None, ""):
-                    continue
-                cleaned_item = str(item).strip()
-                if cleaned_item:
-                    cleaned.append(cleaned_item)
-            return cleaned
-        raise ValueError("sources must be a sequence of strings")
+        return normalise_str_sequence(
+            value,
+            field_name="sources",
+            error_message="sources must be a sequence of strings",
+            return_type=list,
+        )
 
     @field_validator("version_target", mode="before")
     @classmethod
     def _normalise_optional_str(cls, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("value must be a string")
-        candidate = value.strip()
-        return candidate or None
+        return optional_str(value)
 
     @field_validator("min_diversity_buckets", mode="before")
     @classmethod
@@ -135,12 +117,7 @@ class RAGCoverageSummary(BaseModel):
     @field_validator("title", mode="before")
     @classmethod
     def _normalise_title(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("title must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("title must not be empty")
-        return candidate
+        return require_trimmed_str(value, field_name="title")
 
     @field_validator("url", mode="before")
     @classmethod
@@ -245,12 +222,7 @@ class SearchCandidate(ScoreResultInput):
     @field_validator("version_hint", "trust_hint", mode="before")
     @classmethod
     def _optional_trimmed(cls, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("value must be a string")
-        candidate = value.strip()
-        return candidate or None
+        return optional_str(value)
 
     @field_validator("domain_type", mode="before")
     @classmethod
@@ -288,12 +260,7 @@ class ScoreResultsData(BaseModel):
     @field_validator("query", mode="before")
     @classmethod
     def _normalise_query(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("query must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("query must not be empty")
-        return candidate
+        return require_trimmed_str(value, field_name="query")
 
     @field_validator("criteria", mode="before")
     @classmethod
@@ -357,22 +324,12 @@ class LLMScoredItem(BaseModel):
     @field_validator("candidate_id", mode="before")
     @classmethod
     def _normalise_candidate_id(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("candidate_id must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("candidate_id must not be empty")
-        return candidate
+        return require_trimmed_str(value, field_name="candidate_id")
 
     @field_validator("reason", mode="before")
     @classmethod
     def _normalise_reason(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("reason must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("reason must not be empty")
-        return candidate
+        return require_trimmed_str(value, field_name="reason")
 
     @field_validator("gap_tags", "risk_flags", mode="before")
     @classmethod
@@ -443,12 +400,7 @@ class RecommendedIngestItem(BaseModel):
     @field_validator("candidate_id", "reason", mode="before")
     @classmethod
     def _normalise_non_empty(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("value must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("value must not be empty")
-        return candidate
+        return require_trimmed_str(value)
 
 
 class HybridResult(BaseModel):
@@ -462,12 +414,7 @@ class HybridResult(BaseModel):
     @field_validator("coverage_delta", mode="before")
     @classmethod
     def _normalise_coverage_delta(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("coverage_delta must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("coverage_delta must not be empty")
-        return candidate
+        return require_trimmed_str(value, field_name="coverage_delta")
 
 
 __all__ = [

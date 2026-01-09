@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
 import socket
-import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -19,12 +19,17 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
 
+LOGGER = logging.getLogger(__name__)
+if not LOGGER.handlers:
+    logging.basicConfig(level=logging.INFO)
+
+
 def main() -> None:
     port_str = os.getenv("PORT", "8080")
     try:
         port = int(port_str)
     except ValueError:
-        print(f"Invalid PORT value: {port_str}", file=sys.stderr)
+        LOGGER.error("healthsrv.invalid_port", extra={"port": port_str})
         port = 8080
     server = HTTPServer(("0.0.0.0", port), _Handler)
     # Ensure socket reuse to avoid restart bind errors

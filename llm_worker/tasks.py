@@ -9,12 +9,21 @@ from ai_core.graph.registry import get as get_graph_runner
 from ai_core.graphs.technical.cost_tracking import track_ledger_costs
 from ai_core.ids.http_scope import normalize_task_context
 from ai_core.infra.observability import emit_event
+from ai_core.tool_contracts.base import tool_context_from_meta
 from cases.integration import emit_case_lifecycle_for_collection_search
-from common.celery import ScopedTask
+from common.celery import RetryableTask
+from common.logging import get_logger
 from llm_worker.graphs import run_score_results
 
+logger = get_logger(__name__)
 
-@shared_task(base=ScopedTask, queue="agents", accepts_scope=True)
+
+@shared_task(
+    base=RetryableTask,
+    queue="agents-high",
+    time_limit=600,
+    soft_time_limit=540,
+)
 def run_graph(  # type: ignore[no-untyped-def]
     *,
     graph_name: str,
@@ -22,11 +31,6 @@ def run_graph(  # type: ignore[no-untyped-def]
     meta: Mapping[str, Any] | None,
     ledger_identifier: str | None = None,
     initial_cost_total: float | None = None,
-    tenant_id: str | None = None,
-    case_id: str | None = None,
-    trace_id: str | None = None,
-    session_salt: str | None = None,
-    **_scope: Any,
 ) -> dict[str, Any]:
     """
     Execute a registered graph runner with the provided state and metadata.
@@ -41,70 +45,62 @@ def run_graph(  # type: ignore[no-untyped-def]
     In 202-Fallback-Modus kann das Result-Backend deaktiviert sein;
     siehe GRAPH_WORKER_TIMEOUT_S.
     """
-    import sys
+    logger.debug("celery.run_graph.entered")
 
-    sys.stderr.write("DEBUG: run_graph ENTERED\n")
-    sys.stderr.flush()
+    runner_state = dict(state or {})
+    runner_meta = dict(meta or {})
+
+    tool_context = tool_context_from_meta(runner_meta)
+
+    scope_context = tool_context.scope
+
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business IDs (workflow_id, collection_id) now in business_context
+    business_context = tool_context.business
+
+    tenant_id = scope_context.tenant_id
+    case_id = business_context.case_id
+    trace_id = scope_context.trace_id
+
+    task_type = runner_meta.get("task_type", "rag_query")
 
     # Set tenant schema context for database queries
     # This ensures document models are accessed in the correct tenant schema
-    if tenant_id:
+    if tenant_id and task_type != "score_results":
         try:
             from customers.models import Tenant
 
             tenant = Tenant.objects.get(schema_name=str(tenant_id))
             connection.set_tenant(tenant)
-            sys.stderr.write(f"DEBUG: Tenant schema set to {tenant.schema_name}\n")
-            sys.stderr.flush()
+            logger.debug(
+                "celery.run_graph.tenant_schema_set",
+                extra={"tenant_schema": tenant.schema_name},
+            )
         except Tenant.DoesNotExist:
             # Log warning but continue - some graphs might not need DB access
-            sys.stderr.write(
-                f"WARNING: Tenant {tenant_id} not found, using default schema\n"
+            logger.warning(
+                "celery.run_graph.tenant_missing",
+                extra={"tenant_id": tenant_id},
             )
-            sys.stderr.flush()
-
-    # Scope parameters (tenant_id, case_id, trace_id, session_salt) are accepted
-    # so ScopedTask/with_scope_apply_async can attach masking context without
-    # causing unexpected kwargs errors.
-
-    runner_state = dict(state or {})
-    runner_meta = dict(meta or {})
-
-    scope_context = runner_meta.get("scope_context")
-    if not isinstance(scope_context, Mapping):
-        scope_context = {}
-
-    # BREAKING CHANGE (Option A - Strict Separation):
-    # Business IDs (workflow_id, collection_id) now in business_context
-    business_context = runner_meta.get("business_context")
-    if not isinstance(business_context, Mapping):
-        business_context = {}
 
     # Build ScopeContext via normalize_task_context (Pre-MVP ID Contract)
     # S2S Hop: service_id REQUIRED, user_id ABSENT
-    # BREAKING CHANGE (Option A): case_id is optional, only check tenant_id
-    if tenant_id:
-        scope = normalize_task_context(
-            tenant_id=tenant_id,
-            case_id=case_id,  # Optional after Option A
-            service_id="celery-agents-worker",
-            trace_id=trace_id or scope_context.get("trace_id"),
-            invocation_id=scope_context.get("invocation_id"),
-            workflow_id=business_context.get(
-                "workflow_id"
-            ),  # BREAKING CHANGE: from business_context
-            run_id=scope_context.get("run_id"),
-            ingestion_run_id=scope_context.get("ingestion_run_id"),
-            idempotency_key=scope_context.get("idempotency_key"),
-            tenant_schema=scope_context.get("tenant_schema"),
-            collection_id=business_context.get(
-                "collection_id"
-            ),  # BREAKING CHANGE: from business_context
-        )
-        # Inject scope context into meta for graph execution
-        runner_meta["scope_context"] = scope.model_dump(mode="json")
-    task_type = runner_meta.get("task_type", "rag_query")
-
+    scope = normalize_task_context(
+        tenant_id=tenant_id,
+        service_id="celery-agents-worker",
+        trace_id=trace_id,
+        invocation_id=scope_context.invocation_id,
+        run_id=scope_context.run_id,
+        ingestion_run_id=scope_context.ingestion_run_id,
+        idempotency_key=scope_context.idempotency_key,
+        tenant_schema=scope_context.tenant_schema,
+    )
+    # Inject updated scope/tool context into meta for graph execution
+    updated_context = tool_context.model_copy(update={"scope": scope})
+    runner_meta["scope_context"] = scope.model_dump(mode="json")
+    runner_meta["tool_context"] = updated_context.model_dump(
+        mode="json", exclude_none=True
+    )
     with track_ledger_costs(initial_cost_total) as tracker:
         runner_meta["ledger_logger"] = tracker.record_ledger_meta
         try:
@@ -173,8 +169,10 @@ def run_graph(  # type: ignore[no-untyped-def]
     try:
         payload = _recursive_serialize(payload)
     except Exception as exc:
-        sys.stderr.write(f"DEBUG: Serialization failed: {exc}\n")
-        sys.stderr.flush()
+        logger.warning(
+            "celery.run_graph.serialization_failed",
+            extra={"error": str(exc)},
+        )
 
     lifecycle_result = emit_case_lifecycle_for_collection_search(
         graph_name=graph_name,

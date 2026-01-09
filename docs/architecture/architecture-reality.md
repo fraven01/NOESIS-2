@@ -69,15 +69,13 @@ Singleton example (candidate to migrate):
 
 ### Queues and tasks (code)
 
-- Agents worker task: `llm_worker/tasks.py:run_graph` (`queue="agents"`)
+- Agents worker task: `llm_worker/tasks.py:run_graph` (`queue="agents-high"` default, `agents-low` for background)
 - Ingestion graph task: `ai_core/tasks.py:run_ingestion_graph` (`queue="ingestion"`)
 
 ### Queue wiring (local compose)
 
-- `docker-compose.yml` and `docker-compose.dev.yml` define workers split by `-Q`:
-  - `agents-worker`: `-Q agents`
-  - `ingestion-worker`: `-Q ingestion`
-  - `worker`: `-Q celery,rag_delete,crawler`
+- `docker-compose.yml` and `docker-compose.dev.yml` define a unified worker with explicit queues:
+  - `worker`: `-Q agents-high,agents-low,crawler,celery,ingestion,ingestion-bulk,dead_letter,rag_delete`
 
 ### Context propagation (tasks)
 

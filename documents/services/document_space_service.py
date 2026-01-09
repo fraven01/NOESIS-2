@@ -10,6 +10,7 @@ from django.urls import reverse
 from django_tenants.utils import schema_context
 from structlog.stdlib import get_logger
 
+from ai_core.infra.serialization import to_jsonable
 from customers.models import Tenant
 from documents.collection_service import CollectionService
 from documents.contract_utils import normalize_media_type
@@ -314,9 +315,9 @@ class DocumentSpaceService:
         if isinstance(value, (dict, list)):
             try:
                 return json.dumps(
-                    value, ensure_ascii=False, sort_keys=True, default=str
+                    to_jsonable(value), ensure_ascii=False, sort_keys=True
                 )
-            except TypeError:
+            except (TypeError, ValueError):
                 return str(value)
         return str(value)
 

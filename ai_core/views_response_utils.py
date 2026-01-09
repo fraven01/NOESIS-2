@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from rest_framework.response import Response
 
+from ai_core.tool_contracts.base import tool_context_from_meta
 from common.constants import IDEMPOTENCY_KEY_HEADER
 
 from ai_core.infra.resp import apply_std_headers
@@ -25,7 +26,8 @@ def apply_response_headers(
     helper merges the behaviours and centralises the pattern for reuse.
     """
 
-    resolved_key = idempotency_key or meta["scope_context"].get("idempotency_key")
+    context = tool_context_from_meta(meta)
+    resolved_key = idempotency_key or context.scope.idempotency_key
     response = apply_std_headers(response, meta)
     if resolved_key:
         response[IDEMPOTENCY_KEY_HEADER] = resolved_key

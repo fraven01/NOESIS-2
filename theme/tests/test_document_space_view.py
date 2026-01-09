@@ -6,7 +6,6 @@ from django.urls import reverse
 from django.utils import timezone
 from django_tenants.utils import get_public_schema_name, schema_context
 
-from customers.tests.factories import TenantFactory
 from cases.models import Case
 from documents.contracts import DocumentMeta, DocumentRef, FileBlob, NormalizedDocument
 from documents.models import DocumentCollection
@@ -16,7 +15,9 @@ from documents.services.document_space_service import DocumentSpaceService
 from theme.views import document_space
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_document_space_requires_tenant():
     request = RequestFactory().get(reverse("document-space"))
 
@@ -27,9 +28,11 @@ def test_document_space_requires_tenant():
     assert "Tenant could not be resolved" in response.content.decode()
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
-def test_document_space_lists_collections_and_documents(monkeypatch):
-    tenant = TenantFactory(schema_name="explore")
+@pytest.mark.xdist_group("tenant_ops")
+def test_document_space_lists_collections_and_documents(monkeypatch, tenant_pool):
+    tenant = tenant_pool["alpha"]
     with schema_context(tenant.schema_name):
         case = Case.objects.create(
             tenant=tenant, external_id="CASE-123", title="Framework Einführung"

@@ -7,6 +7,7 @@ from typing import Any, Dict, Mapping, Sequence
 import requests
 
 from ai_core.infra.config import get_config
+from ai_core.infra.circuit_breaker import get_litellm_circuit_breaker
 from ai_core.infra.observability import observe_span, update_observation
 from ai_core.infra import ledger
 from common.constants import (
@@ -48,6 +49,10 @@ class LlmClientError(Exception):
 
 class RateLimitError(LlmClientError):
     """Raised when the LLM client is rate limited."""
+
+
+class LlmUpstreamError(LlmClientError):
+    """Raised when the LiteLLM upstream is unavailable or returns 5xx."""
 
 
 def _safe_json(resp: requests.Response) -> Dict[str, Any]:
@@ -195,16 +200,17 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     prompt:
         Prompt text which will be PII-masked before sending.
     metadata:
-        Dict containing at least ``tenant_id``/``tenant``, ``case_id``/``case`` and ``trace_id``.
+        Dict containing at least ``tenant_id``, ``case_id``, and ``trace_id``,
+        plus optional ``user_id`` for telemetry attribution.
     """
 
     model_id = resolve(label)
     cfg = get_config()
     url = f"{cfg.litellm_base_url.rstrip('/')}/v1/chat/completions"
     headers = {"Authorization": f"Bearer {cfg.litellm_api_key}"}
-    # Accept both new (tenant_id/case_id) and legacy (tenant/case) keys
-    tenant_value = metadata.get("tenant_id") or metadata.get("tenant")
-    case_value = metadata.get("case_id") or metadata.get("case")
+    tenant_value = metadata.get("tenant_id")
+    case_value = metadata.get("case_id")
+    user_value = metadata.get("user_id")
     propagated_headers = {
         X_TRACE_ID_HEADER: metadata.get("trace_id"),
         X_CASE_ID_HEADER: case_value,
@@ -240,17 +246,18 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     log_extra = {
         "trace_id": mask_value(metadata.get("trace_id")),
         "case_id": mask_value(case_value),
-        "tenant": mask_value(tenant_value),
+        "tenant_id": mask_value(tenant_value),
         "key_alias": mask_value(metadata.get("key_alias")),
     }
     # Attach lightweight context to the current observation (no PII payloads)
     _safe_update_observation(
         tags=["llm", "litellm", f"label:{label}", f"model:{model_id}"],
-        user_id=str(tenant_value) if tenant_value else None,
+        user_id=str(user_value) if user_value else None,
         session_id=str(case_value) if case_value else None,
         metadata={
             "trace_id": metadata.get("trace_id"),
             "prompt_version": prompt_version,
+            "tenant_id": tenant_value,
         },
     )
 
@@ -264,6 +271,28 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     resp: requests.Response | None = None
     attempt_headers = headers.copy()
     attempt_headers[IDEMPOTENCY_KEY_HEADER] = idempotency_key
+    breaker = get_litellm_circuit_breaker()
+    if not breaker.allow_request():
+        retry_after_ms = None
+        next_retry_at = breaker.next_retry_at
+        if next_retry_at is not None:
+            retry_after_ms = max(0, int((next_retry_at - time.time()) * 1000))
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "error.type": "LlmUpstreamError",
+                "error.message": "LiteLLM circuit breaker open",
+                "circuit_breaker.state": breaker.state,
+                "retry_after_ms": retry_after_ms,
+            }
+        )
+        raise LlmUpstreamError(
+            "LiteLLM circuit breaker open",
+            status=503,
+            code="circuit_open",
+        )
+
     try:
         start_ts = time.perf_counter()
         resp = requests.post(url, headers=attempt_headers, json=payload)
@@ -271,6 +300,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     except requests.RequestException as exc:
         latency_ms = (time.perf_counter() - start_ts) * 1000.0
         status = None
+        breaker.record_failure(reason="request_error")
         logger.warning(
             "llm request error",
             exc_info=exc,
@@ -288,11 +318,12 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 "provider.http_status": status,
             }
         )
-        raise LlmClientError(str(exc) or "LLM client error") from exc
+        raise LlmUpstreamError(str(exc) or "LLM client error") from exc
     else:
         status = resp.status_code
 
     if status and 500 <= status < 600:
+        breaker.record_failure(reason="upstream_5xx")
         logger.warning("llm 5xx response", extra={**log_extra, "status": status})
         payload_json = _safe_json(resp)
         cache_hit = _detect_cache_hit(
@@ -313,11 +344,12 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 "provider.http_status": status_val,
             }
         )
-        raise LlmClientError(
+        raise LlmUpstreamError(
             detail or "LLM client error", status=status_val, code=code
         ) from None
 
     if status == 429:
+        breaker.record_failure(reason="rate_limit")
         logger.warning("llm rate limited", extra={**log_extra, "status": status})
         payload_json = _safe_json(resp)
         cache_hit = _detect_cache_hit(
@@ -390,6 +422,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 "provider.http_status": status,
             }
         )
+        breaker.record_failure(reason="invalid_response")
         raise LlmClientError(message, status=status) from None
 
     choices = data.get("choices") or []
@@ -412,6 +445,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 "provider.http_status": status,
             }
         )
+        breaker.record_failure(reason="invalid_response")
         raise LlmClientError(message, status=status) from None
     usage_raw = data.get("usage") if isinstance(data.get("usage"), Mapping) else {}
     prompt_tokens = usage_raw.get("prompt_tokens", 0) or 0
@@ -461,8 +495,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         result["cost"] = cost_data
 
     ledger_payload = {
-        "tenant": tenant_value,
-        "case": case_value,
+        "tenant_id": tenant_value,
+        "case_id": case_value,
         "trace_id": metadata.get("trace_id"),
         "label": label,
         "model": model_id,
@@ -502,4 +536,5 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     _safe_update_observation(metadata=observation_metadata)
 
+    breaker.record_success()
     return result

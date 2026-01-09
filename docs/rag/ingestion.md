@@ -142,6 +142,12 @@ Weise bleiben Dokumentenspeicher und Vector-Space synchron, bevor optionale
 Retire-Entscheidungen `update_lifecycle_state` für betroffene Dokumente
 triggern.
 
+### Chunk-Metadaten (Versioning)
+
+- `embedding_model_version`: `<model>:<version>` (z. B. `text-embedding-004:v1`)
+- `embedding_created_at`: ISO-Timestamp der Embedding-Erzeugung
+- `vector_space_id`: `rag/{profile_id}@{model_version}` (z. B. `rag/standard@v1`)
+
 ## Crawler → RAG End-to-End
 
 ```mermaid
@@ -167,6 +173,19 @@ flowchart LR
 - **Trigger-Phase (`POST /ai/rag/ingestion/run/`)**: Ein zweiter Request stößt den eigentlichen Ingest via Celery an (`ingestion` Queue). Der Request erwartet einen JSON-Body mit `document_ids` (Array), sodass mehrere Dokumente gebündelt angestoßen werden können. Das Run-Endpoint wird primär für Replays oder geplante Batch-Runs benötigt, weil reguläre Uploads bereits automatisch in der Queue landen. Der Worker invoziert den **Upload Ingestion Graph** (siehe oben), der Split/Chunk/Embed ausführt und Ergebnisse in `pgvector` schreibt.
 - **Skalierung & Zuverlässigkeit**: Die entkoppelte Abfolge erlaubt horizontales Skalieren der Upload- und Ingestion-Services unabhängig voneinander, isoliert Backpressure in der Queue und ermöglicht Retries ohne erneuten Datei-Upload. Asynchrone Verarbeitung verhindert Timeouts großer Dateien, während Dead-Letter-Mechanismen und konfigurierbares Backoff gezielt Fehlerfälle abfedern.
 - **Bild-Uploads**: `ImageDocumentParser` akzeptiert Rasterformate (`image/jpeg`, `image/png`, `image/webp`, `image/gif`, `image/tiff`, `image/bmp`). Der Parser erzeugt einen Haupt-Asset mit den Bildbytes sowie einen Platzhalter-Textblock, damit Downstream-Chains keinen leeren Content erhalten. Die Parser-Statistiken enthalten mindestens `parser.kind=image`, `parser.bytes=<payload_size>` und `parser.assets=1`, sodass Langfuse/OTel die Laufzeitgrößen loggen kann.
+
+### Background-Re-Embedding
+
+Für Model-Upgrades kann ein Re-Embedding als Batch-Job geplant werden:
+
+```
+python manage.py reembed_documents --tenant=<schema> --embedding-profile=<profile>
+```
+
+- Queue: `ingestion-bulk` (Low Priority)
+- Rate-Limit: 1000 Chunks/Minute pro Tenant (Redis-Leaky-Bucket)
+- Fortschritt: Redis Hash `reembed:progress:<tenant>:<run_id>`
+- Cache: `embedding_cache` (`text_hash` + `model_version`, TTL 90 Tage)
 
 ## Parameter
 

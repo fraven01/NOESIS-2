@@ -8,6 +8,7 @@ import logging
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
+from django.utils import timezone
 from django_tenants.utils import schema_context
 
 from ai_core.contracts.scope import ScopeContext
@@ -105,7 +106,7 @@ class DbDocumentsRepository(DocumentsRepository):
             last_hop_service_id = (audit_meta or {}).get("last_hop_service_id")
             if created_by_user_id:
                 try:
-                    created_by_user = User.objects.get(pk=int(created_by_user_id))
+                    created_by_user = User.objects.get(pk=created_by_user_id)
                 except Exception:
                     logger.warning(
                         "documents.created_by_user_missing",
@@ -806,7 +807,7 @@ class DbDocumentsRepository(DocumentsRepository):
                 return False
 
             document.lifecycle_state = "retired"
-            document.lifecycle_updated_at = datetime.now()
+            document.lifecycle_updated_at = timezone.now()
             document.save(update_fields=["lifecycle_state", "lifecycle_updated_at"])
             return True
 

@@ -29,8 +29,8 @@ def test_tool_context_both_run_ids_allowed(base_payload: dict) -> None:
         update={"run_id": "run-1", "ingestion_run_id": "ingestion-run-1"}
     )
     context = ToolContext(scope=scope, business=base_payload["business"])
-    assert context.run_id == "run-1"
-    assert context.ingestion_run_id == "ingestion-run-1"
+    assert context.scope.run_id == "run-1"
+    assert context.scope.ingestion_run_id == "ingestion-run-1"
 
 
 def test_tool_context_no_run_ids_fails(base_payload: dict) -> None:
@@ -44,8 +44,8 @@ def test_tool_context_no_run_ids_fails(base_payload: dict) -> None:
 def test_tool_context_with_run_id_passes(base_payload: dict) -> None:
     scope = base_payload["scope"].model_copy(update={"run_id": "run-1"})
     context = ToolContext(scope=scope, business=base_payload["business"])
-    assert context.run_id == "run-1"
-    assert context.ingestion_run_id is None
+    assert context.scope.run_id == "run-1"
+    assert context.scope.ingestion_run_id is None
 
 
 def test_tool_context_with_ingestion_run_id_passes(base_payload: dict) -> None:
@@ -53,5 +53,5 @@ def test_tool_context_with_ingestion_run_id_passes(base_payload: dict) -> None:
         update={"run_id": None, "ingestion_run_id": "ingestion-run-1"}
     )
     context = ToolContext(scope=scope, business=base_payload["business"])
-    assert context.ingestion_run_id == "ingestion-run-1"
-    assert context.run_id is None
+    assert context.scope.ingestion_run_id == "ingestion-run-1"
+    assert context.scope.run_id is None

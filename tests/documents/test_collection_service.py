@@ -45,9 +45,12 @@ def test_ensure_collection_injects_collection_type() -> None:
 
 
 def test_ensure_manual_collection_uses_domain_service(monkeypatch: pytest.MonkeyPatch):
+    from django.conf import settings
+
     domain = _StubDomainService()
     service = CollectionService(domain_service=domain)
-    tenant = SimpleNamespace(id=uuid.uuid4(), schema_name="autotest")
+    test_schema = getattr(settings, "TEST_TENANT_SCHEMA", "autotest")
+    tenant = SimpleNamespace(id=uuid.uuid4(), schema_name=test_schema)
 
     monkeypatch.setattr(
         "documents.collection_service.TenantContext.resolve_identifier",

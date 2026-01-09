@@ -9,12 +9,12 @@ This document provides a functional checklist to verify that the Pre-MVP ID Cont
 - [ ] `tenant_id` is mandatory
 - [ ] `trace_id` is mandatory
 - [ ] `invocation_id` is mandatory
-- [ ] `case_id` is optional (None allowed)
 - [ ] `run_id` and `ingestion_run_id` may co-exist (no XOR validator)
 - [ ] At least one of `run_id` or `ingestion_run_id` is required
 - [ ] `user_id` and `service_id` fields exist
+- [ ] `user_id` is a UUID string when present
 - [ ] `user_id` and `service_id` are mutually exclusive (validator present)
-- [ ] `collection_id` is `str | None` (not UUID)
+- [ ] Business IDs are not present in ScopeContext (`case_id`, `collection_id`, etc.)
 
 **Verification Command:**
 ```bash
@@ -51,10 +51,10 @@ npm run win:test:py:unit -- ai_core/contracts/ -v
 ### normalize_request() (`ai_core/ids/http_scope.py`)
 
 - [ ] Extracts `user_id` from Django `request.user` when authenticated
+- [ ] Normalizes `user_id` to UUID string (rejects non-UUID values)
 - [ ] Sets `service_id = None` (HTTP = User Request Hop)
 - [ ] Generates `run_id` if neither `run_id` nor `ingestion_run_id` provided
-- [ ] Does NOT require `case_id` (optional at HTTP level)
-- [ ] Converts `collection_id` from UUID to string
+- [ ] Does NOT require `case_id` (business IDs extracted in `normalize_meta`)
 
 **Verification Command:**
 ```bash
@@ -65,7 +65,7 @@ npm run win:test:py:unit -- ai_core/ids/tests/test_http_scope.py -v
 
 - [ ] Requires `service_id` parameter (raises ValueError if missing)
 - [ ] Sets `user_id = None` (S2S Hop = no user)
-- [ ] Accepts `initiated_by_user_id` for documentation (not in ScopeContext)
+- [ ] Does not accept business IDs; build BusinessContext separately
 - [ ] Generates IDs for missing trace_id, invocation_id, run_id
 
 **Verification:** Check function signature and docstring.
@@ -94,7 +94,7 @@ npm run win:test:py:unit -- ai_core/tests/test_request_context_middleware.py -v
 
 - [ ] Builds `ScopeContext` with identity fields
 - [ ] Propagates `user_id` or `service_id` appropriately
-- [ ] Requires `case_id` for graph execution (business context)
+- [ ] Does not require `case_id` globally; graphs validate required business IDs
 
 ### Service Entry Points (`ai_core/services/__init__.py`)
 
@@ -117,6 +117,7 @@ For each Celery task that creates entities:
 - [ ] Uses `normalize_task_context()` with explicit `service_id`
 - [ ] Builds `audit_meta` using `audit_meta_from_scope()`
 - [ ] Propagates `trace_id` from parent hop
+- [ ] Propagates `initiated_by_user_id` explicitly in task meta
 - [ ] Generates new `invocation_id` for the task hop
 
 **Recommended Service IDs:**
@@ -158,7 +159,7 @@ npm run win:test:py:unit -- cases/tests/test_api.py -v
 ### AI Core Views (`ai_core/views.py`)
 
 - [ ] RAG ingestion accepts optional `case_id`
-- [ ] Graph execution validates `case_id` presence
+- [ ] Graph execution validates required business IDs per graph
 
 **Verification Command:**
 ```bash

@@ -19,9 +19,11 @@ from documents.notification_dispatcher import (
 )
 from documents.notification_service import create_notification
 from documents.upload_worker import UploadWorker
+from ai_core.tool_contracts.base import tool_context_from_meta
+from common.celery import ScopedTask
 
 
-@shared_task(queue="ingestion")
+@shared_task(base=ScopedTask, queue="ingestion")
 def upload_document_task(
     file_bytes: bytes,
     filename: str,
@@ -55,23 +57,11 @@ def upload_document_task(
     upload = MockUploadedFile(file_bytes, filename, content_type)
 
     worker = UploadWorker()
-    scope_context = meta["scope_context"]
-    # BREAKING CHANGE (Option A - Strict Separation):
-    # case_id is a business identifier, extract from business_context
-    business_context = meta.get("business_context", {})
-    user_id = scope_context.get("user_id")
-    workflow_id = business_context.get("workflow_id")
+    context = tool_context_from_meta(meta)
 
     result = worker.process(
         upload,
-        tenant_id=scope_context["tenant_id"],
-        case_id=business_context.get(
-            "case_id"
-        ),  # BREAKING CHANGE: from business_context
-        workflow_id=workflow_id,
-        trace_id=scope_context.get("trace_id"),
-        invocation_id=scope_context.get("invocation_id"),
-        user_id=user_id,
+        context,
         document_metadata=metadata,
         ingestion_overrides=metadata.get("ingestion_overrides"),
     )
@@ -110,7 +100,7 @@ def _apply_saved_search_filters(queryset, saved_search):
     return queryset
 
 
-@shared_task
+@shared_task(base=ScopedTask)
 def run_saved_search_alerts() -> dict[str, int]:
     """Run saved search alerts on a conservative schedule."""
 
@@ -120,8 +110,9 @@ def run_saved_search_alerts() -> dict[str, int]:
     total_notifications = 0
     now = timezone.now()
 
-    with schema_context(get_public_schema_name()):
-        tenants = list(Tenant.objects.all())
+    public_schema = get_public_schema_name()
+    with schema_context(public_schema):
+        tenants = list(Tenant.objects.exclude(schema_name=public_schema))
 
     for tenant in tenants:
         with schema_context(tenant.schema_name):
@@ -260,7 +251,7 @@ def _render_digest_email(events) -> tuple[str, str]:
     return subject, "\n".join(lines)
 
 
-@shared_task
+@shared_task(base=ScopedTask)
 def send_pending_email_deliveries() -> dict[str, int]:
     """Send queued external email deliveries with retry backoff."""
 
@@ -272,8 +263,9 @@ def send_pending_email_deliveries() -> dict[str, int]:
     total_skipped = 0
     now = timezone.now()
 
-    with schema_context(get_public_schema_name()):
-        tenants = list(Tenant.objects.all())
+    public_schema = get_public_schema_name()
+    with schema_context(public_schema):
+        tenants = list(Tenant.objects.exclude(schema_name=public_schema))
 
     for tenant in tenants:
         with schema_context(tenant.schema_name):

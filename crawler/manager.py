@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from ai_core.schemas import CrawlerRunRequest
+from ai_core.schemas import CrawlerRunRequest, IngestionOverrides
+from ai_core.tool_contracts.base import tool_context_from_meta
 from common.logging import get_logger
 from crawler.tasks import crawl_url_task
+from common.celery import with_scope_apply_async
 
 logger = get_logger(__name__)
 
@@ -28,8 +30,8 @@ class CrawlerManager:
         Returns:
             Summary of dispatched tasks.
         """
-        scope_context = meta.get("scope_context", {})
-        tenant_id = scope_context.get("tenant_id")
+        context = tool_context_from_meta(meta)
+        tenant_id = context.scope.tenant_id
         if not tenant_id:
             raise ValueError("Tenant ID is required for crawl dispatch.")
 
@@ -44,14 +46,14 @@ class CrawlerManager:
 
         dispatched = []
 
-        # Determine overrides that apply to all origins
-        ingestion_overrides = {}
-        if request.collection_id:
-            ingestion_overrides["collection_id"] = request.collection_id
-        if request.embedding_profile:
-            ingestion_overrides["embedding_profile"] = request.embedding_profile
-        if request.scope:
-            ingestion_overrides["scope"] = request.scope
+        # Validate and build ingestion overrides (BREAKING CHANGE Phase 6)
+        overrides_model = IngestionOverrides(
+            collection_id=request.collection_id,
+            embedding_profile=request.embedding_profile,
+            scope=request.scope,
+        )
+        # Convert to dict for Celery serialization
+        ingestion_overrides = overrides_model.model_dump(exclude_none=True)
 
         # Iterate through origins (URLs)
         if request.origins:
@@ -59,14 +61,22 @@ class CrawlerManager:
                 if not origin.url:
                     continue
 
-                # Dispatch task
-                task_result = crawl_url_task.delay(
-                    url=origin.url,
-                    meta=dict(meta),  # Ensure serializable dict
-                    ingestion_overrides=ingestion_overrides,
+                url = origin.url
+                # Use with_scope_apply_async for better traceability
+                # We must break the group into individual calls if we want full trace propagation per task via this helper
+                # or we iterate. The helper supports single signature.
+                # But the CrawlerManager currently gathers them.
+                # If we want to use a group, we might need a `with_scope_group_async` or just iterate.
+                # For now, let's iterate to ensure correct context.
+                sig = crawl_url_task.s(
+                    url=url, meta=dict(meta), ingestion_overrides=ingestion_overrides
                 )
+                # context.scope is already in meta, but with_scope_apply_async enforces extraction
+                # so we pass scope_dict explicitly to double check.
+                scope_dict = context.scope.model_dump(mode="json", exclude_none=True)
+                res = with_scope_apply_async(sig, scope_dict)
 
-                dispatched.append({"url": origin.url, "task_id": task_result.id})
+                dispatched.append({"url": url, "task_id": res.id})
 
         logger.info(
             "crawler_manager.dispatch_completed",

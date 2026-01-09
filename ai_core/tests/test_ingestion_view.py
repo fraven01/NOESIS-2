@@ -4,16 +4,16 @@ from django.urls import reverse
 from django.core.files.uploadedfile import SimpleUploadedFile
 from unittest.mock import patch, MagicMock
 
-from customers.tests.factories import TenantFactory
 from theme.views import ingestion_submit
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
-def test_ingestion_submit_happy_path(settings):
+@pytest.mark.xdist_group("tenant_ops")
+def test_ingestion_submit_happy_path(settings, tenant_pool):
     # Ensure RAG_UPLOAD_ENABLED is True if checked, but it seems not checked involved in view
 
-    tenant_schema = "test_ingestion"
-    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant = tenant_pool["alpha"]
     # The view expects request.tenant to be set by middleware
 
     factory = RequestFactory()
@@ -63,11 +63,12 @@ def test_ingestion_submit_happy_path(settings):
         assert meta["business_context"]["collection_id"] is not None
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
-def test_ingestion_submit_real_service_call(settings):
+@pytest.mark.xdist_group("tenant_ops")
+def test_ingestion_submit_real_service_call(settings, tenant_pool):
     """Call the real service stack to see if vector client logging issues appear."""
-    tenant_schema = "test_ingestion_real"
-    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant = tenant_pool["beta"]
 
     factory = RequestFactory()
     file_content = b"real content"
@@ -82,22 +83,12 @@ def test_ingestion_submit_real_service_call(settings):
     request.tenant = tenant
 
     # We DO NOT mock handle_document_upload here.
-    # We DO mock the UNIVERSAL INGESTION GRAPH invocation to avoid full Celery/Graph execution complexity
-    # effectively testing View -> Service glue -> Persistence -> (stop before graph)
+    # We DO mock the async dispatch to avoid running Celery/worker side effects.
 
-    with patch(
-        "ai_core.graphs.technical.universal_ingestion_graph.build_universal_ingestion_graph"
-    ) as mock_build_graph:
-        mock_graph = MagicMock()
-        mock_graph.invoke.return_value = {
-            "output": {"decision": "ingest", "reason": "ok"}
-        }
-        mock_build_graph.return_value = mock_graph
+    with patch("ai_core.services.document_upload.with_scope_apply_async") as mock_apply:
+        mock_apply.return_value.id = "task-123"
+        response = ingestion_submit(request)
 
-        # We also need to mock _enqueue_ingestion_task to avoid Celery
-        with patch("ai_core.services._enqueue_ingestion_task"):
-            response = ingestion_submit(request)
-
-            assert response.status_code == 200
-            # If this passes, the issue is elusive.
-            # If it fails with "ingestion_submit.failed", we captured it!
+        assert response.status_code == 200
+        # If this passes, the issue is elusive.
+        # If it fails with "ingestion_submit.failed", we captured it!

@@ -1,9 +1,30 @@
 """Unit tests for the UploadWorker."""
 
 from unittest.mock import patch, MagicMock
+from uuid import uuid4
 
 import pytest
+from ai_core.tool_contracts.base import ToolContext, ScopeContext, BusinessContext
 from documents.upload_worker import UploadWorker, WorkerPublishResult
+
+
+def _make_test_context(
+    *,
+    tenant_id: str = "tenant-1",
+    case_id: str | None = None,
+    trace_id: str | None = None,
+    invocation_id: str | None = None,
+    ingestion_run_id: str | None = None,
+) -> ToolContext:
+    """Build a ToolContext for testing."""
+    scope = ScopeContext(
+        tenant_id=tenant_id,
+        trace_id=trace_id or uuid4().hex,
+        invocation_id=invocation_id or uuid4().hex,
+        ingestion_run_id=ingestion_run_id or uuid4().hex,
+    )
+    business = BusinessContext(case_id=case_id)
+    return ToolContext(scope=scope, business=business)
 
 
 class MockUploadedFile:
@@ -83,12 +104,15 @@ def test_upload_worker_process_success(
     file_content = b"test content"
     upload = MockUploadedFile("test.txt", file_content, "text/plain")
 
-    result = worker.process(
-        upload,
+    context = _make_test_context(
         tenant_id="tenant-1",
         case_id="case-1",
         trace_id="trace-1",
         invocation_id="inv-1",
+    )
+    result = worker.process(
+        upload,
+        context,
         document_metadata={"key": "value"},
     )
 
@@ -125,6 +149,36 @@ def test_upload_worker_process_success(
     assert scope_context["invocation_id"] == "inv-1"
 
 
+def test_upload_worker_passes_ingestion_run_id(
+    mock_blob_writer,
+    mock_run_graph,
+    mock_async_runner,
+    mock_domain_service,
+    mock_tenants,
+):
+    worker = UploadWorker()
+    upload = MockUploadedFile("test.txt", b"data", "text/plain")
+
+    context = _make_test_context(
+        tenant_id="tenant-1",
+        case_id="case-1",
+        ingestion_run_id="ingest-123",
+    )
+    result = worker.process(
+        upload,
+        context,
+    )
+
+    assert result.task_id == "task-uuid"
+
+    call_args = mock_run_graph.s.call_args
+    assert call_args is not None, "run_ingestion_graph.s() was not called"
+    meta_arg = call_args[0][1]
+    assert meta_arg["scope_context"]["ingestion_run_id"] == "ingest-123"
+
+    assert mock_async_runner.call_args.kwargs.get("task_id") == "ingest-123"
+
+
 def test_upload_worker_register_document_failure_continues(
     mock_blob_writer, mock_run_graph, mock_async_runner, mock_domain_service
 ):
@@ -134,10 +188,10 @@ def test_upload_worker_register_document_failure_continues(
     worker = UploadWorker()
     upload = MockUploadedFile("test.txt", b"data", "text/plain")
 
+    context = _make_test_context(tenant_id="tenant-1", case_id="case-1")
     result = worker.process(
         upload,
-        tenant_id="tenant-1",
-        case_id="case-1",
+        context,
     )
 
     # Needs to handle failure gracefully and still publish if possible,
@@ -162,10 +216,10 @@ def test_upload_worker_sets_media_type_on_fileblob(
     # Upload with explicit content_type
     upload = MockUploadedFile("test.pdf", file_content, "application/pdf")
 
+    context = _make_test_context(tenant_id="tenant-1", case_id="case-1")
     result = worker.process(
         upload,
-        tenant_id="tenant-1",
-        case_id="case-1",
+        context,
         document_metadata={},
     )
 

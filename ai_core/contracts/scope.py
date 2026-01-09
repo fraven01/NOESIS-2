@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -128,6 +129,31 @@ class ScopeContext(BaseModel):
                 )
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_user_id(cls, data: object) -> object:
+        """Coerce and validate user_id as a UUID string when present."""
+        if isinstance(data, ScopeContext):
+            return data
+        if isinstance(data, Mapping):
+            if "user_id" not in data:
+                return data
+            raw_user_id = data.get("user_id")
+            if raw_user_id in {None, ""}:
+                if raw_user_id is None:
+                    return data
+                payload = dict(data)
+                payload["user_id"] = None
+                return payload
+            try:
+                parsed = UUID(str(raw_user_id))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("user_id must be a UUID string") from exc
+            payload = dict(data)
+            payload["user_id"] = str(parsed)
+            return payload
+        return data
+
     @model_validator(mode="after")
     def validate_run_scope(self) -> "ScopeContext":
         """Ensure at least one runtime identifier is provided."""
@@ -160,16 +186,36 @@ class ScopeContext(BaseModel):
         return self
 
     def to_tool_context(
-        self, business: "BusinessContext | None" = None, **overrides: object
+        self,
+        business: "BusinessContext | None" = None,
+        *,
+        now: "datetime | None" = None,
+        locale: str | None = None,
+        timeouts_ms: int | None = None,
+        budget_tokens: int | None = None,
+        safety_mode: str | None = None,
+        auth: dict[str, object] | None = None,
+        visibility_override_allowed: bool = False,
+        metadata: dict[str, object] | None = None,
     ) -> "ToolContext":
         """Project this scope into a ToolContext with optional BusinessContext.
 
+        BREAKING CHANGE (Phase 4):
+        Removed **overrides in favor of explicit parameters for better type safety.
+
         Args:
             business: Optional BusinessContext (case_id, collection_id, etc.)
-            **overrides: Additional ToolContext fields (locale, budget_tokens, etc.)
+            now: Override timestamp (for testing). Ignored (scope.timestamp used).
+            locale: Locale string (e.g., "de-DE")
+            timeouts_ms: Timeout in milliseconds
+            budget_tokens: Token budget for LLM calls
+            safety_mode: Safety mode string
+            auth: Authentication metadata
+            visibility_override_allowed: Whether visibility overrides are allowed
+            metadata: Additional runtime metadata
 
         Returns:
-            ToolContext with compositional structure (scope + business + overrides)
+            ToolContext with compositional structure (scope + business + metadata)
 
         Example:
             from ai_core.contracts.business import BusinessContext
@@ -180,7 +226,18 @@ class ScopeContext(BaseModel):
         """
         from ai_core.tool_contracts.base import tool_context_from_scope
 
-        return tool_context_from_scope(self, business, **overrides)
+        return tool_context_from_scope(
+            self,
+            business,
+            now=now,
+            locale=locale,
+            timeouts_ms=timeouts_ms,
+            budget_tokens=budget_tokens,
+            safety_mode=safety_mode,
+            auth=auth,
+            visibility_override_allowed=visibility_override_allowed,
+            metadata=metadata,
+        )
 
 
 __all__ = [

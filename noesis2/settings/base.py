@@ -2,14 +2,18 @@
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List
+from datetime import timedelta
 
 import environ
 
 from noesis2.api import schema as api_schema
 
 from common.logging import configure_logging
+from celery.schedules import crontab
+from kombu import Queue
 
 
 logger = logging.getLogger(__name__)
@@ -34,8 +38,12 @@ DEMO_EMBEDDING_DIMENSION = env.int(
 EMBEDDINGS_PROVIDER = env("EMBEDDINGS_PROVIDER", default="litellm")
 EMBEDDINGS_MODEL_PRIMARY = env("EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-small")
 EMBEDDINGS_MODEL_FALLBACK = env("EMBEDDINGS_MODEL_FALLBACK", default="oai-embed-small")
+EMBEDDINGS_MODEL_VERSION = env("EMBEDDINGS_MODEL_VERSION", default="v1")
 # Demo uses the same embedding model as standard by default
 DEMO_EMBEDDINGS_MODEL = env("DEMO_EMBEDDINGS_MODEL", default=EMBEDDINGS_MODEL_PRIMARY)
+DEMO_EMBEDDINGS_MODEL_VERSION = env(
+    "DEMO_EMBEDDINGS_MODEL_VERSION", default=EMBEDDINGS_MODEL_VERSION
+)
 EMBEDDINGS_BATCH_SIZE = env.int("EMBEDDINGS_BATCH_SIZE", default=64)
 EMBEDDINGS_TIMEOUT_SECONDS = env.float("EMBEDDINGS_TIMEOUT_SECONDS", default=20.0)
 AUTO_CREATE_CASES = env.bool("AUTO_CREATE_CASES", default=True)
@@ -83,7 +91,12 @@ RAG_IVF_LISTS = env.int("RAG_IVF_LISTS", default=2048)
 RAG_IVF_PROBES = env.int("RAG_IVF_PROBES", default=64)
 RAG_MIN_SIM = env.float("RAG_MIN_SIM", default=0.15)
 RAG_TRGM_LIMIT = env.float("RAG_TRGM_LIMIT", default=0.1)
+RAG_LEXICAL_MODE = env("RAG_LEXICAL_MODE", default="trgm")
+RAG_HYDE_ENABLED = env.bool("RAG_HYDE_ENABLED", default=False)
+RAG_HYDE_MODEL_LABEL = env("RAG_HYDE_MODEL_LABEL", default="simple-query")
+RAG_HYDE_MAX_CHARS = env.int("RAG_HYDE_MAX_CHARS", default=2000)
 RAG_HYBRID_ALPHA = env.float("RAG_HYBRID_ALPHA", default=0.7)
+RAG_RRF_K = env.int("RAG_RRF_K", default=60)
 RAG_MAX_CANDIDATES = env.int("RAG_MAX_CANDIDATES", default=200)
 RAG_CANDIDATE_POLICY = env("RAG_CANDIDATE_POLICY", default="error")
 RAG_CHUNK_TARGET_TOKENS = env.int("RAG_CHUNK_TARGET_TOKENS", default=450)
@@ -93,16 +106,40 @@ RAG_HARD_DELETE_REINDEX_THRESHOLD = env.int(
     "RAG_HARD_DELETE_REINDEX_THRESHOLD", default=0
 )
 
+# Chunker Configuration (MODEL_ROUTING.yaml labels)
+RAG_CHUNKER_MODE = env("RAG_CHUNKER_MODE", default="late")  # late | agentic | hybrid
+RAG_LATE_CHUNK_MODEL = env(
+    "RAG_LATE_CHUNK_MODEL", default="embedding"
+)  # MODEL_ROUTING.yaml label
+RAG_LATE_CHUNK_MAX_TOKENS = env.int("RAG_LATE_CHUNK_MAX_TOKENS", default=8000)
+RAG_AGENTIC_CHUNK_MODEL = env(
+    "RAG_AGENTIC_CHUNK_MODEL", default="agentic-chunk"
+)  # MODEL_ROUTING.yaml label
+RAG_ENABLE_QUALITY_METRICS = env.bool("RAG_ENABLE_QUALITY_METRICS", default=True)
+RAG_QUALITY_EVAL_MODEL = env(
+    "RAG_QUALITY_EVAL_MODEL", default="quality-eval"
+)  # MODEL_ROUTING.yaml label
+
+# Phase 2: SOTA Embedding-based Similarity
+RAG_USE_EMBEDDING_SIMILARITY = env.bool("RAG_USE_EMBEDDING_SIMILARITY", default=False)
+RAG_CHUNKING_WINDOW_SIZE = env.int("RAG_CHUNKING_WINDOW_SIZE", default=3)
+RAG_CHUNKING_BATCH_SIZE = env.int("RAG_CHUNKING_BATCH_SIZE", default=16)
+RAG_USE_CONTENT_BASED_IDS = env.bool("RAG_USE_CONTENT_BASED_IDS", default=True)
+RAG_ADAPTIVE_CHUNKING_ENABLED = env.bool("RAG_ADAPTIVE_CHUNKING_ENABLED", default=True)
+RAG_ASSET_CHUNKS_ENABLED = env.bool("RAG_ASSET_CHUNKS_ENABLED", default=True)
+
 if "RAG_EMBEDDING_PROFILES" not in globals():
     RAG_EMBEDDING_PROFILES = {
         "standard": {
             "model": EMBEDDINGS_MODEL_PRIMARY,
+            "model_version": EMBEDDINGS_MODEL_VERSION,
             "dimension": DEFAULT_EMBEDDING_DIMENSION,
             "vector_space": "global",
             "chunk_hard_limit": 512,
         },
         "demo": {
             "model": DEMO_EMBEDDINGS_MODEL,
+            "model_version": DEMO_EMBEDDINGS_MODEL_VERSION,
             "dimension": DEMO_EMBEDDING_DIMENSION,
             "vector_space": "demo",
             "chunk_hard_limit": 1024,
@@ -161,8 +198,13 @@ ALLOWED_HOSTS = env.list(
     default=["example.com", "localhost", ".localhost", "testserver"],
 )
 
-# Testing flag (auto-detected for pytest)
-TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+# Testing flag (auto-detected for pytest, even before PYTEST_CURRENT_TEST exists)
+TESTING = bool(
+    os.environ.get("PYTEST_CURRENT_TEST")
+    or os.environ.get("PYTEST_XDIST_WORKER")
+    or os.environ.get("PYTEST_RUNNING")
+    or ("pytest" in sys.modules)
+)
 
 # PII configuration defaults
 PII_MODE = os.getenv("PII_MODE", "industrial")
@@ -361,6 +403,78 @@ if TESTING:
 # Wenn Result-Backend fehlt, fungiert Web-Pfad automatisch als 202-Fallback ohne .get()-Ergebnis.
 GRAPH_WORKER_TIMEOUT_S = env.int("GRAPH_WORKER_TIMEOUT_S", default=45)
 
+CELERY_TASK_DEFAULT_QUEUE = "default"
+CELERY_TASK_DEFAULT_EXCHANGE = "default"
+CELERY_TASK_DEFAULT_ROUTING_KEY = "default"
+
+_QUEUE_MAX_PRIORITY = env.int("CELERY_QUEUE_MAX_PRIORITY", default=10)
+_DLQ_TTL_MS = env.int("CELERY_DLQ_TTL_MS", default=7 * 24 * 60 * 60 * 1000)
+CELERY_DLQ_CLEANUP_S = env.int("CELERY_DLQ_CLEANUP_S", default=3600)
+CELERY_DLQ_ALERT_S = env.int("CELERY_DLQ_ALERT_S", default=300)
+CELERY_DLQ_ALERT_THRESHOLD = env.int("CELERY_DLQ_ALERT_THRESHOLD", default=10)
+CELERY_TENANT_RATE_LIMIT_ENABLED = env.bool(
+    "CELERY_TENANT_RATE_LIMIT_ENABLED", default=True
+)
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+
+CELERY_TASK_QUEUES = (
+    Queue(
+        "default",
+        routing_key="default",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "agents-high",
+        routing_key="agents-high",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "agents-low",
+        routing_key="agents-low",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "ingestion",
+        routing_key="ingestion",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "ingestion-bulk",
+        routing_key="ingestion-bulk",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+    Queue(
+        "dead_letter",
+        routing_key="dead_letter",
+        queue_arguments={"x-message-ttl": _DLQ_TTL_MS},
+    ),
+    Queue(
+        "rag_delete",
+        routing_key="rag_delete",
+        queue_arguments={"x-max-priority": _QUEUE_MAX_PRIORITY},
+    ),
+)
+
+CELERY_TASK_ROUTES = ("common.celery.route_task",)
+
+CELERY_BEAT_SCHEDULE = {
+    "dlq-cleanup": {
+        "task": "ai_core.tasks.cleanup_dead_letter",
+        "schedule": timedelta(seconds=CELERY_DLQ_CLEANUP_S),
+        "options": {"queue": "default"},
+    },
+    "dlq-alert": {
+        "task": "ai_core.tasks.alert_dead_letter",
+        "schedule": timedelta(seconds=CELERY_DLQ_ALERT_S),
+        "options": {"queue": "default"},
+    },
+    "rag-embedding-drift": {
+        "task": "ai_core.tasks.embedding_drift_check",
+        "schedule": crontab(day_of_month=1, hour=2, minute=0),
+        "options": {"queue": "default"},
+    },
+}
+
 
 ADMINS = [
     (
@@ -448,6 +562,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": API_DOCS_DESCRIPTION,
     "VERSION": "v1",
     "SECURITY": [{api_schema.ADMIN_BEARER_AUTH_SCHEME: []}],
+    "DISABLE_ERRORS_AND_WARNINGS": True,
     "APPEND_COMPONENTS": {
         "parameters": TENANT_HEADER_COMPONENTS,
         "headers": {
@@ -459,6 +574,17 @@ SPECTACULAR_SETTINGS = {
                 "scheme": "bearer",
                 "bearerFormat": "API Key",
                 "description": "LiteLLM Admin bearer token used for privileged endpoints.",
+            },
+            "cookieAuth": {
+                "type": "apiKey",
+                "in": "cookie",
+                "name": "sessionid",
+                "description": "Django session cookie with account policy enforcement.",
+            },
+            "basicAuth": {
+                "type": "http",
+                "scheme": "basic",
+                "description": "HTTP Basic authentication with account policy enforcement.",
             },
         },
     },
@@ -489,8 +615,23 @@ LANGFUSE_PUBLIC_KEY = env("LANGFUSE_PUBLIC_KEY", default="")
 LANGFUSE_SECRET_KEY = env("LANGFUSE_SECRET_KEY", default="")
 LANGFUSE_SAMPLE_RATE = float(env("LANGFUSE_SAMPLE_RATE", default=1.0))
 AI_CORE_RATE_LIMIT_QUOTA = int(env("AI_CORE_RATE_LIMIT_QUOTA", default=60))
+AI_CORE_RATE_LIMIT_AGENTS_QUOTA = int(
+    env("AI_CORE_RATE_LIMIT_AGENTS_QUOTA", default=100)
+)
+AI_CORE_RATE_LIMIT_INGESTION_QUOTA = int(
+    env("AI_CORE_RATE_LIMIT_INGESTION_QUOTA", default=500)
+)
 RERANK_MODEL_PRESET = env("RERANK_MODEL_PRESET", default="fast")
 RERANK_CACHE_TTL_SECONDS = int(env("RERANK_CACHE_TTL_SECONDS", default=900))
+LITELLM_CIRCUIT_FAILURE_THRESHOLD = env.int(
+    "LITELLM_CIRCUIT_FAILURE_THRESHOLD", default=5
+)
+LITELLM_CIRCUIT_BASE_BACKOFF_S = env.float(
+    "LITELLM_CIRCUIT_BASE_BACKOFF_S", default=60.0
+)
+LITELLM_CIRCUIT_MAX_BACKOFF_S = env.float(
+    "LITELLM_CIRCUIT_MAX_BACKOFF_S", default=600.0
+)
 
 # Google Custom Search (for ExternalKnowledgeGraph)
 GOOGLE_CUSTOM_SEARCH_API_KEY = env("GOOGLE_CUSTOM_SEARCH_API_KEY", default=None)

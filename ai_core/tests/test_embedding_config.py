@@ -32,6 +32,7 @@ def _base_vector_space() -> dict[str, object]:
 def _base_profile() -> dict[str, object]:
     return {
         "model": "oai-embed-large",
+        "model_version": "v1",
         "dimension": 1536,
         "vector_space": "global",
         "chunk_hard_limit": 512,
@@ -47,6 +48,7 @@ def test_get_embedding_configuration_returns_dataclasses(settings) -> None:
     assert config.vector_spaces["global"].dimension == 1536
     assert config.vector_spaces["global"].schema == "rag"
     assert config.embedding_profiles["standard"].model == "oai-embed-large"
+    assert config.embedding_profiles["standard"].model_version == "v1"
     assert (
         config.embedding_profiles["standard"].vector_space
         == config.vector_spaces["global"].id
@@ -63,6 +65,7 @@ def test_getters_return_single_entries(settings) -> None:
 
     assert vector_space.schema == "rag"
     assert profile.model == "oai-embed-large"
+    assert profile.model_version == "v1"
     assert profile.vector_space == "global"
     assert profile.chunk_hard_limit == 512
 
@@ -73,6 +76,7 @@ def test_get_embedding_profile_falls_back_to_default(settings, caplog) -> None:
         "standard": _base_profile(),
         "extended": {
             "model": "oai-embed-xl",
+            "model_version": "v1",
             "dimension": 1536,
             "vector_space": "global",
             "chunk_hard_limit": 1024,

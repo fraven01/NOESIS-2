@@ -1,19 +1,32 @@
 # Graph-Orchestrierung im AI Core
 
-Die Graphen im `ai_core` kapseln unsere Business-Orchestrierung. Jeder Graph
-besteht aus benannten Knoten (`GraphNode`), die eine State-Mutation ausführen und
-ein standardisiertes Übergabeobjekt (`GraphTransition`) zurückgeben. Die
-Transitions enthalten `decision`, `reason` und ein `attributes`-Mapping und
-ermöglichen damit konsistente Auswertung in Tests, Telemetrie und im
-Observability-Layer.
+Die Graphen im `ai_core` kapseln Business- und technische Orchestrierung.
+Business-Graphs (z.B. `framework_analysis_graph`) nutzen die GraphNode/GraphTransition-DSL,
+waehrend technische Graphen ueber LangGraph gebaut sind und typisierte Outputs liefern.
+Nicht jeder Graph verwendet `GraphTransition` oder die DSL, daher gilt die DSL-Beschreibung
+nur fuer die entsprechenden Business-Graphs.
 
 ## Context & Identity (Pre-MVP ID Contract)
 
-Graphs receive context via `scope_context` in the graph meta. The `ScopeContext` includes:
+Graphs receive context via `normalize_meta()` in `ai_core/graph/schemas.py`. The
+graph meta carries three structured contexts:
 
-- **Correlation IDs**: `tenant_id`, `trace_id`, `invocation_id`, `case_id`, `workflow_id`
-- **Runtime IDs**: `run_id` and/or `ingestion_run_id` (may co-exist when workflow triggers ingestion)
-- **Identity IDs**: `user_id` (User Request Hop) or `service_id` (S2S Hop) - mutually exclusive
+- **ScopeContext** (`scope_context`): `tenant_id`, `trace_id`, `invocation_id`,
+  `run_id` and/or `ingestion_run_id`, `user_id` or `service_id`, `tenant_schema`,
+  `idempotency_key`, `timestamp`
+- **BusinessContext** (`business_context`): `case_id`, `collection_id`,
+  `workflow_id`, `document_id`, `document_version_id`
+- **ToolContext** (`tool_context`): Composition of scope + business + runtime metadata
+
+Canonical runtime context injection pattern:
+
+1. Boundary builds meta via `normalize_meta(request)`.
+2. Graph entry parses `ToolContext` once via `tool_context_from_meta(meta)`.
+3. Persist the validated context in state (e.g. `state["tool_context"] = context`).
+4. Nodes read IDs from `context.scope.*` and `context.business.*`.
+
+Do not re-derive IDs from headers or implicit state; context is the single
+source of truth.
 
 For entity persistence within graphs, use `audit_meta_from_scope()`:
 
@@ -21,13 +34,33 @@ For entity persistence within graphs, use `audit_meta_from_scope()`:
 from ai_core.contracts.audit_meta import audit_meta_from_scope
 
 # In a graph node that creates entities:
-audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
+tool_context = state["tool_context"]
+scope = tool_context.scope
+audit_meta = audit_meta_from_scope(
+    scope,
+    created_by_user_id=scope.user_id,
+    initiated_by_user_id=tool_context.metadata.get("initiated_by_user_id"),
+)
 entity.audit_meta = audit_meta.model_dump()
 ```
 
 This ensures all persisted entities include traceability fields (`trace_id`, `invocation_id`, `created_by_user_id`, `last_hop_service_id`).
 
-## DSL
+## Graph I/O contracts (mandatory)
+
+All graphs declare versioned Pydantic input/output models and attach a `GraphIOSpec`
+(`ai_core/graph/io.py`) to the compiled graph or graph class:
+
+- Boundary payloads include `schema_id` + `schema_version`.
+- Input/output are validated at the graph boundary.
+- The `io_spec` is discoverable by registries and executors.
+
+Legacy graphs without `io_spec` are tracked for migration in `roadmap/backlog.md`.
+
+
+## DSL (business graphs)
+
+Diese DSL wird aktuell vom `framework_analysis_graph` verwendet; technische Graphen nutzen LangGraph.
 
 ```python
 @dataclass(frozen=True)
@@ -55,17 +88,15 @@ verschmelzen und erzeugt dabei eine deterministische Telemetrie pro Knoten.
 
 Die Knotenfolge lautet:
 
-1. **generate_search_strategy** — erzeugt Query-Expansions und wendet
-   Tenant-Policies an.
-2. **parallel_web_search** — sammelt Treffer aus 3–7 Websuchen (derzeit
-   sequentiell).
-3. **execute_hybrid_score** — ruft den Worker-Graph mit einem
-   `ScoringContext` (jurisdiction = DE) auf.
-4. **hitl_approval_gate** — baut die Review-Payload samt Scores, Gap-Tags und
-   Coverage-Delta.
-5. **trigger_ingestion** — übergibt approvte URLs an den Crawler.
-6. **verify_coverage** — pollt den Coverage-Status (30 s Intervall, 10 min
-   Timeout).
+1. **strategy** - erzeugt Query-Expansions und Policies (LLM oder Fallback).
+2. **search** - fuehrt Websuche ueber den konfigurierten Worker aus.
+3. **embedding_rank** - berechnet heuristische Scores und bereitet Kandidaten vor.
+4. **hybrid_score** - ruft `hybrid_search_and_score` fuer Re-Ranking auf.
+5. **hitl** - baut HITL-Payload und Entscheidungspfad.
+6. **build_plan** - erstellt den Plan (z.B. `CollectionSearchPlan`).
+7. **delegate** - fuehrt den Plan optional ueber den Universal Ingestion Graph aus.
+
+Der ehemalige Coverage-Verification-Schritt ist derzeit deaktiviert.
 
 Die Tests in
 `ai_core/tests/graphs/test_collection_search_graph.py`
@@ -127,14 +158,8 @@ Die sequentielle Ausführung umfasst 7 Knoten:
    Konfidenz < Threshold ODER Validierung fehlgeschlagen. Loggt Warning mit
    `hitl_reasons`.
 
-6. **persist_profile** — Atomare Transaktion:
-   * Prüft ob Profil existiert (Konflikt wenn `force_reanalysis=false`)
-   * Setzt altes Profil `is_current=false`, inkrementiert Version
-   * Erstellt `FrameworkProfile` mit Struktur-JSON + Metadata
-   * Verknüpft `FrameworkDocument` für Hauptdokument
-   * Loggt Persistierung mit `profile_id`, Version, Typ
-
-7. **finish** — Bündelt finales `FrameworkAnalysisOutput` mit Transition-History
+6. **finish** - Bundelt finales `FrameworkAnalysisDraft` (nur Orchestrierung).
+   Persistierung erfolgt nachgelagert ueber die Service Boundary.
 
 ### Datenmodelle
 
@@ -252,7 +277,6 @@ Error-Codes:
 * `framework.locate_components`
 * `framework.validate_components`
 * `framework.assemble_profile`
-* `framework.persist_profile`
 
 **Strukturierte Logs**:
 
@@ -318,38 +342,34 @@ Einheitlicher technischer Zugangspunkt für die Dokumentenverarbeitung unabhäng
 
 ### Contract
 
-**Input**: `UniversalIngestionInput` (TypedDict)
+Boundary models live in `ai_core/graphs/technical/universal_ingestion_graph.py`:
 
-* `source`: `upload` | `crawler` | `search`
-* `mode`: `ingest_only` | `acquire_only` | `acquire_and_ingest`
-* `collection_id`: UUID (Pflicht)
-* `upload_blob`: Dictionary (für Source `upload`, enthält URI, Mimetype, Checksum)
-* `normalized_document`: Dictionary (für Source `crawler`, pre-normalized)
-* `search_query`: String (für Source `search`)
-* `search_config`: Dict (für Source `search`, z.B. `top_n`, `min_snippet_length`)
-* `metadata_obj`: Optionales Metadaten-Dict
+**Input**: `UniversalIngestionGraphInput` (Pydantic)
 
-**Output**: `UniversalIngestionOutput` (TypedDict)
+* `schema_id`: `noesis.graphs.universal_ingestion`
+* `schema_version`: `1.0.0`
+* `input.normalized_document`: required `NormalizedDocument` (dict or object)
+* `context`: serialized `ToolContext` (scope + business)
 
-* `decision`: `ingested` | `skipped` | `error` | `acquired`
+**Output**: `UniversalIngestionGraphOutput` (Pydantic)
+
+* `schema_id`: `noesis.graphs.universal_ingestion`
+* `schema_version`: `1.0.0`
+* `decision`: `processed` | `skipped` | `failed`
+* `reason_code`: `DUPLICATE` | `VALIDATION_ERROR` | `PERSISTENCE_ERROR` | `PROCESSING_ERROR` | null
 * `reason`: Mensch-lesbarer Grund
 * `document_id`: UUID des persistierten Dokuments
-* `ingestion_run_id`: Verknüpfung zum Run
+* `ingestion_run_id`: Verknuepfung zum Run
 * `telemetry`: Trace- und Tenant-Kontext
-* `transitions`: Liste durchlaufener Phasen
-* `review_payload`: Daten für HITL (signaling only)
-* `hitl_required`: Boolean
-* `hitl_reasons`: Liste von Gründen
+* `formatted_status`: Legacy kompatibles Feld
 
 ### Knotenfolge
 
 1. **validate_input**
-   Prüft, ob alle Pflichtfelder für die gewählte `source` und den `mode` vorhanden sind. Validiert Context-IDs (Tenant, Trace, Case).
+   Prueft graph input, ToolContext und `normalized_document`. Validiert `collection_id` im BusinessContext.
 
-2. **normalize_document**
-   Erzeugt ein standardisiertes `NormalizedDocument`-Objekt.
-   * Bei **Upload**: Baut Dokument aus `upload_blob` und Metadaten.
-   * Bei **Crawler**: Validiert und übernimmt das vor-normalisierte Payload.
+2. **dedup**
+   Platzhalter fuer Dokument-Deduplication (derzeit immer `new`).
 
 3. **persist**
    Speichert das normalisierte Dokument initial im `DocumentRepository` (Upsert). Dies sichert die Daten vor der Verarbeitung.
@@ -357,12 +377,10 @@ Einheitlicher technischer Zugangspunkt für die Dokumentenverarbeitung unabhäng
 4. **process**
    Delegiert die inhaltliche Verarbeitung (Parsing, Chunking, Embedding) an den shared `document_processing_graph`.
    * Injiziert `DocumentProcessingContext` und `DocumentPipelineConfig`.
-   * Injiziert `Storage`-Service für Blob-Zugriffe.
+   * Injiziert `Storage`-Service fuer Blob-Zugriffe.
 
 5. **finalize**
-   Mappt das Ergebnis auf den `UniversalIngestionOutput`.
-   * Setzt `hitl_`-Flags (aktuell immer False/Empty in Phase 2).
-   * Sammelt Telemetrie.
+   Mappt das Ergebnis auf `UniversalIngestionGraphOutput` und sammelt Telemetrie.
 
 ### Migration Status
 

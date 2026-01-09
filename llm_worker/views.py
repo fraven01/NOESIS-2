@@ -18,11 +18,20 @@ from structlog.stdlib import get_logger
 
 from llm_worker.runner import submit_worker_task
 from llm_worker.schemas import WorkerTask
-from noesis2.api import default_extend_schema
+from noesis2.api import default_extend_schema, JSON_ERROR_STATUSES
 from noesis2.api.serializers import IdempotentResponseSerializer
 from customers.tenant_context import TenantContext, TenantRequiredError
 
 logger = get_logger(__name__)
+
+
+class WorkerTaskRequestSerializer(serializers.Serializer):
+    """Serializer for WorkerTask request payloads."""
+
+    task_type = serializers.CharField(
+        help_text="Type of task (currently only 'score_results')"
+    )
+    parameters = serializers.JSONField(help_text="Task-specific parameters")
 
 
 class WorkerRunCompletedResponseSerializer(IdempotentResponseSerializer):
@@ -53,10 +62,12 @@ def _format_validation_error(error: ValidationError) -> str:
 
 @default_extend_schema(
     summary="Submit a worker graph task",
+    request=WorkerTaskRequestSerializer,
     responses={
         200: WorkerRunCompletedResponseSerializer,
         202: WorkerRunQueuedResponseSerializer,
     },
+    error_statuses=JSON_ERROR_STATUSES,
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -167,6 +178,22 @@ def run_task(request) -> JsonResponse:
     )
 
 
+@default_extend_schema(
+    summary="Poll worker task status",
+    description=(
+        "Poll the status of a Celery task via Result Backend. "
+        "This endpoint is used for polling tasks that returned 202 Accepted "
+        "due to timeout in the graph worker pattern.\n\n"
+        "**State Mapping:**\n"
+        "- PENDING/RECEIVED/STARTED/RETRY → 202 Accepted (queued)\n"
+        "- SUCCESS → 200 OK (succeeded with result payload)\n"
+        "- FAILURE/REVOKED → 500 Internal Server Error (failed with error details)"
+    ),
+    responses={
+        200: WorkerRunCompletedResponseSerializer,
+        202: WorkerRunQueuedResponseSerializer,
+    },
+)
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def task_status(request, task_id: str) -> JsonResponse:

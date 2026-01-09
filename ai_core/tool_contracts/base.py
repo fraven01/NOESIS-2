@@ -17,17 +17,14 @@ NEW (v2):
     business = BusinessContext(case_id="c", collection_id="col")
     ToolContext(scope=scope, business=business, locale="de-DE")
 
-Backward compatibility via @property accessors (DEPRECATED, will be removed):
-    context.tenant_id  # → context.scope.tenant_id (deprecated)
-    context.case_id    # → context.business.case_id (deprecated)
-
 New code should use explicit paths:
-    context.scope.tenant_id  # ✅
-    context.business.case_id  # ✅
+    context.scope.tenant_id
+    context.business.case_id
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, ClassVar, Generic, Literal, Optional, TypeVar, Union
 
@@ -63,11 +60,6 @@ class ToolContext(BaseModel):
     - Context contains Scope, Business, and Runtime Permissions
     - Tool-Run functions read identifiers exclusively from context, not params
 
-    Backward Compatibility:
-    Properties like context.tenant_id, context.case_id still work (DEPRECATED).
-    They delegate to context.scope.X or context.business.X.
-    New code should use explicit paths.
-
     Migration examples:
         OLD: context.tenant_id
         NEW: context.scope.tenant_id
@@ -76,7 +68,7 @@ class ToolContext(BaseModel):
         NEW: context.business.case_id
 
         OLD: params.collection_id or context.collection_id  # RED FLAG!
-        NEW: context.business.collection_id  # ✅ Only from context
+        NEW: context.business.collection_id  # Only from context
     """
 
     model_config = ConfigDict(frozen=True)
@@ -99,103 +91,40 @@ class ToolContext(BaseModel):
     visibility_override_allowed: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    # === Backward Compatibility Properties (DEPRECATED) ===
-    # These will be removed in a future version after migration is complete.
-    # New code MUST use context.scope.X or context.business.X instead.
-
-    @property
-    def tenant_id(self) -> str:
-        """DEPRECATED: Use context.scope.tenant_id instead."""
-        return self.scope.tenant_id
-
-    @property
-    def trace_id(self) -> str:
-        """DEPRECATED: Use context.scope.trace_id instead."""
-        return self.scope.trace_id
-
-    @property
-    def invocation_id(self) -> str:
-        """DEPRECATED: Use context.scope.invocation_id instead."""
-        return self.scope.invocation_id
-
-    @property
-    def user_id(self) -> str | None:
-        """DEPRECATED: Use context.scope.user_id instead."""
-        return self.scope.user_id
-
-    @property
-    def service_id(self) -> str | None:
-        """DEPRECATED: Use context.scope.service_id instead."""
-        return self.scope.service_id
-
-    @property
-    def run_id(self) -> str | None:
-        """DEPRECATED: Use context.scope.run_id instead."""
-        return self.scope.run_id
-
-    @property
-    def ingestion_run_id(self) -> str | None:
-        """DEPRECATED: Use context.scope.ingestion_run_id instead."""
-        return self.scope.ingestion_run_id
-
-    @property
-    def tenant_schema(self) -> str | None:
-        """DEPRECATED: Use context.scope.tenant_schema instead."""
-        return self.scope.tenant_schema
-
-    @property
-    def idempotency_key(self) -> str | None:
-        """DEPRECATED: Use context.scope.idempotency_key instead."""
-        return self.scope.idempotency_key
-
-    @property
-    def now_iso(self) -> datetime:
-        """DEPRECATED: Use context.scope.timestamp instead."""
-        return self.scope.timestamp
-
-    @property
-    def case_id(self) -> str | None:
-        """DEPRECATED: Use context.business.case_id instead."""
-        return self.business.case_id
-
-    @property
-    def collection_id(self) -> str | None:
-        """DEPRECATED: Use context.business.collection_id instead."""
-        return self.business.collection_id
-
-    @property
-    def workflow_id(self) -> str | None:
-        """DEPRECATED: Use context.business.workflow_id instead."""
-        return self.business.workflow_id
-
-    @property
-    def document_id(self) -> str | None:
-        """DEPRECATED: Use context.business.document_id instead."""
-        return self.business.document_id
-
-    @property
-    def document_version_id(self) -> str | None:
-        """DEPRECATED: Use context.business.document_version_id instead."""
-        return self.business.document_version_id
-
 
 def tool_context_from_scope(
     scope: ScopeContext,
     business: BusinessContext | None = None,
     *,
     now: datetime | None = None,
-    **overrides: Any,
+    locale: str | None = None,
+    timeouts_ms: int | None = None,
+    budget_tokens: int | None = None,
+    safety_mode: str | None = None,
+    auth: dict[str, Any] | None = None,
+    visibility_override_allowed: bool = False,
+    metadata: dict[str, Any] | None = None,
 ) -> ToolContext:
     """Build a ToolContext from ScopeContext and BusinessContext.
 
     BREAKING CHANGE (Option A):
     New signature requires BusinessContext as separate parameter.
 
+    BREAKING CHANGE (Phase 4):
+    Removed **overrides in favor of explicit parameters. This prevents
+    accidental override of scope/business and provides better type safety.
+
     Args:
         scope: Request correlation scope (WHO, WHEN)
         business: Optional business domain context (WHAT). Defaults to empty.
         now: Override timestamp (for testing). Ignored (scope.timestamp used).
-        **overrides: Additional ToolContext fields (locale, budget_tokens, etc.)
+        locale: Locale string (e.g., "de-DE")
+        timeouts_ms: Timeout in milliseconds
+        budget_tokens: Token budget for LLM calls
+        safety_mode: Safety mode string
+        auth: Authentication metadata
+        visibility_override_allowed: Whether visibility overrides are allowed
+        metadata: Additional runtime metadata
 
     Returns:
         ToolContext with compositional structure
@@ -215,15 +144,77 @@ def tool_context_from_scope(
     if business is None:
         business = BusinessContext()  # Empty business context
 
-    payload: dict[str, Any] = {
-        "scope": scope,
-        "business": business,
+    return ToolContext(
+        scope=scope,
+        business=business,
+        locale=locale,
+        timeouts_ms=timeouts_ms,
+        budget_tokens=budget_tokens,
+        safety_mode=safety_mode,
+        auth=auth,
+        visibility_override_allowed=visibility_override_allowed,
+        metadata=metadata or {},
+    )
+
+
+def tool_context_from_meta(meta: Mapping[str, Any]) -> ToolContext:
+    """Parse a ToolContext from graph metadata.
+
+    Prefers a prebuilt ``tool_context`` entry, with a fallback to scope/business
+    metadata for legacy call sites.
+    """
+
+    tool_context_data = meta.get("tool_context")
+    if isinstance(tool_context_data, ToolContext):
+        return tool_context_data
+    if isinstance(tool_context_data, Mapping):
+        return ToolContext.model_validate(tool_context_data)
+
+    scope_data = meta.get("scope_context")
+    if scope_data is None:
+        raise ValueError("tool_context or scope_context is required in meta")
+
+    business_keys = {
+        "case_id",
+        "collection_id",
+        "workflow_id",
+        "document_id",
+        "document_version_id",
     }
 
-    # Add overrides (locale, timeouts, etc.)
-    payload.update(overrides)
+    if isinstance(scope_data, ScopeContext):
+        scope = scope_data
+        scope_payload: dict[str, Any] = {}
+        scope_source: Mapping[str, Any] = {}
+    elif isinstance(scope_data, Mapping):
+        scope_source = scope_data
+        scope_payload = {k: v for k, v in scope_data.items() if k not in business_keys}
+        scope = ScopeContext.model_validate(scope_payload)
+    else:
+        raise TypeError("scope_context must be a mapping or ScopeContext")
 
-    return ToolContext(**payload)
+    business_data = meta.get("business_context")
+    if isinstance(business_data, BusinessContext):
+        business = business_data
+    else:
+        business_payload: dict[str, Any] = {}
+        if isinstance(business_data, Mapping):
+            business_payload.update(business_data)
+        if scope_source:
+            for key in business_keys:
+                if key in scope_source and key not in business_payload:
+                    business_payload[key] = scope_source[key]
+        business = BusinessContext.model_validate(business_payload)
+
+    metadata = meta.get("context_metadata")
+    metadata_payload = dict(metadata) if isinstance(metadata, Mapping) else {}
+    initiated_by_user_id = meta.get("initiated_by_user_id")
+    if initiated_by_user_id is not None:
+        metadata_payload.setdefault("initiated_by_user_id", initiated_by_user_id)
+
+    if not metadata_payload:
+        return tool_context_from_scope(scope, business)
+    return tool_context_from_scope(scope, business, metadata=metadata_payload)
 
 
 class ToolErrorMeta(BaseModel):
@@ -356,6 +347,7 @@ __all__ = [
     "PositiveInt",
     "ToolContext",
     "tool_context_from_scope",
+    "tool_context_from_meta",
     "ToolErrorMeta",
     "ToolErrorDetail",
     "ToolError",

@@ -82,7 +82,7 @@ PY
     "uri": "memory://blob-1"
   },
   "checksum": "bd3f49afdf47717d8dbd141e5018ed1b1d0e789ef046c03b8959d1dffed0f8c1",
-  "created_at": "2024-05-02T10:15:00+00:00",
+  "created_at": "2024-05-02T10:15:00Z",
   "meta": {
     "language": null,
     "tags": [],
@@ -147,7 +147,7 @@ PY
     "uri": "memory://blob-1"
   },
   "checksum": "2aa7d1af4d61b061fd7e1a6ebb75556d7d8aa996f66d01a6c82bfa342e401e54",
-  "created_at": "2024-05-02T10:15:00+00:00",
+  "created_at": "2024-05-02T10:15:00Z",
   "meta": {
     "language": null,
     "tags": [],

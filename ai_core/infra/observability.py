@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import json
 import logging
 import os
 import base64
 from contextvars import ContextVar
 from typing import Any, Callable, Iterable, Optional, TypeVar, cast, TYPE_CHECKING
+import functools
 
 if TYPE_CHECKING:
     from .usage import Usage
@@ -238,6 +238,7 @@ def observe_span(
                 _maybe_annotate_span(phase, args, kwargs, result)
             return result
 
+        @functools.wraps(func)
         def wrapped(*args: Any, **kwargs: Any):  # type: ignore[misc]
             if not tracing_enabled():
                 return _run(*args, **kwargs)
@@ -433,7 +434,6 @@ def record_span(
     name: str,
     *,
     attributes: Optional[dict[str, Any]] = None,
-    trace_id: str | None = None,
 ) -> None:
     """Record a standalone span with optional metadata."""
 
@@ -444,8 +444,6 @@ def record_span(
         return
 
     span_attributes = _normalise_attributes(attributes or {})
-    if trace_id is not None:
-        span_attributes.setdefault("legacy.trace_id", str(trace_id))
 
     try:
         cm = tracer.start_as_current_span(name, attributes=span_attributes)
@@ -485,10 +483,9 @@ def emit_event(event: Any, attributes: Optional[dict[str, Any]] = None) -> None:
             except Exception:
                 pass
     output_payload = {"event": event_name, **attrs}
-    try:
-        print(json.dumps(output_payload))
-    except Exception:
-        print(str(output_payload))
+    normalised = _normalise_attributes(output_payload)
+    event_label = normalised.pop("event", event_name)
+    LOGGER.info("observability.event", extra={"event": event_label, **normalised})
 
 
 def get_langchain_callbacks() -> Iterable[Any]:

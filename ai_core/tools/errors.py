@@ -61,7 +61,61 @@ class ToolError(ValueError):
 
 
 class InputError(ToolError):
-    """Raised when tool input validation fails."""
+    """Raised when tool input validation fails.
+
+    Examples:
+        - Required fields missing or invalid types.
+        - Business context IDs missing for a graph.
+        - Payload schema mismatch at boundary.
+    """
 
 
-__all__ = ["ToolErrorType", "ToolError", "InputError"]
+class TransientError(ToolError):
+    """Retryable error for transient failures (timeouts, temporary upstream issues).
+
+    Examples:
+        - Network blip or DNS failure.
+        - Temporary database connectivity issues.
+        - Short-lived service unavailable errors.
+    """
+
+
+class PermanentError(ToolError):
+    """Non-retryable error for permanent failures (invalid input, bad config).
+
+    Examples:
+        - Invalid credentials or malformed configuration.
+        - Unsupported document format or invalid file reference.
+        - Validation that cannot succeed on retry.
+    """
+
+
+class RateLimitedError(ToolError):
+    """Retryable error for upstream rate limiting.
+
+    Examples:
+        - LiteLLM returns HTTP 429.
+        - Embedding provider throttles requests.
+        - Custom tenant rate limits exceeded.
+    """
+
+
+class UpstreamError(ToolError):
+    """Retryable error for upstream service failures.
+
+    Examples:
+        - Upstream dependency returns 5xx.
+        - Provider API is unavailable or degraded.
+        - Circuit breaker open after repeated failures.
+    """
+
+
+__all__ = [
+    "ToolErrorType",
+    "ToolError",
+    "InputError",
+    "TransientError",
+    "PermanentError",
+    "RateLimitedError",
+    "UpstreamError",
+]

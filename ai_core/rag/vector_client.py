@@ -5,12 +5,9 @@ import hashlib
 import json
 import math
 import os
-import re
-import struct
 import threading
 import time
 import uuid
-from array import array
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,13 +35,29 @@ from psycopg2.pool import SimpleConnectionPool
 
 from common.logging import get_log_context, get_logger
 from ai_core.rag.vector_store import VectorStore
+from .deduplication import compute_document_embedding, find_near_duplicate
 from .embeddings import EmbeddingClientError, get_embedding_client
+from .hashing import compute_storage_hash
+from .metadata_handler import MetadataHandler
 from .normalization import normalise_text, normalise_text_db
 from .parents import limit_parent_payload
+from .query_builder import (
+    build_lexical_fallback_sql,
+    build_lexical_primary_sql,
+    build_vector_sql,
+)
+from .lexical_search import run_lexical_search
 from .routing_rules import is_collection_routing_enabled
+from .score_fusion import fuse_candidates
+from .vector_search import run_vector_search
+from .vector_utils import (
+    _normalise_vector,
+    embed_query,
+    format_vector,
+    format_vector_lenient,
+)
 
 from . import metrics
-from .filters import strict_match
 from .schemas import Chunk
 from .visibility import Visibility
 
@@ -59,9 +72,12 @@ logger.info(
 )
 
 
-_HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
-_NEAR_DUPLICATE_TOKEN_RE = re.compile(r"\w+")
-_PRIMARY_TEXT_HASH_KEYS = {"sha256": "crawler.primary_text_hash_sha256"}
+_HYDE_PROMPT_TEMPLATE = (
+    "Write a short, factual passage that would answer the question. "
+    "Keep it concise and information-dense.\n\n"
+    "Question:\n{query}\n\n"
+    "Passage:"
+)
 
 LIFECYCLE_ACTIVE = "active"
 LIFECYCLE_RETIRED = "retired"
@@ -78,174 +94,6 @@ def _normalize_lifecycle_state(value: object | None) -> str:
     if candidate in {LIFECYCLE_ACTIVE, LIFECYCLE_RETIRED, LIFECYCLE_DELETED}:
         return candidate
     return LIFECYCLE_ACTIVE
-
-
-@dataclass(frozen=True)
-class NearDuplicateSignature:
-    """Set-based token signature used for near-duplicate checks."""
-
-    fingerprint: str
-    tokens: Tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        normalized_tokens = tuple(_normalize_dedup_token_sequence(self.tokens))
-        object.__setattr__(self, "tokens", normalized_tokens)
-        if not self.fingerprint:
-            raise ValueError("near_duplicate_fingerprint_required")
-
-
-@dataclass(frozen=True)
-class DedupSignatures:
-    """Stable signatures describing a document for deduplication."""
-
-    content_hash: str
-    near_duplicate: Optional[NearDuplicateSignature] = None
-
-    def __post_init__(self) -> None:
-        if not self.content_hash:
-            raise ValueError("content_hash_required")
-
-
-@dataclass(frozen=True)
-class NearDuplicateMatch:
-    """Result of comparing a signature with known near-duplicates."""
-
-    document_id: str
-    similarity: float
-
-
-def _normalize_dedup_token_sequence(tokens: Sequence[str]) -> Tuple[str, ...]:
-    normalized = tuple(
-        sorted({token.strip().lower() for token in tokens if token and token.strip()})
-    )
-    if not normalized:
-        raise ValueError("near_duplicate_tokens_required")
-    return normalized
-
-
-def _tokenize_near_duplicate_text(text: str) -> Tuple[str, ...]:
-    return tuple(_NEAR_DUPLICATE_TOKEN_RE.findall(text.lower()))
-
-
-def compute_near_duplicate_signature(
-    primary_text: Optional[str],
-) -> Optional[NearDuplicateSignature]:
-    """Return a stable token signature for *primary_text* if available."""
-
-    text = (primary_text or "").strip()
-    if not text:
-        return None
-    tokens = _tokenize_near_duplicate_text(text)
-    if not tokens:
-        return None
-    normalized_tokens = tuple(sorted(set(tokens)))
-    fingerprint_source = "\u001f".join(normalized_tokens)
-    fingerprint = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
-    return NearDuplicateSignature(fingerprint=fingerprint, tokens=normalized_tokens)
-
-
-def _hash_payload(payload: bytes, algorithm: str) -> str:
-    try:
-        hasher = hashlib.new(algorithm)
-    except ValueError as exc:
-        raise ValueError("unsupported_hash_algorithm") from exc
-    hasher.update(payload)
-    return hasher.hexdigest()
-
-
-def extract_primary_text_hash(
-    parse_stats: Mapping[str, object] | None, algorithm: str
-) -> Optional[str]:
-    """Return the stored primary text hash encoded in *parse_stats*."""
-
-    key = _PRIMARY_TEXT_HASH_KEYS.get(algorithm.lower())
-    if key is None:
-        return None
-    if not isinstance(parse_stats, Mapping):
-        return None
-    raw = parse_stats.get(key)
-    if not isinstance(raw, str):
-        return None
-    candidate = raw.strip().lower()
-    if not candidate:
-        return None
-    if not _HASH_HEX_RE.fullmatch(candidate):
-        return None
-    return candidate
-
-
-def compute_content_hash(
-    *,
-    normalized_primary_text: str,
-    stored_primary_text_hash: Optional[str],
-    payload_bytes: bytes,
-    algorithm: str = "sha256",
-) -> str:
-    """Return a deterministic content hash for crawler documents."""
-
-    if normalized_primary_text:
-        payload = normalized_primary_text.encode("utf-8")
-        return _hash_payload(payload, algorithm)
-    if stored_primary_text_hash:
-        return stored_primary_text_hash
-    return _hash_payload(payload_bytes, algorithm)
-
-
-def build_dedup_signatures(
-    *,
-    primary_text: Optional[str],
-    normalized_primary_text: str,
-    stored_primary_text_hash: Optional[str],
-    payload_bytes: bytes,
-    algorithm: str = "sha256",
-) -> DedupSignatures:
-    """Compose deduplication signatures for crawler payloads."""
-
-    content_hash = compute_content_hash(
-        normalized_primary_text=normalized_primary_text,
-        stored_primary_text_hash=stored_primary_text_hash,
-        payload_bytes=payload_bytes,
-        algorithm=algorithm,
-    )
-    near_signature = compute_near_duplicate_signature(primary_text)
-    return DedupSignatures(content_hash=content_hash, near_duplicate=near_signature)
-
-
-def match_near_duplicate(
-    signature: Optional[NearDuplicateSignature],
-    known: Optional[Mapping[str, NearDuplicateSignature]],
-    *,
-    threshold: float,
-    exclude: Optional[str] = None,
-) -> Optional[NearDuplicateMatch]:
-    """Compare *signature* with known near-duplicates and return the best match."""
-
-    if signature is None or not known:
-        return None
-    best_id: Optional[str] = None
-    best_similarity = 0.0
-    signature_tokens = set(signature.tokens)
-    for doc_id, candidate in known.items():
-        if exclude is not None and doc_id == exclude:
-            continue
-        similarity = _jaccard_similarity(signature_tokens, set(candidate.tokens))
-        if similarity > best_similarity:
-            best_id = doc_id
-            best_similarity = similarity
-    if best_id is None or best_similarity < threshold:
-        return None
-    return NearDuplicateMatch(best_id, best_similarity)
-
-
-def _jaccard_similarity(left: Iterable[str], right: Iterable[str]) -> float:
-    set_left = set(left)
-    set_right = set(right)
-    if not set_left and not set_right:
-        return 1.0
-    union = set_left | set_right
-    if not union:
-        return 0.0
-    return len(set_left & set_right) / len(union)
 
 
 # Welche Filter-Schlüssel sind erlaubt und worauf mappen sie?
@@ -295,298 +143,6 @@ FALLBACK_RETRY_ATTEMPTS = 3
 FALLBACK_RETRY_BASE_DELAY_MS = 50
 _LEXICAL_RESULT_MIN_COLUMNS = 6
 _ZERO_EPSILON = 1e-12
-
-
-def _coerce_metadata_map(metadata: object) -> dict[str, object]:
-    """Return a shallow ``dict`` copy when *metadata* behaves like a mapping."""
-
-    if isinstance(metadata, MutableMapping):
-        return dict(metadata)
-    if isinstance(metadata, Mapping):
-        return dict(metadata)
-    return {}
-
-
-def _normalise_parent_nodes_value(value: object) -> object:
-    """Return a canonical representation of ``parent_nodes`` payloads."""
-
-    if value is None:
-        return None
-    if isinstance(value, Mapping):
-        items = sorted(value.items(), key=lambda item: str(item[0]))
-        return {
-            str(key): _normalise_parent_nodes_value(payload) for key, payload in items
-        }
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_normalise_parent_nodes_value(item) for item in value]
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            return value.decode("utf-8")
-        except Exception:
-            return value.hex()
-    return value
-
-
-def _metadata_parent_nodes_differ(
-    existing: Mapping[str, object] | None,
-    desired: Mapping[str, object] | None,
-) -> bool:
-    """Return ``True`` when ``parent_nodes`` differ between both metadata maps."""
-
-    existing_value = None
-    desired_value = None
-    if isinstance(existing, Mapping):
-        existing_value = existing.get("parent_nodes")
-    if isinstance(desired, Mapping):
-        desired_value = desired.get("parent_nodes")
-    return _normalise_parent_nodes_value(
-        existing_value
-    ) != _normalise_parent_nodes_value(desired_value)
-
-
-def _normalise_hash_value(value: object | None) -> str | None:
-    """Return a canonical string representation for hash-like values."""
-
-    if value in {None, ""}:
-        return None
-    try:
-        text = str(value).strip()
-    except Exception:
-        return None
-    return text or None
-
-
-def _metadata_content_hash(
-    metadata: Mapping[str, object] | None,
-) -> str | None:
-    """Extract the ``content_hash``/``hash`` value from *metadata* if present."""
-
-    if not isinstance(metadata, Mapping):
-        return None
-    for key in ("content_hash", "hash"):
-        candidate = _normalise_hash_value(metadata.get(key))
-        if candidate:
-            return candidate
-    return None
-
-
-def _content_hash_matches(
-    existing: Mapping[str, object] | None,
-    desired: Mapping[str, object] | None,
-    *,
-    existing_fallback: object | None = None,
-    desired_fallback: object | None = None,
-) -> bool:
-    """Return ``True`` when both metadata maps reference the same content hash."""
-
-    existing_hash = _metadata_content_hash(existing)
-    desired_hash = _metadata_content_hash(desired)
-    if existing_hash is None:
-        existing_hash = _normalise_hash_value(existing_fallback)
-    if desired_hash is None:
-        desired_hash = _normalise_hash_value(desired_fallback)
-    if not existing_hash or not desired_hash:
-        return False
-    return existing_hash == desired_hash
-
-
-def _is_dev_environment() -> bool:
-    """Return ``True`` when the current deployment resembles a dev setup."""
-
-    env_value = (
-        os.getenv("DEPLOY_ENV") or os.getenv("DEPLOYMENT_ENVIRONMENT") or ""
-    ).strip()
-    env_normalised = env_value.lower()
-    if not env_normalised:
-        return True
-    return env_normalised in {
-        "dev",
-        "development",
-        "local",
-        "unknown",
-    } or env_normalised.startswith("dev")
-
-
-def _metadata_identity_needs_repair(
-    metadata: Mapping[str, object] | None, canonical_id: str
-) -> bool:
-    """Return ``True`` if ``metadata`` lacks or mismatches the canonical ID."""
-
-    if not isinstance(metadata, Mapping):
-        return True
-
-    value = metadata.get("document_id")
-    if value in {None, ""}:
-        return True
-    try:
-        value_text = str(value).strip()
-    except Exception:
-        return True
-    if not value_text:
-        return True
-    return value_text != canonical_id
-
-
-def _normalise_document_identity(
-    doc: MutableMapping[str, object],
-    resolved_id: uuid.UUID,
-    metadata: Mapping[str, object] | None = None,
-) -> dict[str, object]:
-    """Ensure ``doc`` and its nested structures reference ``resolved_id``."""
-    # Local, fault-tolerant import to support partial runtimes and tests
-    try:  # pragma: no cover - exercised indirectly via tests
-        from .parents import limit_parent_payload as _limit_parent_payload  # type: ignore
-    except Exception:  # pragma: no cover - defensive fallback
-        _limit_parent_payload = None  # type: ignore[assignment]
-
-    canonical_id = str(resolved_id)
-    doc["id"] = resolved_id
-
-    raw_metadata = metadata if isinstance(metadata, Mapping) else doc.get("metadata")
-    if isinstance(raw_metadata, MutableMapping):
-        metadata_dict = raw_metadata
-    elif isinstance(raw_metadata, Mapping):
-        metadata_dict = dict(raw_metadata)
-    else:
-        metadata_dict = {}
-    metadata_dict["document_id"] = canonical_id
-    doc["metadata"] = metadata_dict
-
-    # Ensure a parents map is available even when upstream calls omit doc-level parents.
-    parents_map = doc.get("parents")
-    if not isinstance(parents_map, Mapping) or not parents_map:
-        derived_parents: dict[str, object] = {}
-        chunks_for_parents = doc.get("chunks")
-        if isinstance(chunks_for_parents, Sequence):
-            for chunk in chunks_for_parents:
-                chunk_parents = getattr(chunk, "parents", None)
-                if not isinstance(chunk_parents, Mapping):
-                    # No structured parents on the chunk; try deriving
-                    # a minimal root parent entry from parent_ids in meta.
-                    try:
-                        chunk_meta = getattr(chunk, "meta", None)
-                        parent_ids = None
-                        if isinstance(chunk_meta, Mapping):
-                            candidate = chunk_meta.get("parent_ids")
-                            if isinstance(candidate, Sequence) and not isinstance(
-                                candidate, (str, bytes, bytearray)
-                            ):
-                                parent_ids = [str(pid) for pid in candidate if pid]
-                        if parent_ids and any(
-                            isinstance(pid, str) and pid.endswith("#doc")
-                            for pid in parent_ids
-                        ):
-                            root_key = f"{canonical_id}#doc"
-                            derived_parents[root_key] = {"document_id": canonical_id}
-                    except Exception:
-                        pass
-                    continue
-                for parent_id, payload in chunk_parents.items():
-                    if isinstance(payload, Mapping):
-                        derived_parents[str(parent_id)] = dict(payload)
-                    else:
-                        derived_parents[str(parent_id)] = payload
-
-        if derived_parents:
-            root_key = f"{canonical_id}#doc"
-            alt_root_payload: object | None = None
-            canonical_present = False
-            for existing_key in list(derived_parents.keys()):
-                key_text = str(existing_key)
-                if not key_text.endswith("#doc"):
-                    continue
-                if key_text == root_key:
-                    canonical_present = True
-                    continue
-                if alt_root_payload is None:
-                    alt_root_payload = derived_parents[existing_key]
-                derived_parents.pop(existing_key, None)
-
-            if not canonical_present:
-                if isinstance(alt_root_payload, Mapping):
-                    root_payload = dict(alt_root_payload)
-                else:
-                    root_payload = {}
-                root_payload.setdefault("document_id", canonical_id)
-                derived_parents[root_key] = root_payload
-            elif root_key not in derived_parents:
-                derived_parents[root_key] = {"document_id": canonical_id}
-
-            doc["parents"] = derived_parents
-
-    chunks = doc.get("chunks")
-    if isinstance(chunks, Sequence):
-        for chunk in chunks:
-            if isinstance(chunk, Chunk):
-                chunk_meta = chunk.meta
-                if isinstance(chunk_meta, MutableMapping):
-                    chunk_meta["document_id"] = canonical_id
-                elif isinstance(chunk_meta, Mapping):
-                    new_meta = dict(chunk_meta)
-                    new_meta["document_id"] = canonical_id
-                    chunk.meta = new_meta
-            elif isinstance(chunk, MutableMapping):
-                chunk["document_id"] = canonical_id
-
-    for parent_key in ("parents", "parent_nodes"):
-        parent_map = doc.get(parent_key)
-        if not isinstance(parent_map, Mapping):
-            continue
-        normalised_parents: dict[str, object] = {}
-        for parent_id, payload in parent_map.items():
-            if isinstance(payload, Mapping):
-                parent_payload = dict(payload)
-                parent_payload["document_id"] = canonical_id
-            else:
-                parent_payload = payload
-            normalised_parents[parent_id] = parent_payload
-        doc[parent_key] = normalised_parents
-
-    # Ensure parent_nodes are present in metadata when parent mappings exist
-    parents_map = doc.get("parents") or doc.get("parent_nodes")
-    if not (isinstance(parents_map, Mapping) and parents_map):
-        # As a last resort, derive a minimal parent_nodes map containing
-        # the document root from chunk meta's parent_ids if available.
-        try:
-            chunks_for_parents = doc.get("chunks")
-            root_detected = False
-            if isinstance(chunks_for_parents, Sequence):
-                for chunk in chunks_for_parents:
-                    chunk_meta = getattr(chunk, "meta", None)
-                    if not isinstance(chunk_meta, Mapping):
-                        continue
-                    ids_value = chunk_meta.get("parent_ids")
-                    if isinstance(ids_value, Sequence) and not isinstance(
-                        ids_value, (str, bytes, bytearray)
-                    ):
-                        if any(
-                            isinstance(pid, str) and pid.endswith("#doc")
-                            for pid in ids_value
-                        ):
-                            root_detected = True
-                            break
-            if root_detected:
-                root_key = f"{canonical_id}#doc"
-                parents_map = {root_key: {"document_id": canonical_id}}
-        except Exception:
-            parents_map = parents_map
-    if isinstance(parents_map, Mapping) and parents_map:
-        limited_parents: Mapping[str, object] | None = None
-        if _limit_parent_payload is not None:
-            try:
-                limited_parents = _limit_parent_payload(parents_map)
-            except Exception:
-                limited_parents = None
-        if not limited_parents:
-            limited_parents = {
-                parent_id: (dict(payload) if isinstance(payload, Mapping) else payload)
-                for parent_id, payload in parents_map.items()
-            }
-        metadata_dict["parent_nodes"] = dict(limited_parents)
-
-    return metadata_dict
 
 
 def get_embedding_dim() -> int:
@@ -753,118 +309,6 @@ def resolve_distance_operator(cur, index_kind: str) -> str | None:
     if operator_class is None:
         return None
     return _OPERATOR_FOR_CLASS.get(operator_class)
-
-
-def _normalise_vector(values: Sequence[float] | None) -> list[float] | None:
-    """Scale ``values`` to unit length if possible.
-
-    Returns ``None`` when ``values`` cannot be interpreted as a numeric
-    sequence or if its norm is effectively zero. Callers should treat a
-    ``None`` result as an empty embedding and skip persistence/search to
-    avoid unstable similarity scores.
-    """
-
-    if not values:
-        return None
-    try:
-        floats = [float(value) for value in values]
-    except (TypeError, ValueError):
-        return None
-
-    norm_sq = math.fsum(value * value for value in floats)
-    if norm_sq <= _ZERO_EPSILON:
-        return None
-
-    norm = math.sqrt(norm_sq)
-    if not math.isfinite(norm) or norm <= _ZERO_EPSILON:
-        return None
-
-    scale = 1.0 / norm
-    return [value * scale for value in floats]
-
-
-def _coerce_vector_values(value: object) -> list[float] | None:
-    """Attempt to coerce ``value`` into a list of floats."""
-
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return []
-        if stripped.startswith("[") and stripped.endswith("]"):
-            stripped = stripped[1:-1].strip()
-        if not stripped:
-            return []
-        parts = [component for component in re.split(r"[\s,]+", stripped) if component]
-        if not parts:
-            return []
-        try:
-            return [float(component) for component in parts]
-        except (TypeError, ValueError):
-            return None
-    if isinstance(value, memoryview):
-        view = value
-        if view.ndim == 1 and view.format in {"f", "d"}:
-            try:
-                return [float(component) for component in view]
-            except (TypeError, ValueError):
-                return None
-        return _coerce_vector_values(view.tobytes())
-    if isinstance(value, (bytes, bytearray)):
-        data = bytes(value)
-        if len(data) >= 2:
-            dimension = struct.unpack("!H", data[:2])[0]
-            payload = data[2:]
-            if dimension == 0 and payload:
-                return None
-            for format_char in ("f", "d"):
-                component_size = struct.calcsize(f"!{format_char}")
-                expected_length = dimension * component_size
-                if dimension == 0 and not payload:
-                    return []
-                if len(payload) != expected_length:
-                    continue
-                try:
-                    unpacked = struct.unpack(f"!{dimension}{format_char}", payload)
-                except struct.error:
-                    continue
-                return [float(component) for component in unpacked]
-        for typecode in ("f", "d"):
-            try:
-                arr = array(typecode)
-                arr.frombytes(data)
-            except (ValueError, OverflowError):
-                continue
-            return [float(component) for component in arr]
-        return None
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        try:
-            return [float(component) for component in value]
-        except (TypeError, ValueError):
-            return None
-    tolist = getattr(value, "tolist", None)
-    if callable(tolist):  # pragma: no branch - defensive
-        try:
-            converted = tolist()
-        except Exception:  # pragma: no cover - defensive
-            return None
-        if isinstance(converted, Sequence) and not isinstance(
-            converted, (str, bytes, bytearray)
-        ):
-            try:
-                return [float(component) for component in converted]
-            except (TypeError, ValueError):
-                return None
-    values_attr = getattr(value, "values", None)
-    if isinstance(values_attr, Sequence) and not isinstance(
-        values_attr, (str, bytes, bytearray)
-    ):
-        try:
-            return [float(component) for component in values_attr]
-        except (TypeError, ValueError):
-            return None
-    return None
 
 
 def _coerce_env_value(
@@ -1155,7 +599,7 @@ class PgVectorClient:
             if math.isnan(score_float) or math.isinf(score_float):
                 score_float = fallback
 
-            metadata_dict = _coerce_metadata_map(metadata_value)
+            metadata_dict = MetadataHandler.coerce_map(metadata_value)
             return (
                 chunk_id,
                 text_value,
@@ -1179,7 +623,7 @@ class PgVectorClient:
                 PgVectorClient._ROW_SHAPE_WARNINGS.add(key)
         padded_list: List[object] = list((row_tuple + (None,) * 7)[:7])
 
-        metadata_dict = _coerce_metadata_map(padded_list[2])
+        metadata_dict = MetadataHandler.coerce_map(padded_list[2])
         padded_list[2] = metadata_dict
 
         score_value = padded_list[-1]
@@ -1451,7 +895,7 @@ class PgVectorClient:
         metrics.RAG_UPSERT_CHUNKS.inc(inserted_chunks)
         documents_info: List[Dict[str, object]] = []
         for key, doc in grouped.items():
-            # DEBUG.1.initial_doc – capture initial state for this document candidate
+            # DEBUG.1.initial_doc â€“ capture initial state for this document candidate
             try:
                 logger.warning(
                     "vector_client.ensure_documents",
@@ -1701,7 +1145,44 @@ class PgVectorClient:
         lex_limit_value = min(max_candidates_value, max(top_k, lex_limit_requested))
         query_norm = normalise_text(query)
         query_db_norm = normalise_text_db(query)
-        raw_vec = self._embed_query(query_norm)
+        raw_vec: List[float] | None = None
+        hyde_enabled = _get_bool_setting("RAG_HYDE_ENABLED", False)
+        if hyde_enabled and query_norm:
+            context = get_log_context()
+            hyde_metadata = {
+                "tenant_id": tenant,
+                "case_id": case_value,
+                "trace_id": context.get("trace_id"),
+                "prompt_version": "hyde-v1",
+            }
+            key_alias = context.get("key_alias")
+            if key_alias:
+                hyde_metadata["key_alias"] = key_alias
+            hyde_text = self._generate_hyde_document(query_norm, hyde_metadata)
+            if hyde_text:
+                try:
+                    raw_vec = self._embed_query(hyde_text)
+                except EmbeddingClientError as exc:
+                    logger.warning(
+                        "rag.hyde.embedding_failed",
+                        extra={
+                            "tenant_id": tenant,
+                            "case_id": case_value,
+                            "error": str(exc),
+                        },
+                    )
+                    raw_vec = None
+                else:
+                    logger.info(
+                        "rag.hyde.applied",
+                        extra={
+                            "tenant_id": tenant,
+                            "case_id": case_value,
+                            "hyde_chars": len(hyde_text),
+                        },
+                    )
+        if raw_vec is None:
+            raw_vec = self._embed_query(query_norm)
         is_zero_vec = True
         if raw_vec is not None:
             for value in raw_vec:
@@ -1830,7 +1311,6 @@ class PgVectorClient:
 
         applied_trgm_limit_value: Optional[float] = None
         fallback_limit_used_value: Optional[float] = None
-        fallback_tried_limits: List[float] = []
         total_without_filter: Optional[int] = None
 
         def _safe_chunk_identifier(value: object | None) -> str | None:
@@ -1880,7 +1360,6 @@ class PgVectorClient:
         def _operation() -> Tuple[List[tuple], List[tuple], float]:
             nonlocal applied_trgm_limit_value
             nonlocal fallback_limit_used_value
-            nonlocal fallback_tried_limits
             nonlocal total_without_filter
             nonlocal distance_operator_value
             nonlocal lexical_query_variant
@@ -1889,800 +1368,76 @@ class PgVectorClient:
             vector_rows: List[tuple] = []
             lexical_rows: List[tuple] = []
             vector_query_failed = vector_format_error is not None
-            fallback_tried_limits = []
             fallback_limit_used_value = None
             total_without_filter_local: Optional[int] = None
             distance_operator_value = None
             lexical_query_variant = "none"
             lexical_fallback_limit_value = None
-
-            def _build_vector_sql(
-                where_sql_value: str, select_columns: str, order_by_clause: str
-            ) -> str:
-                # where_sql_value contains union (OR) scope predicates between case and
-                # collection filters to intentionally broaden context when both are
-                # provided.
-                return f"""
-                    SELECT
-                        {select_columns}
-                    FROM embeddings e
-                    JOIN chunks c ON e.chunk_id = c.id
-                    JOIN documents d ON c.document_id = d.id
-                    WHERE {where_sql_value}
-                    ORDER BY {order_by_clause}
-                    LIMIT %s
-                """
-
-            def _build_lexical_primary_sql(
-                where_sql_value: str, select_columns: str
-            ) -> str:
-                return f"""
-                    SELECT
-                        {select_columns}
-                    FROM chunks c
-                    JOIN documents d ON c.document_id = d.id
-                    WHERE {where_sql_value}
-                      AND c.text_norm %% %s
-                    ORDER BY lscore DESC
-                    LIMIT %s
-                """
-
-            def _build_lexical_fallback_sql(
-                where_sql_value: str, select_columns: str
-            ) -> str:
-                return f"""
-                    SELECT
-                        {select_columns}
-                    FROM chunks c
-                    JOIN documents d ON c.document_id = d.id
-                    WHERE {where_sql_value}
-                      AND similarity(c.text_norm, %s) >= %s
-                    ORDER BY lscore DESC
-                    LIMIT %s
-                """
+            lexical_mode_raw = str(_get_setting("RAG_LEXICAL_MODE", "trgm")).strip()
+            lexical_mode = (
+                "bm25"
+                if lexical_mode_raw.lower() in {"bm25", "tsvector", "fulltext"}
+                else "trgm"
+            )
+            if lexical_mode == "bm25":
+                lexical_score_sql = (
+                    "ts_rank_cd(c.text_tsv, plainto_tsquery('simple', %s)) AS lscore"
+                )
+                lexical_match_clause = "c.text_tsv @@ plainto_tsquery('simple', %s)"
+            else:
+                lexical_score_sql = "similarity(c.text_norm, %s) AS lscore"
+                lexical_match_clause = "c.text_norm %% %s"
 
             with self._connection() as conn:
-                if vector_format_error is not None:
-                    try:
-                        conn.rollback()
-                    except Exception:  # pragma: no cover - defensive
-                        pass
-                    logger.warning(
-                        "rag.hybrid.vector_query_failed",
-                        tenant_id=tenant,
-                        tenant=tenant,
-                        case_id=case_value,
-                        error=str(vector_format_error),
-                    )
-                elif query_vec is not None:
-                    try:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                "SET LOCAL statement_timeout = %s",
-                                (str(self._statement_timeout_ms),),
-                            )
-                            if index_kind == "HNSW":
-                                cur.execute(
-                                    "SET LOCAL hnsw.ef_search = %s",
-                                    (str(ef_search),),
-                                )
-                            elif index_kind == "IVFFLAT":
-                                cur.execute(
-                                    "SET LOCAL ivfflat.probes = %s",
-                                    (str(probes),),
-                                )
-                            distance_operator = self._get_distance_operator(
-                                conn, index_kind
-                            )
-                            distance_operator_value = distance_operator
-                            vector_sql = _build_vector_sql(
-                                where_sql,
-                                "c.id,\n                                    c.text,\n                                    c.metadata,\n                                    d.hash,\n                                    d.id,\n                                    c.collection_id,\n                                    e.embedding "
-                                + f"{distance_operator} %s::vector AS distance",
-                                "distance",
-                            )
-                            # Bind parameters in textual order: SELECT (vector), WHERE params, LIMIT
-                            cur.execute(
-                                vector_sql, (query_vec, *where_params, vec_limit_value)
-                            )
-                            vector_rows = cur.fetchall()
-                            try:
-                                logger.debug(
-                                    "rag.hybrid.rows.vector_raw",
-                                    extra={
-                                        "tenant_id": tenant,
-                                        "case_id": case_value,
-                                        "count": len(vector_rows),
-                                        "rows": _summarise_rows(
-                                            vector_rows, kind="vector"
-                                        ),
-                                    },
-                                )
-                            except Exception:
-                                pass
-                            try:
-                                logger.warning(
-                                    "rag.debug.rows.vector",
-                                    extra={
-                                        "count": len(vector_rows),
-                                        "first_len": (
-                                            len(vector_rows[0]) if vector_rows else 0
-                                        ),
-                                    },
-                                )
-                            except Exception:
-                                pass
-                    except Exception as exc:
-                        vector_rows = []
-                        vector_query_failed = True
-                        try:
-                            conn.rollback()
-                        except Exception:  # pragma: no cover - defensive
-                            pass
-                        logger.warning(
-                            "rag.hybrid.vector_query_failed",
-                            tenant_id=tenant,
-                            tenant=tenant,
-                            case_id=case_value,
-                            error=str(exc),
-                        )
-                else:
-                    # Even when the query embedding is empty, execute a lightweight
-                    # no-op vector statement to ensure limit clamping is exercised
-                    # consistently (observability/tests rely on this record).
-                    try:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                "SET LOCAL statement_timeout = %s",
-                                (str(self._statement_timeout_ms),),
-                            )
-                            cur.execute(
-                                "SELECT 1 FROM embeddings e LIMIT %s",
-                                (vec_limit_value,),
-                            )
-                    except Exception:
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
-
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "SET LOCAL statement_timeout = %s",
-                            (str(self._statement_timeout_ms),),
-                        )
-                        # Ensure the schema is active for all lexical operations
-                        # in this transaction, regardless of connection setup.
-                        # This is required for fallback paths and mocked
-                        # connections used in tests where _prepare_connection
-                        # is bypassed.
-                        try:
-                            cur.execute(
-                                sql.SQL("SET LOCAL search_path TO {}, public").format(
-                                    sql.Identifier(self._schema)
-                                )
-                            )
-                        except Exception:
-                            # If SET LOCAL is not available, rely on connection-level
-                            # search_path set during _prepare_connection.
-                            pass
-                        logger.info(
-                            "rag.pgtrgm.limit",
-                            requested=requested_trgm_limit,
-                            effective=trgm_limit_value,
-                        )
-
-                        def _fetch_show_limit_value() -> float | None:
-                            try:
-                                cur.execute("SELECT show_limit()")
-                            except Exception:
-                                return None
-                            current = cur.fetchone()
-                            if (
-                                current
-                                and isinstance(current, Sequence)
-                                and len(current) > 0
-                                and current[0] is not None
-                            ):
-                                try:
-                                    return float(current[0])
-                                except (TypeError, ValueError):
-                                    return None
-                            return None
-
-                        applied_trgm_limit: float | None = None
-                        try:
-                            cur.execute(
-                                "SELECT set_limit(%s::float4)",
-                                (float(trgm_limit_value),),
-                            )
-                            applied_trgm_limit = _fetch_show_limit_value()
-                        except Exception as exc:  # pragma: no cover - defensive
-                            logger.warning(
-                                "rag.pgtrgm.limit.error",
-                                requested=requested_trgm_limit,
-                                exc_type=exc.__class__.__name__,
-                                error=str(exc),
-                            )
-                            applied_trgm_limit = None
-                        applied_trgm_limit_value = applied_trgm_limit
-
-                        lexical_rows_local: List[tuple] = []
-                        fallback_requires_rollback = False
-                        lexical_sql = f"""
-                            SELECT
-                                c.id,
-                                c.text,
-                                c.metadata,
-                                d.hash,
-                                d.id,
-                                c.collection_id,
-                                similarity(c.text_norm, %s) AS lscore
-                            FROM chunks c
-                            JOIN documents d ON c.document_id = d.id
-                            WHERE {where_sql}
-                              AND c.text_norm %% %s
-                            ORDER BY lscore DESC
-                            LIMIT %s
-                        """
-                        fallback_requested = requested_trgm_limit is not None
-                        should_run_fallback = False
-                        if query_db_norm.strip():
-                            # Optional probe: a cheap LIMIT 0 primary query to detect DB-level
-                            # errors (simulated by tests) early. If this raises, we'll roll back
-                            # before running the similarity fallback.
-                            probe_failed = False
-                            try:
-                                cur.execute(
-                                    lexical_sql,
-                                    (
-                                        query_db_norm,
-                                        *where_params,
-                                        query_db_norm,
-                                        lex_limit_value,  # probe uses clamped limit
-                                    ),
-                                )
-                                _ = cur.fetchall()
-                            except (IndexError, ValueError, PsycopgError) as exc:
-                                probe_failed = True
-                                should_run_fallback = True
-                                fallback_requires_rollback = True
-                                lexical_rows_local = []
-                                try:
-                                    logger.warning(
-                                        "rag.debug.lexical_probe_exception",
-                                        extra={
-                                            "tenant_id": tenant,
-                                            "case_id": case_value,
-                                            "exc_type": exc.__class__.__name__,
-                                            "fallback_requires_rollback": True,
-                                        },
-                                    )
-                                except Exception:
-                                    pass
-                                logger.warning(
-                                    "rag.hybrid.lexical_primary_failed",
-                                    tenant_id=tenant,
-                                    case_id=case_value,
-                                    error=str(exc),
-                                )
-                                if (
-                                    isinstance(exc, PsycopgError)
-                                    and vector_query_failed
-                                ):
-                                    raise
-
-                            if not probe_failed:
-                                try:
-                                    logger.warning(
-                                        "rag.debug.lexical_primary_try_enter",
-                                        extra={
-                                            "tenant_id": tenant,
-                                            "case_id": case_value,
-                                            "probe_failed": probe_failed,
-                                        },
-                                    )
-                                except Exception:
-                                    pass
-                                # Phase 1: execute + fetch. If this raises, treat as DB-level
-                                # failure requiring a rollback before fallback.
-                                try:
-                                    cur.execute(
-                                        lexical_sql,
-                                        (
-                                            query_db_norm,
-                                            *where_params,
-                                            query_db_norm,
-                                            lex_limit_value,
-                                        ),
-                                    )
-                                    fetched_rows = cur.fetchall()
-                                except (IndexError, ValueError, PsycopgError) as exc:
-                                    should_run_fallback = True
-                                    fallback_requires_rollback = True
-                                    lexical_rows_local = []
-                                    try:
-                                        logger.warning(
-                                            "rag.debug.lexical_primary_exception",
-                                            extra={
-                                                "tenant_id": tenant,
-                                                "case_id": case_value,
-                                                "exc_type": exc.__class__.__name__,
-                                                "fallback_requires_rollback": True,
-                                            },
-                                        )
-                                    except Exception:
-                                        pass
-                                    logger.warning(
-                                        "rag.hybrid.lexical_primary_failed",
-                                        tenant_id=tenant,
-                                        case_id=case_value,
-                                        error=str(exc),
-                                    )
-                                    if (
-                                        isinstance(exc, PsycopgError)
-                                        and vector_query_failed
-                                    ):
-                                        raise
-                                else:
-                                    lexical_rows_local = fetched_rows
-                                    lexical_query_variant = "primary"
-                                    # Phase 2: light row-shape probe. If this fails, do NOT
-                                    # require rollback; it's a client-side processing issue.
-                                    try:
-                                        if lexical_rows_local:
-                                            _ = tuple(lexical_rows_local[0])
-                                    except Exception as exc:
-                                        should_run_fallback = True
-                                        fallback_requires_rollback = False
-                                        # Collect minimal diagnostics about the returned row shape
-                                        rows_count = 0
-                                        first_len = None
-                                        first_type = None
-                                        try:
-                                            rows_count = len(lexical_rows_local)
-                                            first = lexical_rows_local[0]
-                                            first_type = type(first).__name__
-                                            try:
-                                                first_len = len(first)  # may fail
-                                            except Exception:
-                                                first_len = None
-                                        except Exception:
-                                            pass
-                                        lexical_rows_local = []
-                                        logger.warning(
-                                            "rag.hybrid.lexical_primary_failed",
-                                            tenant_id=tenant,
-                                            case_id=case_value,
-                                            error=str(exc),
-                                            rows_count=rows_count,
-                                            row_first_len=first_len,
-                                            row_first_type=first_type,
-                                        )
-                                        try:
-                                            logger.warning(
-                                                "rag.debug.fallback_flag_set",
-                                                extra={
-                                                    "tenant_id": tenant,
-                                                    "case_id": case_value,
-                                                    "reason": "row_shape_error",
-                                                    "fallback_requires_rollback": False,
-                                                },
-                                            )
-                                        except Exception:
-                                            pass
-                                try:
-                                    logger.debug(
-                                        "rag.hybrid.rows.lexical_raw",
-                                        extra={
-                                            "tenant_id": tenant,
-                                            "case_id": case_value,
-                                            "count": len(lexical_rows_local),
-                                            "rows": _summarise_rows(
-                                                lexical_rows_local, kind="lexical"
-                                            ),
-                                        },
-                                    )
-                                except Exception:
-                                    pass
-                                try:
-                                    logger.warning(
-                                        "rag.debug.rows.lexical",
-                                        extra={
-                                            "count": len(lexical_rows_local),
-                                            "first_len": (
-                                                len(lexical_rows_local[0])
-                                                if lexical_rows_local
-                                                else 0
-                                            ),
-                                        },
-                                    )
-                                except Exception:
-                                    pass
-                                # Wrap the score validation block to ensure any unexpected
-                                # row-shape/type errors are handled by the inner except below.
-                                try:
-                                    if lexical_rows_local and not should_run_fallback:
-                                        # Guard against inconsistent similarity scores.
-                                        # The trigram operator should never return rows
-                                        # whose lscore falls below the currently applied
-                                        # pg_trgm limit. However, unit tests using
-                                        # `FakeCursor` can simulate this scenario when
-                                        # they expect the client to fall back to the
-                                        # explicit similarity path. Detect this edge
-                                        # case and force the fallback execution so the
-                                        # behaviour matches production semantics.
-                                        invalid_lscore = False
-                                        limit_threshold: float | None = None
-                                        if applied_trgm_limit is not None:
-                                            try:
-                                                limit_threshold = float(
-                                                    applied_trgm_limit
-                                                )
-                                            except (TypeError, ValueError):
-                                                limit_threshold = None
-                                        if limit_threshold is not None:
-                                            for row in lexical_rows_local:
-                                                try:
-                                                    score_candidate = (
-                                                        self._extract_score_from_row(
-                                                            row, kind="lexical"
-                                                        )
-                                                    )
-                                                except Exception:
-                                                    # Defensive: ignore rows with unexpected shape/types
-                                                    continue
-                                                if score_candidate is None:
-                                                    continue
-                                                try:
-                                                    score_value = float(score_candidate)
-                                                except (TypeError, ValueError):
-                                                    continue
-                                                if score_value < limit_threshold - 1e-6:
-                                                    invalid_lscore = True
-                                                    break
-                                        if invalid_lscore:
-                                            should_run_fallback = True
-                                except Exception as exc:
-                                    handled = False
-                                    if isinstance(exc, (IndexError, ValueError)):
-                                        handled = True
-                                        should_run_fallback = True
-                                        # Row-shape/processing errors at this stage should not
-                                        # require a transaction rollback.
-                                        fallback_requires_rollback = False
-                                        # Collect minimal diagnostics about the returned row shape
-                                        rows_count = 0
-                                        first_len = None
-                                        first_type = None
-                                        try:
-                                            rows_count = len(lexical_rows_local)
-                                            if lexical_rows_local:
-                                                first = lexical_rows_local[0]
-                                                first_type = type(first).__name__
-                                                try:
-                                                    first_len = len(
-                                                        first
-                                                    )  # may fail for non-sequences
-                                                except Exception:
-                                                    first_len = None
-                                        except Exception:
-                                            pass
-                                        lexical_rows_local = []
-                                        logger.warning(
-                                            "rag.hybrid.lexical_primary_failed",
-                                            tenant_id=tenant,
-                                            case_id=case_value,
-                                            error=str(exc),
-                                            applied_trgm_limit=applied_trgm_limit,
-                                            rows_count=rows_count,
-                                            row_first_len=first_len,
-                                            row_first_type=first_type,
-                                        )
-                                        try:
-                                            logger.warning(
-                                                "rag.debug.fallback_flag_set",
-                                                extra={
-                                                    "tenant_id": tenant,
-                                                    "case_id": case_value,
-                                                    "reason": "score_validation_error",
-                                                    "fallback_requires_rollback": False,
-                                                },
-                                            )
-                                        except Exception:
-                                            pass
-                                    if not handled and isinstance(exc, PsycopgError):
-                                        handled = True
-                                        if vector_query_failed:
-                                            raise
-                                        # Treat database errors during the primary lexical query as
-                                        # a signal to attempt the explicit similarity fallback.
-                                        # We mark that a rollback is required to restore session
-                                        # settings (e.g. search_path) before running the fallback.
-                                        should_run_fallback = True
-                                        fallback_requires_rollback = True
-                                        lexical_rows_local = []
-                                        try:
-                                            logger.warning(
-                                                "rag.debug.fallback_flag_set",
-                                                extra={
-                                                    "tenant_id": tenant,
-                                                    "case_id": case_value,
-                                                    "reason": "db_error",
-                                                    "fallback_requires_rollback": True,
-                                                },
-                                            )
-                                        except Exception:
-                                            pass
-                                        logger.warning(
-                                            "rag.hybrid.lexical_primary_failed",
-                                            tenant_id=tenant,
-                                            case_id=case_value,
-                                            error=str(exc),
-                                        )
-                                    if not handled:
-                                        raise
-                            if not lexical_rows_local and not should_run_fallback:
-                                # If the primary trigram match returned no rows, always run the
-                                # explicit similarity fallback. Some environments report a low
-                                # pg_trgm limit (e.g. 0.1) even after attempting to raise it; we
-                                # still want to relax towards 0.0 to ensure we can retrieve at
-                                # least the best lexical candidates when trigram returns nothing.
-                                should_run_fallback = True
-                            if should_run_fallback:
-                                try:
-                                    logger.warning(
-                                        "rag.debug.before_fallback",
-                                        extra={
-                                            "tenant_id": tenant,
-                                            "case_id": case_value,
-                                            "fallback_requires_rollback": bool(
-                                                fallback_requires_rollback
-                                            ),
-                                        },
-                                    )
-                                except Exception:
-                                    pass
-                                if fallback_requires_rollback:
-                                    try:
-                                        logger.warning(
-                                            "rag.debug.calling_rollback",
-                                            extra={
-                                                "tenant_id": tenant,
-                                                "case_id": case_value,
-                                            },
-                                        )
-                                    except Exception:
-                                        pass
-                                    try:
-                                        conn.rollback()
-                                    except Exception:  # pragma: no cover - defensive
-                                        pass
-                                    else:
-                                        try:
-                                            logger.warning(
-                                                "rag.debug.after_rollback",
-                                                extra={
-                                                    "tenant_id": tenant,
-                                                    "case_id": case_value,
-                                                    "action": "restore_session",
-                                                },
-                                            )
-                                        except Exception:
-                                            pass
-                                        self._restore_session_after_rollback(cur)
-                                logger.info(
-                                    "rag.hybrid.trgm_no_match",
-                                    extra={
-                                        "tenant_id": tenant,
-                                        "case_id": case_value,
-                                        "trgm_limit": trgm_limit_value,
-                                        "applied_trgm_limit": applied_trgm_limit,
-                                        "fallback": True,
-                                    },
-                                )
-                                fallback_lexical_sql = f"""
-                                    SELECT
-                                        c.id,
-                                        c.text,
-                                        c.metadata,
-                                        d.hash,
-                                        d.id,
-                                        c.collection_id,
-                                        similarity(c.text_norm, %s) AS lscore
-                                    FROM chunks c
-                                    JOIN documents d ON c.document_id = d.id
-                                    WHERE {where_sql}
-                                      AND similarity(c.text_norm, %s) >= %s
-                                    ORDER BY lscore DESC
-                                    LIMIT %s
-                                """
-                                base_limits: List[float] = []
-                                if fallback_requested and (
-                                    requested_trgm_limit is not None
-                                ):
-                                    base_limits.append(float(requested_trgm_limit))
-                                if applied_trgm_limit is not None:
-                                    base_limits.append(float(applied_trgm_limit))
-                                else:
-                                    base_limits.append(min(trgm_limit_value, 0.10))
-                                base_limits.extend(
-                                    [
-                                        min(trgm_limit_value, 0.10),
-                                        0.08,
-                                        0.06,
-                                        0.05,
-                                        0.04,
-                                        0.03,
-                                        0.02,
-                                        0.01,
-                                        0.0,
-                                    ]
-                                )
-                                fallback_limits: List[float] = []
-                                for limit in base_limits:
-                                    try:
-                                        limit_value = float(limit)
-                                    except (TypeError, ValueError):
-                                        continue
-                                    limit_value = max(0.0, limit_value)
-                                    if limit_value not in fallback_limits:
-                                        fallback_limits.append(limit_value)
-                                fallback_floor = min(trgm_limit_value, 0.05)
-                                if (
-                                    fallback_requested
-                                    and requested_trgm_limit is not None
-                                ):
-                                    try:
-                                        fallback_floor = max(
-                                            0.0, float(requested_trgm_limit)
-                                        )
-                                    except (TypeError, ValueError):
-                                        fallback_floor = fallback_floor
-                                picked_limit: float | None = None
-                                last_attempt_rows: List[tuple] = []
-                                best_rows: List[tuple] = []
-                                best_limit: float | None = None
-                                fallback_last_limit_value: float | None = None
-                                for limit_value in fallback_limits:
-                                    fallback_tried_limits.append(limit_value)
-                                    cur.execute(
-                                        fallback_lexical_sql,
-                                        (
-                                            query_db_norm,
-                                            *where_params,
-                                            query_db_norm,
-                                            limit_value,
-                                            lex_limit_value,
-                                        ),
-                                    )
-                                    fallback_last_limit_value = float(limit_value)
-                                    attempt_rows = cur.fetchall()
-                                    last_attempt_rows = list(attempt_rows)
-                                    try:
-                                        logger.debug(
-                                            "rag.hybrid.rows.lexical_raw",
-                                            extra={
-                                                "tenant_id": tenant,
-                                                "case_id": case_value,
-                                                "count": len(attempt_rows),
-                                                "limit": float(limit_value),
-                                                "rows": _summarise_rows(
-                                                    attempt_rows, kind="lexical"
-                                                ),
-                                            },
-                                        )
-                                    except Exception:
-                                        pass
-                                    try:
-                                        logger.warning(
-                                            "rag.debug.rows.lexical",
-                                            extra={
-                                                "count": len(attempt_rows),
-                                                "first_len": (
-                                                    len(attempt_rows[0])
-                                                    if attempt_rows
-                                                    else 0
-                                                ),
-                                            },
-                                        )
-                                    except Exception:
-                                        pass
-                                    if attempt_rows:
-                                        lexical_rows_local = attempt_rows
-                                        best_rows = attempt_rows
-                                        best_limit = limit_value
-                                        if limit_value <= fallback_floor + 1e-9:
-                                            picked_limit = limit_value
-                                            break
-                                else:
-                                    if best_rows:
-                                        lexical_rows_local = best_rows
-                                        picked_limit = best_limit
-                                    else:
-                                        lexical_rows_local = last_attempt_rows
-                                if picked_limit is None and best_limit is not None:
-                                    picked_limit = best_limit
-                                lexical_query_variant = "fallback"
-                                fallback_limit_used_value = picked_limit
-                                if fallback_limit_used_value is None:
-                                    fallback_limit_used_value = (
-                                        fallback_last_limit_value
-                                    )
-                                lexical_fallback_limit_value = fallback_limit_used_value
-                                if (
-                                    picked_limit is not None
-                                    and requested_trgm_limit is None
-                                    and (
-                                        applied_trgm_limit is None
-                                        or picked_limit < applied_trgm_limit - 1e-9
-                                    )
-                                ):
-                                    try:
-                                        cur.execute(
-                                            "SELECT set_limit(%s::float4)",
-                                            (float(picked_limit),),
-                                        )
-                                        reapplied_limit = _fetch_show_limit_value()
-                                    except Exception:
-                                        reapplied_limit = None
-                                    if reapplied_limit is not None:
-                                        applied_trgm_limit = reapplied_limit
-                                logger.info(
-                                    "rag.hybrid.trgm_fallback_applied",
-                                    tenant_id=tenant,
-                                    case_id=case_value,
-                                    tried_limits=list(fallback_tried_limits),
-                                    picked_limit=picked_limit,
-                                    count=len(lexical_rows_local),
-                                )
-                        # Ensure the locally fetched lexical rows are propagated
-                        # to the outer scope so they are counted/fused later.
-                        lexical_rows = lexical_rows_local
-                        logger.info(
-                            "rag.pgtrgm.limit.applied",
-                            requested=requested_trgm_limit,
-                            applied=applied_trgm_limit,
-                        )
-                        applied_trgm_limit_value = applied_trgm_limit
-                except Exception as exc:
-                    lexical_rows = []
-                    rollback_succeeded = False
-                    try:
-                        conn.rollback()
-                    except Exception:  # pragma: no cover - defensive
-                        pass
-                    else:
-                        rollback_succeeded = True
-                    if rollback_succeeded:
-                        try:
-                            with conn.cursor() as restore_cur:
-                                self._restore_session_after_rollback(restore_cur)
-                        except Exception:  # pragma: no cover - defensive
-                            pass
-                    logger.warning(
-                        "rag.hybrid.lexical_query_failed",
-                        tenant_id=tenant,
-                        tenant=tenant,
-                        case_id=case_value,
-                        error=str(exc),
-                    )
-                    if not vector_rows:
-                        if vector_query_failed:
-                            fatal_exc = PsycopgError(str(exc))
-                            setattr(fatal_exc, "_rag_retry_fatal", True)
-                            raise fatal_exc from exc
-                        raise
-            # Debug: final lexical rows right before returning to retry wrapper
-            try:
-                logger.warning(
-                    "rag.debug.rows.lexical.final",
-                    count=len(lexical_rows),
-                    first_len=(len(lexical_rows[0]) if lexical_rows else 0),
+                vector_outcome = run_vector_search(
+                    client=self,
+                    conn=conn,
+                    query_vec=query_vec,
+                    vector_format_error=vector_format_error,
+                    index_kind=index_kind,
+                    ef_search=ef_search,
+                    probes=probes,
+                    where_sql=where_sql,
+                    where_params=where_params,
+                    vec_limit=vec_limit_value,
+                    tenant=tenant,
+                    case_id=case_value,
+                    statement_timeout_ms=self._statement_timeout_ms,
+                    summarise_rows=_summarise_rows,
+                    logger=logger,
                 )
-            except Exception:
-                pass
+                vector_rows = vector_outcome.rows
+                vector_query_failed = vector_outcome.vector_query_failed
+                distance_operator_value = vector_outcome.distance_operator
+
+                lexical_outcome = run_lexical_search(
+                    client=self,
+                    conn=conn,
+                    query_db_norm=query_db_norm,
+                    where_sql=where_sql,
+                    where_params=where_params,
+                    lex_limit=lex_limit_value,
+                    trgm_limit_value=trgm_limit_value,
+                    requested_trgm_limit=requested_trgm_limit,
+                    tenant=tenant,
+                    case_id=case_value,
+                    statement_timeout_ms=self._statement_timeout_ms,
+                    schema=self._schema,
+                    lexical_score_sql=lexical_score_sql,
+                    lexical_match_clause=lexical_match_clause,
+                    vector_rows=vector_rows,
+                    vector_query_failed=vector_query_failed,
+                    summarise_rows=_summarise_rows,
+                    extract_score_from_row=lambda row: self._extract_score_from_row(
+                        row, kind="lexical"
+                    ),
+                    logger=logger,
+                )
+                lexical_rows = lexical_outcome.rows
+                applied_trgm_limit_value = lexical_outcome.applied_trgm_limit
+                fallback_limit_used_value = lexical_outcome.fallback_limit_used
+                lexical_query_variant = lexical_outcome.lexical_query_variant
+                lexical_fallback_limit_value = lexical_outcome.lexical_fallback_limit
 
             if visibility_mode is Visibility.ACTIVE and where_sql_without_deleted:
                 try:
@@ -2709,7 +1464,7 @@ class PgVectorClient:
                             and not vector_query_failed
                             and distance_operator_value is not None
                         ):
-                            vector_count_sql = _build_vector_sql(
+                            vector_count_sql = build_vector_sql(
                                 where_sql_without_deleted,
                                 "c.id",
                                 f"e.embedding {distance_operator_value} %s::vector",
@@ -2723,9 +1478,11 @@ class PgVectorClient:
 
                         if query_db_norm.strip():
                             if lexical_query_variant == "primary":
-                                lexical_count_sql = _build_lexical_primary_sql(
+                                lexical_count_sql = build_lexical_primary_sql(
                                     where_sql_without_deleted,
-                                    "c.id,\n                                    similarity(c.text_norm, %s) AS lscore",
+                                    "c.id,\n                                    "
+                                    + lexical_score_sql,
+                                    lexical_match_clause,
                                 )
                                 count_selects.append(
                                     f"SELECT id FROM ({lexical_count_sql}) AS lexical_candidates"
@@ -2742,7 +1499,7 @@ class PgVectorClient:
                                 lexical_query_variant == "fallback"
                                 and lexical_fallback_limit_value is not None
                             ):
-                                lexical_count_sql = _build_lexical_fallback_sql(
+                                lexical_count_sql = build_lexical_fallback_sql(
                                     where_sql_without_deleted,
                                     "c.id,\n                                    similarity(c.text_norm, %s) AS lscore",
                                 )
@@ -2852,552 +1609,37 @@ class PgVectorClient:
             duration_ms=duration_ms,
         )
 
-        candidates: Dict[str, Dict[str, object]] = {}
-        for row in vector_rows:
-            score_candidate = self._extract_score_from_row(row, kind="vector")
-            raw_value: float | None = None
-            if score_candidate is not None:
-                try:
-                    raw_value = float(score_candidate)
-                except (TypeError, ValueError):
-                    raw_value = None
-                else:
-                    if math.isnan(raw_value) or math.isinf(raw_value):
-                        raw_value = None
-            vector_score_missing = raw_value is None
-            (
-                chunk_id,
-                text_value,
-                metadata,
-                doc_hash,
-                document_id,
-                collection_id,
-                score_raw,
-            ) = self._normalise_result_row(row, kind="vector")
-            text_value = text_value or ""
-            key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
-            chunk_identifier = chunk_id if chunk_id is not None else key
-
-            metadata_dict = dict(metadata or {})
-
-            entry = candidates.setdefault(
-                key,
-                {
-                    "chunk_id": key,
-                    "content": text_value,
-                    "metadata": metadata_dict,
-                    "doc_hash": doc_hash,
-                    "document_id": document_id,
-                    "collection_id": collection_id,
-                    "vscore": 0.0,
-                    "lscore": 0.0,
-                    "_allow_below_cutoff": False,
-                },
-            )
-            entry["chunk_id"] = chunk_identifier
-            if entry.get("collection_id") is None and collection_id is not None:
-                entry["collection_id"] = collection_id
-            if not entry.get("metadata"):
-                entry["metadata"] = metadata_dict
-            if entry.get("document_id") is None and document_id is not None:
-                entry["document_id"] = document_id
-            if entry.get("doc_hash") is None and doc_hash is not None:
-                entry["doc_hash"] = doc_hash
-            if vector_score_missing:
-                entry["_allow_below_cutoff"] = True
-            else:
-                distance_value = float(raw_value)
-                if distance_score_mode == "inverse":
-                    distance_value = max(0.0, distance_value)
-                    vscore = 1.0 / (1.0 + distance_value)
-                else:
-                    vscore = max(0.0, 1.0 - float(distance_value))
-                entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
-
-        # Only mark candidates as allowed-below-cutoff for exceptional cases.
-        # We no longer blanket-allow all lexical candidates when a trigram
-        # fallback occurred with alpha=0.0 — that decision is deferred to the
-        # dedicated cutoff fallback stage below which selects only the best
-        # needed candidates up to top_k.
-
-        for row in lexical_rows:
-            score_candidate = self._extract_score_from_row(row, kind="lexical")
-            raw_value: float | None = None
-            if score_candidate is not None:
-                try:
-                    raw_value = float(score_candidate)
-                except (TypeError, ValueError):
-                    raw_value = None
-                else:
-                    if math.isnan(raw_value) or math.isinf(raw_value):
-                        raw_value = None
-            lexical_score_missing = raw_value is None
-            (
-                chunk_id,
-                text_value,
-                metadata,
-                doc_hash,
-                document_id,
-                collection_id,
-                score_raw,
-            ) = self._normalise_result_row(row, kind="lexical")
-            text_value = text_value or ""
-            key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
-            chunk_identifier = chunk_id if chunk_id is not None else key
-
-            metadata_dict = dict(metadata or {})
-            entry = candidates.setdefault(
-                key,
-                {
-                    "chunk_id": key,
-                    "content": text_value,
-                    "metadata": metadata_dict,
-                    "doc_hash": doc_hash,
-                    "document_id": document_id,
-                    "collection_id": collection_id,
-                    "vscore": 0.0,
-                    "lscore": 0.0,
-                    "_allow_below_cutoff": False,
-                },
-            )
-            entry["chunk_id"] = chunk_identifier
-            if entry.get("collection_id") is None and collection_id is not None:
-                entry["collection_id"] = collection_id
-
-            if not entry.get("metadata"):
-                entry["metadata"] = metadata_dict
-            if entry.get("document_id") is None and document_id is not None:
-                entry["document_id"] = document_id
-            if entry.get("doc_hash") is None and doc_hash is not None:
-                entry["doc_hash"] = doc_hash
-
-            score_source = raw_value if raw_value is not None else score_raw
-            try:
-                lscore_value = float(score_source) if score_source is not None else 0.0
-            except (TypeError, ValueError):
-                lscore_value = 0.0
-            if math.isnan(lscore_value) or math.isinf(lscore_value):
-                lscore_value = 0.0
-            lscore_value = max(0.0, lscore_value)
-            entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
-
-            # Permit bypassing the min_sim cutoff only when the lexical score is
-            # structurally missing (row shape/NaN), not merely because a trigram
-            # fallback happened. The proper promotion of below-cutoff items is
-            # handled later by the cutoff fallback logic which respects top_k.
-            if lexical_score_missing:
-                entry["_allow_below_cutoff"] = True
-
+        rrf_k_raw = _get_setting("RAG_RRF_K", 60)
         try:
-            logger.debug(
-                "rag.hybrid.candidates.compiled",
-                extra={
-                    "tenant_id": tenant,
-                    "case_id": case_value,
-                    "count": len(candidates),
-                    "entries": [
-                        {
-                            "chunk_id": _safe_chunk_identifier(entry.get("chunk_id")),
-                            "vscore": _safe_float(entry.get("vscore")),
-                            "lscore": _safe_float(entry.get("lscore")),
-                            "allow_below_cutoff": bool(
-                                entry.get("_allow_below_cutoff", False)
-                            ),
-                        }
-                        for entry in candidates.values()
-                    ],
-                },
-            )
-        except Exception:
-            pass
-        fused_candidates = len(candidates)
-        logger.info(
-            "rag.hybrid.debug.fusion",
-            extra={
-                "tenant_id": tenant,
-                "case_id": case_value,
-                "candidates": fused_candidates,
-                "has_vec": bool(vector_rows),
-                "has_lex": bool(lexical_rows),
-            },
+            rrf_k = int(rrf_k_raw)
+        except (TypeError, ValueError):
+            rrf_k = 60
+        rrf_k = max(1, rrf_k)
+
+        fusion_result = fuse_candidates(
+            vector_rows=vector_rows,
+            lexical_rows=lexical_rows,
+            query_vec=query_vec,
+            query_embedding_empty=query_embedding_empty,
+            alpha=alpha_value,
+            min_sim=min_sim_value,
+            top_k=top_k,
+            tenant=tenant,
+            case_id=case_value,
+            normalized_filters=normalized_filters,
+            fallback_limit_used=fallback_limit_used_value,
+            distance_score_mode=distance_score_mode,
+            rrf_k=rrf_k,
+            extract_score_from_row=self._extract_score_from_row,
+            normalise_result_row=self._normalise_result_row,
+            ensure_chunk_metadata_contract=self._ensure_chunk_metadata_contract,
+            logger=logger,
         )
-        results: List[Tuple[Chunk, bool]] = []
-        has_vector_signal = (
-            bool(vector_rows)
-            and (query_vec is not None)
-            and (not query_embedding_empty)
-        )
-        for entry in candidates.values():
-            allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
-            raw_meta = dict(
-                cast(Mapping[str, object] | None, entry.get("metadata")) or {}
-            )
-            # Be tolerant to legacy result metadata that may still use
-            # "tenant"/"case" keys instead of "tenant_id"/"case_id".
-            candidate_tenant = cast(
-                Optional[str], raw_meta.get("tenant_id") or raw_meta.get("tenant")
-            )
-            candidate_case = cast(
-                Optional[str], raw_meta.get("case_id") or raw_meta.get("case")
-            )
-            reasons: List[str] = []
-            try:
-                vector_preview = float(entry.get("vscore", 0.0))
-            except (TypeError, ValueError):
-                vector_preview = 0.0
-            if math.isnan(vector_preview) or math.isinf(vector_preview):
-                vector_preview = 0.0
-            try:
-                lexical_preview = float(entry.get("lscore", 0.0))
-            except (TypeError, ValueError):
-                lexical_preview = 0.0
-            if math.isnan(lexical_preview) or math.isinf(lexical_preview):
-                lexical_preview = 0.0
-            if query_embedding_empty:
-                fused_preview = max(0.0, min(1.0, lexical_preview))
-            elif has_vector_signal:
-                fused_preview = max(
-                    0.0,
-                    min(
-                        1.0,
-                        alpha_value * vector_preview
-                        + (1.0 - alpha_value) * lexical_preview,
-                    ),
-                )
-            else:
-                fused_preview = max(0.0, min(1.0, lexical_preview))
-            if tenant is not None:
-                if candidate_tenant is None:
-                    reasons.append("tenant_missing")
-                elif candidate_tenant != tenant:
-                    reasons.append("tenant_mismatch")
-            if case_value is not None:
-                if candidate_case is None:
-                    reasons.append("case_missing")
-                elif candidate_case != case_value:
-                    reasons.append("case_mismatch")
-
-            if case_value is None:
-                strict_ok = (tenant is None) or (
-                    candidate_tenant is not None and candidate_tenant == tenant
-                )
-            else:
-                strict_ok = strict_match(raw_meta, tenant, case_value)
-
-            if not strict_ok or reasons:
-                logger.info(
-                    "rag.strict.reject",
-                    tenant_id=tenant,
-                    case_id=case_value,
-                    candidate_tenant_id=candidate_tenant,
-                    candidate_case_id=candidate_case,
-                    doc_hash=entry.get("doc_hash"),
-                    document_id=entry.get("document_id"),
-                    chunk_id=entry.get("chunk_id"),
-                    reasons=reasons or ["unknown"],
-                    vector_score=vector_preview,
-                    lexical_score=lexical_preview,
-                    fused_score=fused_preview,
-                    allow_below_cutoff=bool(entry.get("_allow_below_cutoff", False)),
-                )
-                continue
-
-            doc_hash = entry.get("doc_hash")
-            document_id = entry.get("document_id")
-            meta = self._ensure_chunk_metadata_contract(
-                raw_meta,
-                tenant_id=tenant,
-                case_id=case_value,
-                filters=normalized_filters,
-                chunk_id=entry.get("chunk_id"),
-                document_id=document_id,
-                collection_id=entry.get("collection_id"),
-            )
-            if doc_hash and not meta.get("hash"):
-                meta["hash"] = doc_hash
-            if document_id is not None and "id" not in meta:
-                meta["id"] = str(document_id)
-            try:
-                vscore = float(entry.get("vscore", 0.0))
-            except (TypeError, ValueError):
-                vscore = 0.0
-            if not has_vector_signal:
-                vscore = 0.0
-            try:
-                lscore = float(entry.get("lscore", 0.0))
-            except (TypeError, ValueError):
-                lscore = 0.0
-            lscore = max(0.0, lscore)
-            if query_embedding_empty:
-                fused = max(0.0, min(1.0, lscore))
-            elif has_vector_signal:
-                fused = max(
-                    0.0,
-                    min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore),
-                )
-            else:
-                fused = max(0.0, min(1.0, lscore))
-            meta["vscore"] = vscore
-            meta["lscore"] = lscore
-            meta["fused"] = fused
-            meta["score"] = fused
-            results.append(
-                (
-                    Chunk(content=str(entry.get("content", "")), meta=meta),
-                    allow_below_cutoff,
-                )
-            )
-
-        if results:
-            normalized_results: List[Tuple[Chunk, bool]] = []
-            discarded_entries = 0
-            for entry in results:
-                chunk_candidate: Chunk | None = None
-                allow_flag = False
-                if isinstance(entry, tuple):
-                    if entry:
-                        candidate_chunk = entry[0]
-                        if isinstance(candidate_chunk, Chunk):
-                            chunk_candidate = candidate_chunk
-                            if len(entry) > 1:
-                                allow_flag = bool(entry[1])
-                elif isinstance(entry, Chunk):
-                    chunk_candidate = entry
-                if chunk_candidate is None:
-                    discarded_entries += 1
-                    continue
-                normalized_results.append((chunk_candidate, allow_flag))
-            if discarded_entries:
-                try:
-                    logger.warning(
-                        "rag.hybrid.result_shape_unexpected",
-                        extra={
-                            "tenant_id": tenant,
-                            "case_id": case_value,
-                            "discarded_entries": discarded_entries,
-                            "kept": len(normalized_results),
-                        },
-                    )
-                except Exception:
-                    pass
-            results = normalized_results
-
-        results.sort(
-            key=lambda item: float(item[0].meta.get("fused", 0.0)), reverse=True
-        )
-        try:
-            logger.debug(
-                "rag.hybrid.results.pre_min_sim",
-                extra={
-                    "tenant_id": tenant,
-                    "case_id": case_value,
-                    "min_sim": min_sim_value,
-                    "results": [
-                        {
-                            "chunk_id": _safe_chunk_identifier(
-                                chunk.meta.get("chunk_id")
-                            ),
-                            "fused": _safe_float(chunk.meta.get("fused")),
-                            "vscore": _safe_float(chunk.meta.get("vscore")),
-                            "lscore": _safe_float(chunk.meta.get("lscore")),
-                            "allow_below_cutoff": bool(allow),
-                        }
-                        for chunk, allow in results
-                    ],
-                },
-            )
-        except Exception:
-            pass
-        below_cutoff_count = 0
-        filtered_out_details: List[Dict[str, object | None]] = []
-        below_cutoff_chunks: List[Chunk] = []
-        filtered_results: List[Chunk] = []
-        selected_chunk_keys: set[str] = set()
-        if min_sim_value > 0.0:
-            for chunk, allow in results:
-                fused_value = float(chunk.meta.get("fused", 0.0))
-                if math.isnan(fused_value) or math.isinf(fused_value):
-                    fused_value = 0.0
-
-                is_below_cutoff = fused_value < min_sim_value
-                if is_below_cutoff:
-                    below_cutoff_count += 1
-
-                if allow or not is_below_cutoff:
-                    filtered_results.append(chunk)
-                    chunk_key = (
-                        _safe_chunk_identifier(chunk.meta.get("chunk_id"))
-                        or f"id:{id(chunk)}"
-                    )
-                    selected_chunk_keys.add(chunk_key)
-                    if is_below_cutoff:
-                        # These chunks are returned to the caller but still count as
-                        # below-cutoff for telemetry and metrics purposes.
-                        continue
-
-                if is_below_cutoff and not allow:
-                    below_cutoff_chunks.append(chunk)
-                    filtered_out_details.append(
-                        {
-                            "chunk_id": _safe_chunk_identifier(
-                                chunk.meta.get("chunk_id")
-                            ),
-                            "fused": _safe_float(fused_value),
-                        }
-                    )
-            if below_cutoff_count > 0:
-                metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant_id=tenant).inc(
-                    float(below_cutoff_count)
-                )
-        else:
-            filtered_results = [chunk for chunk, _ in results]
-        if not selected_chunk_keys:
-            selected_chunk_keys = {
-                _safe_chunk_identifier(chunk.meta.get("chunk_id")) or f"id:{id(chunk)}"
-                for chunk in filtered_results
-            }
-        try:
-            logger.debug(
-                "rag.hybrid.results.post_min_sim",
-                extra={
-                    "tenant_id": tenant,
-                    "case_id": case_value,
-                    "min_sim": min_sim_value,
-                    "returned": len(filtered_results),
-                    "filtered_out": filtered_out_details,
-                    "kept": [
-                        {
-                            "chunk_id": _safe_chunk_identifier(
-                                chunk.meta.get("chunk_id")
-                            ),
-                            "fused": _safe_float(chunk.meta.get("fused")),
-                        }
-                        for chunk in filtered_results
-                    ],
-                },
-            )
-        except Exception:
-            pass
-        fallback_promoted: List[Dict[str, object | None]] = []
-        fallback_attempted = False
-        # Only run the cutoff fallback when the trigram fallback has been applied.
-        # This prevents vector-only queries from reintroducing candidates that were
-        # explicitly filtered out by the min_sim threshold, which is required by
-        # the hybrid search tests that expect an empty result set in that case.
-        cutoff_fallback_enabled = fallback_limit_used_value is not None
-        if (
-            min_sim_value > 0.0
-            and len(filtered_results) < top_k
-            and results
-            and cutoff_fallback_enabled
-        ):
-            fallback_attempted = True
-            needed = top_k - len(filtered_results)
-            cutoff_candidates = {
-                (
-                    _safe_chunk_identifier(chunk.meta.get("chunk_id"))
-                    or f"id:{id(chunk)}"
-                ): chunk
-                for chunk in below_cutoff_chunks
-            }
-            for chunk, _ in results:
-                if needed <= 0:
-                    break
-                chunk_key = (
-                    _safe_chunk_identifier(chunk.meta.get("chunk_id"))
-                    or f"id:{id(chunk)}"
-                )
-                if chunk_key in selected_chunk_keys:
-                    continue
-                if chunk_key not in cutoff_candidates:
-                    continue
-                chunk.meta["cutoff_fallback"] = True
-                filtered_results.append(chunk)
-                selected_chunk_keys.add(chunk_key)
-                fallback_promoted.append(
-                    {
-                        "chunk_id": chunk_key,
-                        "fused": _safe_float(chunk.meta.get("fused")),
-                    }
-                )
-                needed -= 1
-            if fallback_promoted:
-                promoted_ids = {
-                    entry.get("chunk_id")
-                    for entry in fallback_promoted
-                    if entry.get("chunk_id") is not None
-                }
-                if promoted_ids:
-                    filtered_out_details = [
-                        detail
-                        for detail in filtered_out_details
-                        if detail.get("chunk_id") not in promoted_ids
-                    ]
-        limited_results = filtered_results[:top_k]
-        if fallback_attempted:
-            try:
-                logger.info(
-                    "rag.hybrid.cutoff_fallback",
-                    extra={
-                        "tenant_id": tenant,
-                        "case_id": case_value,
-                        "requested_min_sim": min_sim_value,
-                        "returned": len(limited_results),
-                        "below_cutoff": below_cutoff_count,
-                        "promoted": fallback_promoted,
-                    },
-                )
-            except Exception:
-                pass
-        elif not limited_results and results and min_sim_value > 0.0:
-            try:
-                logger.info(
-                    "rag.hybrid.cutoff_fallback",
-                    extra={
-                        "tenant_id": tenant,
-                        "case_id": case_value,
-                        "requested_min_sim": min_sim_value,
-                        "returned": len(limited_results),
-                        "below_cutoff": below_cutoff_count,
-                        "promoted": [],
-                    },
-                )
-            except Exception:
-                pass
-
-        try:
-            top_fused = (
-                float(limited_results[0].meta.get("fused", 0.0))
-                if limited_results
-                else 0.0
-            )
-            top_v = (
-                float(limited_results[0].meta.get("vscore", 0.0))
-                if limited_results
-                else 0.0
-            )
-            top_l = (
-                float(limited_results[0].meta.get("lscore", 0.0))
-                if limited_results
-                else 0.0
-            )
-        except Exception:
-            top_fused = top_v = top_l = 0.0
-
-        logger.info(
-            "rag.hybrid.debug.after_cutoff",
-            extra={
-                "tenant_id": tenant,
-                "case_id": case_value,
-                "returned": len(limited_results),
-                "top_fused": top_fused,
-                "top_vscore": top_v,
-                "top_lscore": top_l,
-                "min_sim": min_sim_value,
-                "alpha": alpha_value,
-                "distance_score_mode": distance_score_mode,
-            },
-        )
+        limited_results = fusion_result.chunks
+        fused_candidates = fusion_result.fused_candidates
+        below_cutoff_count = fusion_result.below_cutoff
+        returned_after_cutoff = fusion_result.returned_after_cutoff
+        per_result_scores = fusion_result.scores
 
         metrics.RAG_SEARCH_MS.observe(duration_ms)
         deleted_matches_blocked_value = 0
@@ -3419,31 +1661,6 @@ class PgVectorClient:
             duration_ms,
         )
 
-        per_result_scores: List[Dict[str, float]] = []
-        for chunk in limited_results:
-            fused_score = chunk.meta.get("fused", 0.0)
-            vector_score = chunk.meta.get("vscore", 0.0)
-            lexical_score = chunk.meta.get("lscore", 0.0)
-            try:
-                fused_value = float(fused_score)
-            except (TypeError, ValueError):
-                fused_value = 0.0
-            try:
-                vector_value = float(vector_score)
-            except (TypeError, ValueError):
-                vector_value = 0.0
-            try:
-                lexical_value = float(lexical_score)
-            except (TypeError, ValueError):
-                lexical_value = 0.0
-            per_result_scores.append(
-                {
-                    "fused": fused_value,
-                    "vector": vector_value,
-                    "lexical": lexical_value,
-                }
-            )
-
         return HybridSearchResult(
             chunks=limited_results,
             vector_candidates=len(vector_rows),
@@ -3455,7 +1672,7 @@ class PgVectorClient:
             vec_limit=vec_limit_value,
             lex_limit=lex_limit_value,
             below_cutoff=below_cutoff_count,
-            returned_after_cutoff=len(filtered_results),
+            returned_after_cutoff=returned_after_cutoff,
             query_embedding_empty=query_embedding_empty,
             applied_trgm_limit=applied_trgm_limit_value,
             fallback_limit_used=fallback_limit_used_value,
@@ -3709,49 +1926,7 @@ class PgVectorClient:
     def _compute_document_embedding(
         self, doc: Mapping[str, object]
     ) -> tuple[List[float], bool] | None:
-        chunks = doc.get("chunks", [])
-        if not isinstance(chunks, Sequence):
-            return None
-        vectors: List[List[float]] = []
-        dimension: int | None = None
-        unit_normalised = True
-        for chunk in chunks:
-            embedding = getattr(chunk, "embedding", None)
-            if embedding is None:
-                continue
-            try:
-                floats = [float(value) for value in embedding]
-            except (TypeError, ValueError):
-                continue
-            if not floats:
-                continue
-            if dimension is None:
-                dimension = len(floats)
-            if len(floats) != dimension:
-                continue
-            norm = math.sqrt(sum(value * value for value in floats))
-            if not math.isfinite(norm) or norm <= _ZERO_EPSILON:
-                unit_normalised = False
-            elif not math.isclose(norm, 1.0, rel_tol=1e-5, abs_tol=1e-5):
-                unit_normalised = False
-            vectors.append(floats)
-        if not vectors or dimension is None:
-            return None
-        aggregated = [0.0] * dimension
-        for vec in vectors:
-            for index, value in enumerate(vec):
-                aggregated[index] += value
-        count = float(len(vectors))
-        if count <= 0:
-            return None
-        averaged = [value / count for value in aggregated]
-        norm_sq = math.fsum(value * value for value in averaged)
-        if norm_sq <= _ZERO_EPSILON:
-            return None
-        norm = math.sqrt(norm_sq)
-        if not math.isfinite(norm) or norm <= _ZERO_EPSILON:
-            return None
-        return averaged, unit_normalised
+        return compute_document_embedding(doc)
 
     def _find_near_duplicate(
         self,
@@ -3763,294 +1938,17 @@ class PgVectorClient:
         embedding_is_unit_normalised: bool,
         collection_uuid: uuid.UUID | None = None,
     ) -> Dict[str, object] | None:
-        if not vector:
-            return None
-        try:
-            raw_vector = [float(value) for value in vector]
-        except (TypeError, ValueError):
-            return None
-        if not raw_vector:
-            return None
-        normalised = _normalise_vector(raw_vector)
-        if normalised is None:
-            logger.info(
-                "ingestion.doc.near_duplicate_vector_unusable",
-                extra={
-                    "tenant_id": str(tenant_uuid),
-                    "external_id": external_id,
-                },
-            )
-            return None
-        vector_for_similarity = normalised
-        vector_for_distance = raw_vector
-        if self._near_duplicate_operator_supported is False:
-            return None
-        index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
-        try:
-            operator = self._get_distance_operator(cur.connection, index_kind)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(
-                "ingestion.doc.near_duplicate_operator_missing",
-                extra={
-                    "tenant_id": str(tenant_uuid),
-                    "index_kind": index_kind,
-                    "error": str(exc),
-                },
-            )
-            return None
-        if not self._is_near_duplicate_operator_supported(index_kind, operator):
-            logger.info(
-                "ingestion.doc.near_duplicate_operator_disabled",
-                extra={
-                    "tenant_id": str(tenant_uuid),
-                    "index_kind": index_kind,
-                    "operator": operator,
-                },
-            )
-            return None
-
-        if operator not in {"<=>", "<->"}:
-            self._disable_near_duplicate_for_operator(
-                index_kind=index_kind,
-                operator=operator,
-                tenant_uuid=tenant_uuid,
-            )
-            return None
-        use_distance_metric = False
-        include_embedding_in_results = False
-        distance_cutoff: float | None = None
-        if operator == "<->":
-            if self._require_unit_norm_for_l2:
-                if not embedding_is_unit_normalised:
-                    self._near_duplicate_enabled = False
-                    self._near_duplicate_operator_supported = False
-                    self._near_duplicate_operator_support[index_kind.upper()] = False
-                    logger.warning(
-                        "ingestion.doc.near_duplicate_l2_unit_norm_missing",
-                        extra={
-                            "tenant_id": str(tenant_uuid),
-                            "index_kind": index_kind,
-                            "operator": operator,
-                        },
-                    )
-                    return None
-                vector_to_format = vector_for_similarity
-                include_embedding_in_results = True
-            else:
-                use_distance_metric = True
-                vector_to_format = vector_for_distance
-                try:
-                    distance_cutoff = math.sqrt(
-                        max(0.0, 2.0 * (1.0 - self._near_duplicate_threshold))
-                    )
-                except Exception:
-                    distance_cutoff = None
-                if distance_cutoff is None:
-                    return None
-            try:
-                vector_str = self._format_vector(vector_to_format)
-            except ValueError:
-                try:
-                    vector_str = self._format_vector_lenient(vector_to_format)
-                except Exception:
-                    return None
-        else:
-            vector_to_format = vector_for_similarity
-            try:
-                vector_str = self._format_vector(vector_to_format)
-            except ValueError:
-                try:
-                    vector_str = self._format_vector_lenient(vector_to_format)
-                except Exception:
-                    return None
-        self._near_duplicate_operator_supported = True
-        if operator == "<=>":
-            sim_sql = sql.SQL("1.0 - (e.embedding <=> %s::vector)")
-            distance_sql = sql.SQL("e.embedding <=> %s::vector")
-            select_vector_params = [vector_str, vector_str]
-        elif not use_distance_metric:
-            sim_sql = sql.SQL(
-                "1.0 - ((e.embedding <-> %s::vector) * (e.embedding <-> %s::vector)) / 2.0"
-            )
-            distance_sql = sql.SQL("e.embedding <-> %s::vector")
-            select_vector_params = [vector_str, vector_str, vector_str]
-        else:
-            sim_sql = sql.SQL("e.embedding <-> %s::vector")
-            distance_sql = sql.SQL("e.embedding <-> %s::vector")
-            select_vector_params = [vector_str, vector_str]
-
-        if use_distance_metric:
-            global_order_sql = sql.SQL("ASC")
-        else:
-            global_order_sql = sql.SQL("DESC")
-
-        prefetch_limit = max(
-            self._near_duplicate_probe_limit, self._near_duplicate_probe_limit * 4
+        return find_near_duplicate(
+            client=self,
+            cur=cur,
+            tenant_uuid=tenant_uuid,
+            vector=vector,
+            external_id=external_id,
+            embedding_is_unit_normalised=embedding_is_unit_normalised,
+            collection_uuid=collection_uuid,
+            get_setting=_get_setting,
+            log=logger,
         )
-        embedding_column_sql = (
-            sql.SQL(",\n                    e.embedding AS stored_embedding")
-            if include_embedding_in_results
-            else sql.SQL("")
-        )
-        outer_embedding_sql = (
-            sql.SQL(", stored_embedding")
-            if include_embedding_in_results
-            else sql.SQL("")
-        )
-
-        documents_table = self._table("documents")
-        chunks_table = self._table("chunks")
-        embeddings_table = self._table("embeddings")
-
-        query = sql.SQL(
-            """
-            WITH base AS (
-                SELECT
-                    d.id,
-                    d.external_id,
-                    {sim} AS similarity,
-                    {distance} AS chunk_distance{embedding_column}
-                FROM {documents} d
-                JOIN {chunks} c ON c.document_id = d.id
-                JOIN {embeddings} e ON e.chunk_id = c.id
-                WHERE d.tenant_id = %s
-                  AND d.collection_id IS NOT DISTINCT FROM %s
-                  AND COALESCE(d.lifecycle, 'active') = 'active'
-                  AND d.external_id <> %s
-                ORDER BY chunk_distance ASC
-                LIMIT %s
-            )
-            SELECT id, external_id, similarity{outer_embedding}
-            FROM (
-                SELECT
-                    id,
-                    external_id,
-                    similarity,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY id
-                        ORDER BY chunk_distance ASC
-                    ) AS chunk_rank{ranked_embedding}
-                FROM base
-            ) AS ranked
-            WHERE chunk_rank = 1
-            ORDER BY similarity {global_order}
-            LIMIT %s
-            """
-        ).format(
-            sim=sim_sql,
-            distance=distance_sql,
-            global_order=global_order_sql,
-            embedding_column=embedding_column_sql,
-            outer_embedding=outer_embedding_sql,
-            ranked_embedding=outer_embedding_sql,
-            documents=documents_table,
-            chunks=chunks_table,
-            embeddings=embeddings_table,
-        )
-        tenant_value = str(tenant_uuid)
-        collection_value = str(collection_uuid) if collection_uuid is not None else None
-        params_list: List[object] = [
-            *select_vector_params,
-            tenant_value,
-            collection_value,
-            external_id,
-            prefetch_limit,
-            self._near_duplicate_probe_limit,
-        ]
-        params = tuple(params_list)
-        cur.execute(query, params)
-        rows = cur.fetchall()
-        query_vector_for_similarity = (
-            vector_for_similarity if include_embedding_in_results else None
-        )
-        best: Dict[str, object] | None = None
-        best_similarity = self._near_duplicate_threshold
-        best_distance = distance_cutoff if use_distance_metric else None
-        for row in rows:
-            if not isinstance(row, Sequence) or len(row) < 3:
-                continue
-            candidate_id = row[0]
-            candidate_external_id = row[1]
-            similarity_value = row[2]
-            if include_embedding_in_results:
-                stored_embedding = None
-                fallback_to_sql_similarity = False
-                if len(row) >= 4:
-                    stored_embedding = _coerce_vector_values(row[3])
-                    if stored_embedding is None:
-                        fallback_to_sql_similarity = True
-                else:
-                    fallback_to_sql_similarity = True
-                if (
-                    stored_embedding is not None
-                    and query_vector_for_similarity is not None
-                ):
-                    normalised_candidate = _normalise_vector(stored_embedding)
-                    if normalised_candidate is not None and len(
-                        normalised_candidate
-                    ) == len(query_vector_for_similarity):
-                        similarity_value = math.fsum(
-                            candidate_component * query_component
-                            for candidate_component, query_component in zip(
-                                normalised_candidate, query_vector_for_similarity
-                            )
-                        )
-                    else:
-                        fallback_to_sql_similarity = True
-                else:
-                    fallback_to_sql_similarity = True
-                if fallback_to_sql_similarity:
-                    self._log_near_duplicate_similarity_fallback(
-                        tenant_uuid=tenant_uuid,
-                        external_id=external_id,
-                    )
-            if candidate_external_id == external_id:
-                continue
-            try:
-                similarity = float(similarity_value)
-            except (TypeError, ValueError):
-                continue
-            if math.isnan(similarity) or math.isinf(similarity):
-                continue
-            if use_distance_metric:
-                distance = max(0.0, similarity)
-                cutoff = (
-                    distance_cutoff if distance_cutoff is not None else best_distance
-                )
-                if cutoff is None:
-                    continue
-                if distance > cutoff + 1e-9:
-                    continue
-                if best_distance is not None and distance > best_distance + 1e-12:
-                    continue
-                best_distance = distance
-                if cutoff <= _ZERO_EPSILON:
-                    similarity = 1.0 if distance <= _ZERO_EPSILON else 0.0
-                else:
-                    ratio = min(distance / cutoff, 1.0)
-                    similarity = max(0.0, 1.0 - ratio)
-            else:
-                similarity = max(0.0, min(1.0, similarity))
-                if similarity < self._near_duplicate_threshold:
-                    continue
-                if similarity < best_similarity:
-                    continue
-                best_similarity = similarity
-            try:
-                candidate_uuid = (
-                    candidate_id
-                    if isinstance(candidate_id, uuid.UUID)
-                    else uuid.UUID(str(candidate_id))
-                )
-            except (TypeError, ValueError):
-                continue
-            external_text = str(candidate_external_id)
-            best = {
-                "id": candidate_uuid,
-                "external_id": external_text,
-                "similarity": similarity,
-            }
-        return best
 
     @classmethod
     def _log_near_duplicate_similarity_fallback(
@@ -4066,6 +1964,188 @@ class PgVectorClient:
                 "external_id": external_id,
             },
         )
+
+    def _log_ensure_documents_debug(
+        self,
+        *,
+        event: str,
+        tenant_id: object,
+        external_id: str,
+        document_id: uuid.UUID | None = None,
+        json_fields: Mapping[str, object] | None = None,
+        raw_fields: Mapping[str, object] | None = None,
+    ) -> None:
+        try:
+            extra: dict[str, object] = {
+                "event": event,
+                "tenant_id": str(tenant_id),
+                "external_id": external_id,
+            }
+            if document_id is not None:
+                extra["document_id"] = str(document_id)
+            if json_fields:
+                for key, value in json_fields.items():
+                    extra[key] = json.dumps(value, default=str, ensure_ascii=False)
+            if raw_fields:
+                extra.update(raw_fields)
+            logger.warning("vector_client.ensure_documents", extra=extra)
+        except Exception:
+            pass
+
+    def _process_existing_document_for_upsert(
+        self,
+        cur,
+        *,
+        key: DocumentKey,
+        doc: MutableMapping[str, object],
+        tenant_uuid: uuid.UUID,
+        external_id: str,
+        existing_row: tuple,
+        metadata_dict: Mapping[str, object],
+        storage_hash: str,
+        lifecycle_state: str,
+        collection_text: str | None,
+        workflow_text: str | None,
+        documents_table: sql.Identifier,
+        collection_uuid: uuid.UUID | None,
+        relation_actor: str | None,
+        actions: Dict[DocumentKey, str],
+        document_ids: Dict[DocumentKey, uuid.UUID],
+        event_suffix: str,
+        log_skip_info: bool,
+    ) -> None:
+        (
+            existing_id,
+            existing_hash,
+            existing_metadata,
+            _existing_source,
+            existing_lifecycle,
+            _existing_collection_value,
+        ) = existing_row
+        metadata_dict = MetadataHandler.normalise_document_identity(
+            doc, existing_id, metadata_dict
+        )
+        self._log_ensure_documents_debug(
+            event=f"DEBUG.2.after_normalise{event_suffix}",
+            tenant_id=tenant_uuid,
+            external_id=external_id,
+            document_id=existing_id,
+            json_fields={"metadata_after_normalise": metadata_dict},
+        )
+        existing_metadata_map = MetadataHandler.coerce_map(existing_metadata)
+        self._log_ensure_documents_debug(
+            event=f"DEBUG.3.pre_diff{event_suffix}",
+            tenant_id=tenant_uuid,
+            external_id=external_id,
+            document_id=existing_id,
+            json_fields={
+                "existing_metadata": existing_metadata_map,
+                "desired_metadata": metadata_dict,
+            },
+        )
+        metadata_mismatch = MetadataHandler.parent_nodes_differ(
+            existing_metadata_map, metadata_dict
+        )
+        if metadata_mismatch and MetadataHandler.content_hash_matches(
+            existing_metadata_map,
+            metadata_dict,
+            existing_fallback=existing_hash,
+            desired_fallback=storage_hash,
+        ):
+            metadata_mismatch = False
+        needs_update = (
+            str(existing_hash) != storage_hash
+            or (
+                existing_lifecycle is not None
+                and str(existing_lifecycle).lower() != LIFECYCLE_ACTIVE
+            )
+            or metadata_mismatch
+        )
+        self._log_ensure_documents_debug(
+            event=f"DEBUG.4.post_diff{event_suffix}",
+            tenant_id=tenant_uuid,
+            external_id=external_id,
+            document_id=existing_id,
+            raw_fields={
+                "metadata_mismatch": bool(metadata_mismatch),
+                "needs_update": bool(needs_update),
+            },
+        )
+        if needs_update:
+            self._log_ensure_documents_debug(
+                event=f"DEBUG.5.pre_update{event_suffix}",
+                tenant_id=tenant_uuid,
+                external_id=external_id,
+                document_id=existing_id,
+                json_fields={"metadata_to_update": metadata_dict},
+            )
+            metadata_payload = Json(metadata_dict)
+            cur.execute(
+                sql.SQL(
+                    """
+                    UPDATE {}
+                    SET source = %s,
+                        hash = %s,
+                        metadata = %s,
+                        collection_id = %s,
+                        workflow_id = %s,
+                        lifecycle = %s,
+                        deleted_at = NULL
+                    WHERE id = %s
+                    """
+                ).format(documents_table),
+                (
+                    doc["source"],
+                    storage_hash,
+                    metadata_payload,
+                    collection_text,
+                    workflow_text,
+                    lifecycle_state,
+                    existing_id,
+                ),
+            )
+            actions[key] = "replaced"
+        else:
+            actions[key] = "skipped"
+            if log_skip_info:
+                logger.info(
+                    "Skipping unchanged document during upsert",
+                    extra={
+                        "tenant_id": doc["tenant_id"],
+                        "external_id": external_id,
+                    },
+                )
+            self._log_ensure_documents_debug(
+                event=f"DEBUG.6.update_skipped{event_suffix}",
+                tenant_id=tenant_uuid,
+                external_id=external_id,
+                document_id=existing_id,
+                json_fields={"metadata_skipped": metadata_dict},
+            )
+            MetadataHandler.repair_persisted_metadata(
+                cur,
+                documents_table=documents_table,
+                tenant_uuid=tenant_uuid,
+                document_id=existing_id,
+                existing_metadata=existing_metadata,
+                desired_metadata=metadata_dict,
+                log=logger,
+            )
+        relation_inserted = False
+        if collection_uuid is not None:
+            relation_inserted = self._ensure_document_collection_relation(
+                cur,
+                existing_id,
+                collection_uuid,
+                added_by=relation_actor,
+            )
+        if relation_inserted:
+            current_action = actions.get(key)
+            if current_action in {"skipped", "near_duplicate_skipped", None}:
+                actions[key] = "linked"
+        document_ids[key] = existing_id
+        doc["collection_id"] = collection_text
+        doc["workflow_id"] = workflow_text
 
     def _ensure_documents(
         self,
@@ -4086,16 +2166,7 @@ class PgVectorClient:
             doc["source"] = source
             content_hash = str(doc.get("content_hash", doc.get("hash", "")))
             collection_value = doc.get("collection_id")
-            collection_uuid: uuid.UUID | None = None
-            if collection_value not in {None, ""}:
-                try:
-                    collection_uuid = (
-                        collection_value
-                        if isinstance(collection_value, uuid.UUID)
-                        else uuid.UUID(str(collection_value))
-                    )
-                except (TypeError, ValueError) as exc:
-                    raise ValueError("invalid_collection_id") from exc
+            collection_uuid = self._parse_collection_uuid(collection_value, strict=True)
             workflow_raw = doc.get("workflow_id")
             workflow_text: str | None = None
             if workflow_raw not in {None, "", "None"}:
@@ -4182,7 +2253,7 @@ class PgVectorClient:
                         provisional_document_id = uuid.uuid4()
                         doc["id"] = provisional_document_id
 
-            metadata_dict = _normalise_document_identity(
+            metadata_dict = MetadataHandler.normalise_document_identity(
                 doc, provisional_document_id, metadata_dict
             )
 
@@ -4232,7 +2303,7 @@ class PgVectorClient:
                         existing_document_id = None
                 if self._near_duplicate_strategy == "skip":
                     if existing_document_id is not None:
-                        metadata_dict = _normalise_document_identity(
+                        metadata_dict = MetadataHandler.normalise_document_identity(
                             doc, existing_document_id, metadata_dict
                         )
                     actions[key] = "near_duplicate_skipped"
@@ -4246,7 +2317,7 @@ class PgVectorClient:
                         near_duplicate_details.get("external_id")
                     )
                     metadata_dict["near_duplicate_similarity"] = similarity
-                    metadata_dict = _normalise_document_identity(
+                    metadata_dict = MetadataHandler.normalise_document_identity(
                         doc, existing_document_id, metadata_dict
                     )
                     metadata = Json(metadata_dict)
@@ -4348,7 +2419,7 @@ class PgVectorClient:
                 existing = cur.fetchone()
                 matched_by_hash = existing is not None
             if existing and matched_by_hash:
-                existing_metadata_map = _coerce_metadata_map(existing[2])
+                existing_metadata_map = MetadataHandler.coerce_map(existing[2])
                 existing_external = existing_metadata_map.get("external_id")
                 desired_external = metadata_dict.get("external_id", external_id)
                 try:
@@ -4371,179 +2442,29 @@ class PgVectorClient:
                     existing = None
             try:
                 if existing:
-                    (
-                        existing_id,
-                        existing_hash,
-                        existing_metadata,
-                        existing_source,
-                        existing_lifecycle,
-                        existing_collection_value,
-                    ) = existing
-                    metadata_dict = _normalise_document_identity(
-                        doc, existing_id, metadata_dict
+                    self._process_existing_document_for_upsert(
+                        cur,
+                        key=key,
+                        doc=doc,
+                        tenant_uuid=tenant_uuid,
+                        external_id=external_id,
+                        existing_row=existing,
+                        metadata_dict=metadata_dict,
+                        storage_hash=storage_hash,
+                        lifecycle_state=lifecycle_state,
+                        collection_text=collection_text,
+                        workflow_text=workflow_text,
+                        documents_table=documents_table,
+                        collection_uuid=collection_uuid,
+                        relation_actor=relation_actor,
+                        actions=actions,
+                        document_ids=document_ids,
+                        event_suffix="",
+                        log_skip_info=False,
                     )
-                    # DEBUG.2.after_normalise – show metadata after identity normalisation
-                    try:
-                        logger.warning(
-                            "vector_client.ensure_documents",
-                            extra={
-                                "event": "DEBUG.2.after_normalise",
-                                "tenant_id": str(tenant_uuid),
-                                "external_id": external_id,
-                                "document_id": str(existing_id),
-                                "metadata_after_normalise": json.dumps(
-                                    metadata_dict, default=str, ensure_ascii=False
-                                ),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    existing_metadata_map = _coerce_metadata_map(existing_metadata)
-                    # DEBUG.3.pre_diff – inputs to parent_nodes diff
-                    try:
-                        logger.warning(
-                            "vector_client.ensure_documents",
-                            extra={
-                                "event": "DEBUG.3.pre_diff",
-                                "tenant_id": str(tenant_uuid),
-                                "external_id": external_id,
-                                "document_id": str(existing_id),
-                                "existing_metadata": json.dumps(
-                                    existing_metadata_map,
-                                    default=str,
-                                    ensure_ascii=False,
-                                ),
-                                "desired_metadata": json.dumps(
-                                    metadata_dict, default=str, ensure_ascii=False
-                                ),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    metadata_mismatch = _metadata_parent_nodes_differ(
-                        existing_metadata_map, metadata_dict
-                    )
-                    if metadata_mismatch and _content_hash_matches(
-                        existing_metadata_map,
-                        metadata_dict,
-                        existing_fallback=existing_hash,
-                        desired_fallback=storage_hash,
-                    ):
-                        metadata_mismatch = False
-                    needs_update = (
-                        str(existing_hash) != storage_hash
-                        or (
-                            existing_lifecycle is not None
-                            and str(existing_lifecycle).lower() != LIFECYCLE_ACTIVE
-                        )
-                        or metadata_mismatch
-                    )
-                    # DEBUG.4.post_diff – outcome of diff and final decision flags
-                    try:
-                        logger.warning(
-                            "vector_client.ensure_documents",
-                            extra={
-                                "event": "DEBUG.4.post_diff",
-                                "tenant_id": str(tenant_uuid),
-                                "external_id": external_id,
-                                "document_id": str(existing_id),
-                                "metadata_mismatch": bool(metadata_mismatch),
-                                "needs_update": bool(needs_update),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    if needs_update:
-                        # DEBUG.5.pre_update – metadata that will be persisted via UPDATE
-                        try:
-                            logger.warning(
-                                "vector_client.ensure_documents",
-                                extra={
-                                    "event": "DEBUG.5.pre_update",
-                                    "tenant_id": str(tenant_uuid),
-                                    "external_id": external_id,
-                                    "document_id": str(existing_id),
-                                    "metadata_to_update": json.dumps(
-                                        metadata_dict, default=str, ensure_ascii=False
-                                    ),
-                                },
-                            )
-                        except Exception:
-                            pass
-                        metadata = Json(metadata_dict)
-                        cur.execute(
-                            sql.SQL(
-                                """
-                                UPDATE {}
-                                SET source = %s,
-                                    hash = %s,
-                                    metadata = %s,
-                                    collection_id = %s,
-                                    workflow_id = %s,
-                                    lifecycle = %s,
-                                    deleted_at = NULL
-                                WHERE id = %s
-                                """
-                            ).format(documents_table),
-                            (
-                                doc["source"],
-                                storage_hash,
-                                metadata,
-                                collection_text,
-                                workflow_text,
-                                lifecycle_state,
-                                existing_id,
-                            ),
-                        )
-                        actions[key] = "replaced"
-                    else:
-                        actions[key] = "skipped"
-                        # DEBUG.6.update_skipped – show final state when skipping UPDATE
-                        try:
-                            logger.warning(
-                                "vector_client.ensure_documents",
-                                extra={
-                                    "event": "DEBUG.6.update_skipped",
-                                    "tenant_id": str(tenant_uuid),
-                                    "external_id": external_id,
-                                    "document_id": str(existing_id),
-                                    "metadata_skipped": json.dumps(
-                                        metadata_dict, default=str, ensure_ascii=False
-                                    ),
-                                },
-                            )
-                        except Exception:
-                            pass
-                        self._maybe_repair_persisted_metadata(
-                            cur,
-                            documents_table=documents_table,
-                            tenant_uuid=tenant_uuid,
-                            document_id=existing_id,
-                            existing_metadata=existing_metadata,
-                            desired_metadata=metadata_dict,
-                        )
-                    relation_inserted = False
-                    if collection_uuid is not None:
-                        relation_inserted = self._ensure_document_collection_relation(
-                            cur,
-                            existing_id,
-                            collection_uuid,
-                            added_by=relation_actor,
-                        )
-                    if relation_inserted:
-                        current_action = actions.get(key)
-                        if current_action in {
-                            "skipped",
-                            "near_duplicate_skipped",
-                            None,
-                        }:
-                            actions[key] = "linked"
-                    document_ids[key] = existing_id
-                    doc["collection_id"] = collection_text
-                    doc["workflow_id"] = workflow_text
                     continue
 
-                metadata_dict = _normalise_document_identity(
+                metadata_dict = MetadataHandler.normalise_document_identity(
                     doc, document_id, metadata_dict
                 )
                 metadata = Json(metadata_dict)
@@ -4630,257 +2551,27 @@ class PgVectorClient:
                     if not duplicate:
                         raise
 
-                    (
-                        dup_id,
-                        dup_hash,
-                        dup_metadata,
-                        dup_source,
-                        dup_lifecycle,
-                        dup_collection_value,
-                    ) = duplicate
-                    metadata_dict = _normalise_document_identity(
-                        doc, dup_id, metadata_dict
+                    self._process_existing_document_for_upsert(
+                        retry_cur,
+                        key=key,
+                        doc=doc,
+                        tenant_uuid=tenant_uuid,
+                        external_id=external_id,
+                        existing_row=duplicate,
+                        metadata_dict=metadata_dict,
+                        storage_hash=storage_hash,
+                        lifecycle_state=lifecycle_state,
+                        collection_text=collection_text,
+                        workflow_text=workflow_text,
+                        documents_table=documents_table,
+                        collection_uuid=collection_uuid,
+                        relation_actor=relation_actor,
+                        actions=actions,
+                        document_ids=document_ids,
+                        event_suffix=".retry",
+                        log_skip_info=True,
                     )
-                    # DEBUG.2.after_normalise (retry path)
-                    try:
-                        logger.warning(
-                            "vector_client.ensure_documents",
-                            extra={
-                                "event": "DEBUG.2.after_normalise.retry",
-                                "tenant_id": str(tenant_uuid),
-                                "external_id": external_id,
-                                "document_id": str(dup_id),
-                                "metadata_after_normalise": json.dumps(
-                                    metadata_dict, default=str, ensure_ascii=False
-                                ),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    metadata_payload = Json(metadata_dict)
-                    existing_metadata_map = _coerce_metadata_map(dup_metadata)
-                    # DEBUG.3.pre_diff (retry path)
-                    try:
-                        logger.warning(
-                            "vector_client.ensure_documents",
-                            extra={
-                                "event": "DEBUG.3.pre_diff.retry",
-                                "tenant_id": str(tenant_uuid),
-                                "external_id": external_id,
-                                "document_id": str(dup_id),
-                                "existing_metadata": json.dumps(
-                                    existing_metadata_map,
-                                    default=str,
-                                    ensure_ascii=False,
-                                ),
-                                "desired_metadata": json.dumps(
-                                    metadata_dict, default=str, ensure_ascii=False
-                                ),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    metadata_mismatch = _metadata_parent_nodes_differ(
-                        existing_metadata_map, metadata_dict
-                    )
-                    if metadata_mismatch and _content_hash_matches(
-                        existing_metadata_map,
-                        metadata_dict,
-                        existing_fallback=dup_hash,
-                        desired_fallback=storage_hash,
-                    ):
-                        metadata_mismatch = False
-                    needs_update = (
-                        str(dup_hash) != storage_hash
-                        or (
-                            dup_lifecycle is not None
-                            and str(dup_lifecycle).lower() != LIFECYCLE_ACTIVE
-                        )
-                        or metadata_mismatch
-                    )
-                    # DEBUG.4.post_diff (retry path)
-                    try:
-                        logger.warning(
-                            "vector_client.ensure_documents",
-                            extra={
-                                "event": "DEBUG.4.post_diff.retry",
-                                "tenant_id": str(tenant_uuid),
-                                "external_id": external_id,
-                                "document_id": str(dup_id),
-                                "metadata_mismatch": bool(metadata_mismatch),
-                                "needs_update": bool(needs_update),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    if needs_update:
-                        # DEBUG.5.pre_update (retry path)
-                        try:
-                            logger.warning(
-                                "vector_client.ensure_documents",
-                                extra={
-                                    "event": "DEBUG.5.pre_update.retry",
-                                    "tenant_id": str(tenant_uuid),
-                                    "external_id": external_id,
-                                    "document_id": str(dup_id),
-                                    "metadata_to_update": json.dumps(
-                                        metadata_dict, default=str, ensure_ascii=False
-                                    ),
-                                },
-                            )
-                        except Exception:
-                            pass
-                        retry_cur.execute(
-                            sql.SQL(
-                                """
-                                UPDATE {}
-                                SET source = %s,
-                                    hash = %s,
-                                    metadata = %s,
-                                    collection_id = %s,
-                                    workflow_id = %s,
-                                    lifecycle = %s,
-                                    deleted_at = NULL
-                                WHERE id = %s
-                                """
-                            ).format(documents_table),
-                            (
-                                doc["source"],
-                                storage_hash,
-                                metadata_payload,
-                                collection_text,
-                                workflow_text,
-                                lifecycle_state,
-                                dup_id,
-                            ),
-                        )
-                        actions[key] = "replaced"
-                    else:
-                        actions[key] = "skipped"
-                        logger.info(
-                            "Skipping unchanged document during upsert",
-                            extra={
-                                "tenant_id": doc["tenant_id"],
-                                "external_id": external_id,
-                            },
-                        )
-                        # DEBUG.6.update_skipped (retry path)
-                        try:
-                            logger.warning(
-                                "vector_client.ensure_documents",
-                                extra={
-                                    "event": "DEBUG.6.update_skipped.retry",
-                                    "tenant_id": str(tenant_uuid),
-                                    "external_id": external_id,
-                                    "document_id": str(dup_id),
-                                    "metadata_skipped": json.dumps(
-                                        metadata_dict, default=str, ensure_ascii=False
-                                    ),
-                                },
-                            )
-                        except Exception:
-                            pass
-                        self._maybe_repair_persisted_metadata(
-                            retry_cur,
-                            documents_table=documents_table,
-                            tenant_uuid=tenant_uuid,
-                            document_id=dup_id,
-                            existing_metadata=dup_metadata,
-                            desired_metadata=metadata_dict,
-                        )
-
-                    relation_inserted = False
-                    if collection_uuid is not None:
-                        relation_inserted = self._ensure_document_collection_relation(
-                            retry_cur,
-                            dup_id,
-                            collection_uuid,
-                            added_by=relation_actor,
-                        )
-                    if relation_inserted:
-                        current_action = actions.get(key)
-                        if current_action in {
-                            "skipped",
-                            "near_duplicate_skipped",
-                            None,
-                        }:
-                            actions[key] = "linked"
-                    document_ids[key] = dup_id
-                    doc["collection_id"] = collection_text
-                    doc["workflow_id"] = workflow_text
         return document_ids, actions
-
-    def _maybe_repair_persisted_metadata(
-        self,
-        cur,
-        *,
-        documents_table: sql.Identifier,
-        tenant_uuid: uuid.UUID,
-        document_id: uuid.UUID,
-        existing_metadata: object,
-        desired_metadata: Mapping[str, object] | None,
-    ) -> None:
-        canonical_id = str(document_id)
-        existing_map = (
-            dict(existing_metadata) if isinstance(existing_metadata, Mapping) else {}
-        )
-
-        # Decide whether identity or parent_nodes require repair
-        needs_identity_fix = _metadata_identity_needs_repair(existing_map, canonical_id)
-        desired_map = (
-            dict(desired_metadata) if isinstance(desired_metadata, Mapping) else {}
-        )
-        needs_parent_nodes_fix = _metadata_parent_nodes_differ(
-            existing_map, desired_map
-        )
-
-        if not needs_identity_fix and not needs_parent_nodes_fix:
-            return
-
-        stored_document_id = existing_map.get("document_id")
-        extra = {
-            "tenant_id": str(tenant_uuid),
-            "document_id": canonical_id,
-            "stored_document_id": (
-                str(stored_document_id)
-                if stored_document_id not in {None, ""}
-                else None
-            ),
-            "parent_nodes_repair": bool(needs_parent_nodes_fix),
-        }
-
-        # In dev/test environments, proactively repair persisted metadata to reduce flakiness
-        if _is_dev_environment():
-            payload: dict[str, object] = dict(existing_map)
-            if desired_map:
-                # Merge desired fields but keep existing keys unless overwritten
-                payload.update(desired_map)
-            # Always enforce the canonical document identifier
-            payload["document_id"] = canonical_id
-            try:
-                cur.execute(
-                    sql.SQL(
-                        """
-                        UPDATE {}
-                        SET metadata = %s
-                        WHERE id = %s
-                        """
-                    ).format(documents_table),
-                    (Json(payload), document_id),
-                )
-            except Exception:
-                logger.exception(
-                    "ingestion.doc.metadata_repair_failed",
-                    extra=extra,
-                )
-            else:
-                logger.info("ingestion.doc.metadata_repaired", extra=extra)
-                return
-
-        logger.warning(
-            "ingestion.doc.metadata_repair_required",
-            extra=extra,
-        )
 
     def _ensure_collection_scope(
         self, cur, tenant_uuid: uuid.UUID, collection_uuid: uuid.UUID
@@ -4941,14 +2632,9 @@ class PgVectorClient:
         """Ensure a vector collection record exists for ``tenant_id``."""
 
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
-        try:
-            collection_uuid = (
-                collection_id
-                if isinstance(collection_id, uuid.UUID)
-                else uuid.UUID(str(collection_id))
-            )
-        except (TypeError, ValueError, AttributeError) as exc:
-            raise ValueError("invalid_collection_id") from exc
+        collection_uuid = self._parse_collection_uuid(collection_id, strict=True)
+        if collection_uuid is None:
+            raise ValueError("invalid_collection_id")
 
         with self._connection() as conn:  # type: ignore[attr-defined]
             try:
@@ -4978,14 +2664,9 @@ class PgVectorClient:
         """Remove vector collection metadata and orphaned relations."""
 
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
-        try:
-            collection_uuid = (
-                collection_id
-                if isinstance(collection_id, uuid.UUID)
-                else uuid.UUID(str(collection_id))
-            )
-        except (TypeError, ValueError, AttributeError) as exc:
-            raise ValueError("invalid_collection_id") from exc
+        collection_uuid = self._parse_collection_uuid(collection_id, strict=True)
+        if collection_uuid is None:
+            raise ValueError("invalid_collection_id")
 
         documents_table = self._table("documents")
         chunks_table = self._table("chunks")
@@ -5259,46 +2940,19 @@ class PgVectorClient:
         source: str,
         workflow_id: str | None = None,
     ) -> str:
-        if not content_hash:
-            return content_hash
-        tenant_value = str(tenant_uuid)
         documents_table = self._table("documents")
         workflow_clause, workflow_params = self._workflow_predicate_clause(workflow_id)
-        lookup_sql = sql.SQL(
-            """
-            SELECT external_id
-            FROM {}
-            WHERE tenant_id = %s
-              AND {}
-              AND source = %s
-              AND hash = %s
-            LIMIT 1
-            """
-        ).format(documents_table, workflow_clause)
-        params: list[object] = [tenant_value]
-        params.extend(workflow_params)
-        params.extend([source, content_hash])
-        cur.execute(lookup_sql, tuple(params))
-        existing = cur.fetchone()
-        if existing:
-            existing_external_id = existing[0]
-            if existing_external_id and str(existing_external_id) != external_id:
-                logger.debug(
-                    "ingestion.doc.hash_reused",
-                    extra={
-                        "tenant_id": tenant_value,
-                        "source": source,
-                        "hash": content_hash,
-                        "existing_external_id": str(existing_external_id),
-                        "incoming_external_id": external_id,
-                    },
-                )
-                # Avoid unique (tenant_id, source, hash) collisions by deriving a
-                # stable per-document storage hash when content is shared across
-                # different external_ids.
-                composite = f"{content_hash}|{external_id}"
-                return hashlib.sha256(composite.encode("utf-8")).hexdigest()
-        return content_hash
+        return compute_storage_hash(
+            cur=cur,
+            documents_table=documents_table,
+            workflow_clause=workflow_clause,
+            workflow_params=workflow_params,
+            tenant_uuid=tenant_uuid,
+            content_hash=content_hash,
+            external_id=external_id,
+            source=source,
+            log=logger,
+        )
 
     def _coerce_tenant_uuid(self, tenant_id: object) -> uuid.UUID:
         """Return a UUID for ``tenant_id`` while keeping legacy IDs stable."""
@@ -5324,6 +2978,20 @@ class PgVectorClient:
                 },
             )
             return derived
+
+    def _parse_collection_uuid(
+        self, value: object, *, strict: bool
+    ) -> uuid.UUID | None:
+        if value in {None, ""}:
+            return None
+        if not strict and value == "None":
+            return None
+        try:
+            return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+        except (TypeError, ValueError, AttributeError) as exc:
+            if strict:
+                raise ValueError("invalid_collection_id") from exc
+            return None
 
     def _replace_chunks(
         self,
@@ -5378,16 +3046,9 @@ class PgVectorClient:
             document_id = document_ids[key]
             tenant_value = str(doc.get("tenant_id", ""))
             collection_value = doc.get("collection_id")
-            collection_uuid: uuid.UUID | None = None
-            if collection_value not in {None, "", "None"}:
-                try:
-                    collection_uuid = (
-                        collection_value
-                        if isinstance(collection_value, uuid.UUID)
-                        else uuid.UUID(str(collection_value))
-                    )
-                except (TypeError, ValueError, AttributeError):
-                    collection_uuid = None
+            collection_uuid = self._parse_collection_uuid(
+                collection_value, strict=False
+            )
             collection_text = (
                 str(collection_uuid) if collection_uuid is not None else None
             )
@@ -5502,10 +3163,7 @@ class PgVectorClient:
 
     def _format_vector(self, values: Sequence[float]) -> str:
         expected_dim = get_embedding_dim()
-        floats = [float(v) for v in values]
-        if len(floats) != expected_dim:
-            raise ValueError("Embedding dimension mismatch")
-        return "[" + ",".join(f"{value:.6f}" for value in floats) + "]"
+        return format_vector(values, expected_dim=expected_dim)
 
     def _format_vector_lenient(self, values: Sequence[float]) -> str:
         """Format a vector without enforcing provider dimension.
@@ -5514,61 +3172,68 @@ class PgVectorClient:
         temporary dimension mismatch (e.g. during tests or provider changes)
         into a hard failure that would bypass the vector search entirely.
         """
-        floats = [float(v) for v in values]
-        return "[" + ",".join(f"{value:.6f}" for value in floats) + "]"
+        return format_vector_lenient(values)
+
+    def _generate_hyde_document(
+        self, query: str, metadata: Mapping[str, Any]
+    ) -> str | None:
+        label = str(_get_setting("RAG_HYDE_MODEL_LABEL", "simple-query")).strip()
+        if not label:
+            label = "simple-query"
+        max_chars_setting = _get_setting("RAG_HYDE_MAX_CHARS", 2000)
+        try:
+            max_chars = int(max_chars_setting)
+        except (TypeError, ValueError):
+            max_chars = 2000
+        max_chars = max(0, max_chars)
+        prompt = _HYDE_PROMPT_TEMPLATE.format(query=query)
+        tenant_id = metadata.get("tenant_id")
+        case_id = metadata.get("case_id")
+        try:
+            from ai_core.llm.client import LlmClientError, call as llm_call
+        except Exception as exc:
+            logger.warning(
+                "rag.hyde.unavailable",
+                extra={
+                    "tenant_id": tenant_id,
+                    "case_id": case_id,
+                    "error": str(exc),
+                },
+            )
+            return None
+        try:
+            response = llm_call(label, prompt, dict(metadata))
+        except LlmClientError as exc:
+            logger.warning(
+                "rag.hyde.failed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "case_id": case_id,
+                    "error": str(exc),
+                },
+            )
+            return None
+        text = response.get("text") if isinstance(response, Mapping) else None
+        if not isinstance(text, str):
+            return None
+        candidate = text.strip()
+        if not candidate:
+            return None
+        if max_chars and len(candidate) > max_chars:
+            candidate = candidate[:max_chars]
+        logger.info(
+            "rag.hyde.generated",
+            extra={
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "model_label": label,
+                "chars": len(candidate),
+            },
+        )
+        return candidate
 
     def _embed_query(self, query: str) -> List[float]:
-        client = get_embedding_client()
-        normalised = normalise_text(query)
-        text = normalised or ""
-        started = time.perf_counter()
-        result = client.embed([text])
-        duration_ms = (time.perf_counter() - started) * 1000
-
-        if not result.vectors:
-            raise EmbeddingClientError("Embedding provider returned no vectors")
-        vector = result.vectors[0]
-        if not isinstance(vector, list):
-            vector = list(vector)
-        try:
-            vector = [float(value) for value in vector]
-        except (TypeError, ValueError) as exc:
-            raise EmbeddingClientError(
-                "Embedding vector contains non-numeric values"
-            ) from exc
-        try:
-            expected_dim = client.dim()
-        except EmbeddingClientError:
-            expected_dim = len(vector)
-        if len(vector) != expected_dim:
-            raise EmbeddingClientError(
-                "Embedding dimension mismatch between query and provider"
-            )
-
-        normalised_vector = _normalise_vector(vector)
-        if normalised_vector is None:
-            vector = [0.0 for _ in vector]
-        else:
-            vector = normalised_vector
-
-        context = get_log_context()
-        tenant_id = context.get("tenant")
-        extra: Dict[str, object] = {
-            "tenant_id": tenant_id or "-",
-            "len_text": len(text),
-            "model_name": result.model,
-            "model_used": result.model_used,
-            "duration_ms": duration_ms,
-            "attempts": result.attempts,
-        }
-        timeout_s = result.timeout_s
-        if timeout_s is not None:
-            extra["timeout_s"] = timeout_s
-        key_alias = context.get("key_alias")
-        if key_alias:
-            extra["key_alias"] = key_alias
-        logger.info("rag.query.embed", extra=extra)
-        return vector
+        return embed_query(query, log=logger, get_client=get_embedding_client)
 
     def _distance_to_score(self, distance: float) -> float:
         try:
@@ -5787,6 +3452,7 @@ def _resolve_django_dsn_if_available(*, dsn: str) -> str | None:
 
 
 _DEFAULT_CLIENT: Optional[VectorStore] = None
+_SCHEMA_CLIENTS: Dict[str, PgVectorClient] = {}
 
 
 def _resolve_vector_schema() -> str:
@@ -5856,11 +3522,27 @@ def get_default_client() -> PgVectorClient:
     return cast(PgVectorClient, _DEFAULT_CLIENT)
 
 
+def get_client_for_schema(schema: str | None) -> PgVectorClient:
+    schema_value = str(schema or "").strip() or _resolve_vector_schema()
+    client = _SCHEMA_CLIENTS.get(schema_value)
+    if client is None:
+        client = PgVectorClient.from_env(schema=schema_value)
+        _SCHEMA_CLIENTS[schema_value] = client
+    return client
+
+
+def reset_schema_clients() -> None:
+    for client in _SCHEMA_CLIENTS.values():
+        client.close()
+    _SCHEMA_CLIENTS.clear()
+
+
 def reset_default_client() -> None:
     global _DEFAULT_CLIENT
     if _DEFAULT_CLIENT is not None:
         _DEFAULT_CLIENT.close()
     _DEFAULT_CLIENT = None
+    reset_schema_clients()
 
 
 atexit.register(reset_default_client)

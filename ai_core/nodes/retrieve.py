@@ -10,8 +10,9 @@ from typing import Any, Callable, Dict, Iterable, Mapping
 from common.logging import get_logger
 
 from ai_core.nodes._hybrid_params import parse_hybrid_parameters
-from ai_core.rag.embedding_config import get_embedding_configuration
 from ai_core.rag.profile_resolver import resolve_embedding_profile
+from ai_core.rag.vector_space_resolver import resolve_vector_space_full
+from ai_core.rag.vector_client import get_client_for_schema, get_default_schema
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStoreRouter, get_default_router
 from ai_core.rag.selector_utils import normalise_selector_value
@@ -628,11 +629,10 @@ def _resolve_routing_metadata(
         collection_id=sanitized_collection,
         workflow_id=workflow_id,
     )
-    configuration = get_embedding_configuration()
-    profile_config = configuration.embedding_profiles[profile_id]
+    resolution = resolve_vector_space_full(profile_id)
     return {
         "profile": profile_id,
-        "vector_space_id": profile_config.vector_space,
+        "vector_space_id": resolution.vector_space.id,
         "process": sanitized_process,
         "doc_class": sanitized_doc_class,
         "collection_id": sanitized_collection,
@@ -645,16 +645,20 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
 
     started_at = time.perf_counter()
 
-    tenant_id = str(getattr(context, "tenant_id", "") or "").strip()
+    tenant_id = str(context.scope.tenant_id or "").strip()
     if not tenant_id:
         raise ContextError("tenant_id required", field="tenant_id")
 
     tenant_schema = (
-        str(context.tenant_schema).strip()
-        if context.tenant_schema is not None
+        str(context.scope.tenant_schema).strip()
+        if context.scope.tenant_schema is not None
         else None
     )
-    case_id = str(context.case_id).strip() if context.case_id is not None else None
+    case_id = (
+        str(context.business.case_id).strip()
+        if context.business.case_id is not None
+        else None
+    )
 
     filters = _ensure_mapping(params.filters, field="filters")
     process = params.process
@@ -677,19 +681,33 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
 
     visibility_override_allowed = coerce_bool_flag(context.visibility_override_allowed)
 
-    router = _get_router()
-    adaptor = _get_router_adaptor(router)
-    if adaptor.requires_warning:
-        logger.warning(
-            "rag.retrieve.router_incompatible",
-            extra={
-                "tenant_id": tenant_id,
-                "case_id": case_id,
-                "router": type(router).__name__,
-            },
-        )
-    tenant_client = adaptor.factory(tenant_id, tenant_schema)
-    scoped_client = adaptor.is_scoped and tenant_client is not router
+    routing_meta = _resolve_routing_metadata(
+        tenant_id=tenant_id,
+        process=process,
+        doc_class=doc_class,
+        collection_id=collection_id,
+        workflow_id=workflow_id,
+    )
+    resolved_space = resolve_vector_space_full(routing_meta["profile"])
+    vector_space_schema = resolved_space.vector_space.schema
+    default_schema = get_default_schema()
+    if vector_space_schema and vector_space_schema != default_schema:
+        tenant_client = get_client_for_schema(vector_space_schema)
+        scoped_client = False
+    else:
+        router = _get_router()
+        adaptor = _get_router_adaptor(router)
+        if adaptor.requires_warning:
+            logger.warning(
+                "rag.retrieve.router_incompatible",
+                extra={
+                    "tenant_id": tenant_id,
+                    "case_id": case_id,
+                    "router": type(router).__name__,
+                },
+            )
+        tenant_client = adaptor.factory(tenant_id, tenant_schema)
+        scoped_client = adaptor.is_scoped and tenant_client is not router
 
     logger.debug(
         "Executing hybrid retrieval",
@@ -850,14 +868,6 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
             if parents_payload:
                 meta_section["parents"] = parents_payload
                 meta_section["parent_ids"] = ordered_ids
-
-    routing_meta = _resolve_routing_metadata(
-        tenant_id=tenant_id,
-        process=process,
-        doc_class=doc_class,
-        collection_id=collection_id,
-        workflow_id=workflow_id,
-    )
 
     alpha_value = _coerce_float_value(
         getattr(hybrid_result, "alpha", hybrid_config.alpha), hybrid_config.alpha

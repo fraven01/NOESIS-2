@@ -45,7 +45,7 @@ def test_ping_missing_case(client, monkeypatch, test_tenant_schema_name):
         HTTP_X_CASE_ID="missing",
     )
     assert resp.status_code == 404
-    assert resp.json()["code"] == "case_not_found"
+    assert resp.json()["error"]["code"] == "case_not_found"
 
 
 @pytest.mark.django_db

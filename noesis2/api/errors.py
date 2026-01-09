@@ -13,13 +13,33 @@ from drf_spectacular.utils import OpenApiExample, OpenApiResponse
 from rest_framework import serializers
 
 
-class ErrorResponseSerializer(serializers.Serializer):
-    """Generic error payload emitted by API endpoints on failure."""
+class ErrorDetailSerializer(serializers.Serializer):
+    """Structured error detail matching the tool error contract."""
 
-    detail = serializers.CharField(
-        help_text="Human readable description of the failure."
-    )
-    code = serializers.CharField(help_text="Stable machine readable error identifier.")
+    type = serializers.CharField(help_text="ToolErrorType identifier.")
+    message = serializers.CharField(help_text="Human readable description.")
+    code = serializers.CharField(required=False, allow_null=True)
+    cause = serializers.CharField(required=False, allow_null=True)
+    details = serializers.JSONField(required=False, allow_null=True)
+    retry_after_ms = serializers.IntegerField(required=False, allow_null=True)
+    upstream_status = serializers.IntegerField(required=False, allow_null=True)
+    endpoint = serializers.CharField(required=False, allow_null=True)
+    attempt = serializers.IntegerField(required=False, allow_null=True)
+
+
+class ErrorMetaSerializer(serializers.Serializer):
+    """Error metadata for ToolError envelopes."""
+
+    took_ms = serializers.IntegerField()
+
+
+class ErrorResponseSerializer(serializers.Serializer):
+    """Tool error envelope emitted by API endpoints on failure."""
+
+    status = serializers.CharField(default="error")
+    input = serializers.DictField()
+    error = ErrorDetailSerializer()
+    meta = ErrorMetaSerializer()
 
 
 if (
@@ -29,8 +49,10 @@ if (
     class ErrorResponseModel(BaseModel):
         """Pydantic representation of :class:`ErrorResponseSerializer`."""
 
-        detail: str
-        code: str
+        status: str
+        input: Mapping[str, object]
+        error: Mapping[str, object]
+        meta: Mapping[str, object]
 
 else:  # pragma: no cover - exercised only when pydantic is not installed
 
@@ -39,8 +61,10 @@ else:  # pragma: no cover - exercised only when pydantic is not installed
     class ErrorResponseModel(TypedDict):
         """Typed fallback ensuring hints remain intact without pydantic."""
 
-        detail: str
-        code: str
+        status: str
+        input: Mapping[str, object]
+        error: Mapping[str, object]
+        meta: Mapping[str, object]
 
 
 DEFAULT_ERROR_STATUSES: Sequence[int] = (400, 401, 403, 404, 503)
@@ -113,6 +137,17 @@ _ERROR_RESPONSE_METADATA: Mapping[int, Mapping[str, object]] = {
     },
 }
 
+_ERROR_TYPE_BY_STATUS: Mapping[int, str] = {
+    400: "VALIDATION",
+    401: "VALIDATION",
+    403: "VALIDATION",
+    404: "VALIDATION",
+    409: "VALIDATION",
+    415: "VALIDATION",
+    429: "RATE_LIMIT",
+    503: "FATAL",
+}
+
 
 def _dedupe_statuses(statuses: Iterable[int]) -> Sequence[int]:
     """Return statuses without duplicates while preserving insertion order."""
@@ -137,10 +172,20 @@ def default_error_responses(
         if metadata is None:
             continue
 
+        error_type = _ERROR_TYPE_BY_STATUS.get(status_code, "FATAL")
         example = OpenApiExample(
             name=metadata["code"],
             summary=metadata["description"],
-            value={"detail": metadata["detail"], "code": metadata["code"]},
+            value={
+                "status": "error",
+                "input": {},
+                "error": {
+                    "type": error_type,
+                    "message": metadata["detail"],
+                    "code": metadata["code"],
+                },
+                "meta": {"took_ms": 0},
+            },
             response_only=True,
         )
 
@@ -154,7 +199,16 @@ def default_error_responses(
                 OpenApiExample(
                     name=extra["name"],
                     summary=extra.get("summary", extra["name"]),
-                    value={"detail": extra["detail"], "code": extra["code"]},
+                    value={
+                        "status": "error",
+                        "input": {},
+                        "error": {
+                            "type": error_type,
+                            "message": extra["detail"],
+                            "code": extra["code"],
+                        },
+                        "meta": {"took_ms": 0},
+                    },
                     response_only=True,
                 )
             )

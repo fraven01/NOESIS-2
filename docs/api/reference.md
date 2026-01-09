@@ -305,6 +305,10 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
 | `RAG_IVF_LISTS` | `2048` | Anzahl der Listen (`lists`) für IVFFLAT-Indizes. |
 | `RAG_IVF_PROBES` | `64` | Anzahl der `probes` für IVFFLAT-Suchen (per Session gesetzt). |
 | `RAG_MIN_SIM` | `0.15` | Minimale Fused-Similarity für Treffer (Werte darunter werden verworfen). |
+| `RAG_LEXICAL_MODE` | `trgm` | Lexikalischer Retrieval-Modus (`trgm` oder `bm25`). |
+| `RAG_HYDE_ENABLED` | `false` | HyDE (Hypothetical Document Embeddings) für semantische Queries aktivieren. |
+| `RAG_HYDE_MODEL_LABEL` | `simple-query` | LLM-Routing-Label für HyDE-Prompts. |
+| `RAG_HYDE_MAX_CHARS` | `2000` | Maximalgröße des HyDE-Texts vor dem Embedding. |
 | `RAG_HYBRID_ALPHA` | `0.7` | Gewichtung der semantischen Similarität in der Late-Fusion (0 = nur Lexikalik). |
 | `RAG_CHUNK_TARGET_TOKENS` | `450` | Zielgröße pro Chunk in Tokens für die Vorverarbeitung. |
 | `RAG_CHUNK_OVERLAP_TOKENS` | `80` | Token-Overlap zwischen aufeinanderfolgenden Chunks. |
@@ -508,6 +512,10 @@ Alle Requests werden strukturiert geloggt mit:
 ### POST `/ai/intake/`
 Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 
+> **Deprecated:** `/ai/intake/` und `/v1/ai/intake/` sind veraltet. Bitte nutze
+> `/v1/ai/rag/query/` fÇ¬r produktive RAG-Flows. Der Endpoint liefert einen
+> `Deprecation`-Header und wird vor dem MVP entfernt.
+
 > **Hinweis:** Der Graph persistiert den Zustand und führt das Request-JSON als
 > shallow overwrite mit dem bestehenden State zusammen.
 
@@ -580,7 +588,7 @@ Auch für Queries gilt: `tenant_id` ist ein Pflichtfeld im Body (muss dem Header
     "took_ms": 42,
     "routing": {
       "profile": "standard",
-      "vector_space_id": "rag/global"
+      "vector_space_id": "rag/standard@v1"
     }
   },
   "snippets": [

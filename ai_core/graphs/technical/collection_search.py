@@ -8,10 +8,12 @@ import math
 import time
 from collections.abc import Mapping, MutableMapping, Sequence
 from datetime import datetime, timezone
-from typing import Any, Protocol, TypedDict, cast, Optional, Literal
+from typing import Any, Literal, Optional, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from common.validators import normalise_str_sequence, optional_str, require_trimmed_str
 
 try:
     from langgraph.graph import StateGraph, END
@@ -22,10 +24,13 @@ except ImportError:
     END = "params"
     RunnableConfig = Any
 
+from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import emit_event, observe_span, update_observation
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.rag.embeddings import EmbeddingClient
+from ai_core.tool_contracts import ToolContext
+from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.tools.web_search import (
     SearchProviderError,
     ToolOutcome,
@@ -64,12 +69,7 @@ class SearchStrategyRequest(BaseModel):
     @field_validator("tenant_id", "query", "quality_mode", "purpose", mode="before")
     @classmethod
     def _trimmed(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("value must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("value must not be empty")
-        return candidate
+        return require_trimmed_str(value)
 
 
 class SearchStrategy(BaseModel):
@@ -107,72 +107,12 @@ class SearchStrategy(BaseModel):
     )
     @classmethod
     def _normalise_sequences(cls, value: Any) -> tuple[str, ...]:
-        if value in (None, "", (), []):
-            return ()
-        if isinstance(value, str):
-            candidate = value.strip()
-            return (candidate,) if candidate else ()
-        if not isinstance(value, (list, tuple, set)):
-            raise ValueError("value must be a sequence of strings")
-        cleaned: list[str] = []
-        for item in value:
-            if item in (None, ""):
-                continue
-            cleaned_item = str(item).strip()
-            if cleaned_item:
-                cleaned.append(cleaned_item)
-        return tuple(cleaned)
+        return normalise_str_sequence(value)
 
     @field_validator("notes", mode="before")
     @classmethod
     def _normalise_notes(cls, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("notes must be a string")
-        candidate = value.strip()
-        return candidate or None
-
-
-class GraphContextPayload(BaseModel):
-    """Validated runtime context for the business graph."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    tenant_id: str
-    workflow_id: str
-    case_id: str | None = None
-    trace_id: str | None = None
-    run_id: str | None = None
-    ingestion_run_id: str | None = None
-    # Identity IDs (Pre-MVP ID Contract)
-    user_id: str | None = None  # User Request Hop (mutually exclusive with service_id)
-    service_id: str | None = None  # S2S Hop (mutually exclusive with user_id)
-
-    @field_validator("tenant_id", "workflow_id", mode="before")
-    @classmethod
-    def _trimmed_required(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("value must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("value must not be empty")
-        return candidate
-
-    @field_validator(
-        "case_id",
-        "trace_id",
-        "run_id",
-        "ingestion_run_id",
-        "user_id",
-        "service_id",
-        mode="before",
-    )
-    @classmethod
-    def _normalise_optional(cls, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        return str(value).strip() or None
+        return optional_str(value, field_name="notes")
 
 
 class GraphInput(BaseModel):
@@ -201,6 +141,51 @@ class GraphInput(BaseModel):
         return candidate
 
 
+COLLECTION_SEARCH_SCHEMA_ID = "noesis.graphs.collection_search"
+COLLECTION_SEARCH_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
+COLLECTION_SEARCH_IO_VERSION_STRING = COLLECTION_SEARCH_IO_VERSION.as_string()
+
+
+class CollectionSearchGraphRequest(BaseModel):
+    """Boundary input model for the collection search graph."""
+
+    schema_id: Literal[COLLECTION_SEARCH_SCHEMA_ID] = COLLECTION_SEARCH_SCHEMA_ID
+    schema_version: Literal[COLLECTION_SEARCH_IO_VERSION_STRING] = (
+        COLLECTION_SEARCH_IO_VERSION_STRING
+    )
+    input: GraphInput
+    tool_context: ToolContext | None = None
+    runtime: dict[str, Any] | None = None
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class CollectionSearchGraphOutput(BaseModel):
+    """Boundary output model for the collection search graph."""
+
+    schema_id: Literal[COLLECTION_SEARCH_SCHEMA_ID] = COLLECTION_SEARCH_SCHEMA_ID
+    schema_version: Literal[COLLECTION_SEARCH_IO_VERSION_STRING] = (
+        COLLECTION_SEARCH_IO_VERSION_STRING
+    )
+    outcome: str
+    search: Mapping[str, Any] | None
+    telemetry: Mapping[str, Any] | None
+    ingestion: Mapping[str, Any] | None
+    plan: Mapping[str, Any] | None
+    hitl: Mapping[str, Any] | None
+    error: str | None = None
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+COLLECTION_SEARCH_IO = GraphIOSpec(
+    schema_id=COLLECTION_SEARCH_SCHEMA_ID,
+    version=COLLECTION_SEARCH_IO_VERSION,
+    input_model=CollectionSearchGraphRequest,
+    output_model=CollectionSearchGraphOutput,
+)
+
+
 class HitlDecision(BaseModel):
     """Structured decision returned from the HITL gateway."""
 
@@ -220,31 +205,14 @@ class HitlDecision(BaseModel):
     )
     @classmethod
     def _normalise_ids(cls, value: Any) -> tuple[str, ...]:
-        if value in (None, "", (), []):
-            return ()
-        if isinstance(value, str):
-            candidate = value.strip()
-            return (candidate,) if candidate else ()
-        if not isinstance(value, (list, tuple, set)):
-            raise ValueError("decision values must be sequences of strings")
-        cleaned: list[str] = []
-        for item in value:
-            if item in (None, ""):
-                continue
-            cleaned_item = str(item).strip()
-            if cleaned_item:
-                cleaned.append(cleaned_item)
-        return tuple(cleaned)
+        return normalise_str_sequence(
+            value, error_message="decision values must be sequences of strings"
+        )
 
     @field_validator("rationale", mode="before")
     @classmethod
     def _normalise_rationale(cls, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("rationale must be a string")
-        candidate = value.strip()
-        return candidate or None
+        return optional_str(value, field_name="rationale")
 
 
 class CollectionSearchPlan(BaseModel):
@@ -334,7 +302,8 @@ class CollectionSearchState(TypedDict):
     """State management for the collection search graph."""
 
     input: Mapping[str, Any]  # Raw input used to build GraphInput
-    context: Mapping[str, Any]  # Runtime dependencies and context
+    tool_context: ToolContext
+    runtime: Mapping[str, Any]  # Runtime dependencies
 
     # Intermediate state
     strategy: Optional[Mapping[str, Any]]
@@ -459,38 +428,27 @@ def _record_transition(
     state.setdefault("telemetry", {}).setdefault("nodes", {})[node_name] = dict(meta)
 
 
-def _validate_tenant_context(context: Mapping[str, Any]) -> None:
-    """Enforce AGENTS.md Root Law: tenant_id is required for multi-tenant operation.
-
-    Raises:
-        ValueError: If tenant_id is missing or empty.
-    """
-    if "tenant_id" not in context:
-        raise ValueError(
-            "tenant_id required in context (AGENTS.md Root Law). "
-            "Multi-tenant operation cannot proceed without tenant isolation."
-        )
-    tenant_value = context["tenant_id"]
+def _validate_tenant_context(tool_context: ToolContext) -> None:
+    """Enforce AGENTS.md Root Law: tenant_id is required for multi-tenant operation."""
+    tenant_value = tool_context.scope.tenant_id
     if not tenant_value or (isinstance(tenant_value, str) and not tenant_value.strip()):
         raise ValueError("tenant_id must be non-empty string")
 
 
-def _get_ids(
-    state: CollectionSearchState, collection_scope: str
-) -> dict[str, str | None]:
-    context = state["context"]
-    # Provide defaults to prevent KeyErrors during partial initialization
+def _get_ids(tool_context: ToolContext, collection_scope: str) -> dict[str, str | None]:
+    scope = tool_context.scope
+    business = tool_context.business
     return {
-        "tenant_id": context.get("tenant_id"),
-        "workflow_id": context.get("workflow_id"),
-        "case_id": context.get("case_id"),
-        "trace_id": context.get("trace_id"),
-        "run_id": context.get("run_id"),
-        "ingestion_run_id": context.get("ingestion_run_id"),
+        "tenant_id": scope.tenant_id,
+        "workflow_id": business.workflow_id,
+        "case_id": business.case_id,
+        "trace_id": scope.trace_id,
+        "run_id": scope.run_id,
+        "ingestion_run_id": scope.ingestion_run_id,
         "collection_scope": collection_scope,
         # Identity IDs (Pre-MVP ID Contract)
-        "user_id": context.get("user_id"),
-        "service_id": context.get("service_id"),
+        "user_id": scope.user_id,
+        "service_id": scope.service_id,
     }
 
 
@@ -503,8 +461,9 @@ def _get_ids(
 def strategy_node(state: CollectionSearchState) -> dict[str, Any]:
     """Generate search strategy."""
     raw_input = state["input"]
-    context = state["context"]
-    generator: StrategyGenerator = context.get("runtime_strategy_generator")
+    tool_context = state["tool_context"]
+    runtime = state["runtime"]
+    generator: StrategyGenerator = runtime.get("runtime_strategy_generator")
 
     # Re-validate input to ensure safety
     try:
@@ -513,7 +472,7 @@ def strategy_node(state: CollectionSearchState) -> dict[str, Any]:
         # Should have been validated at entry, but safe fallback
         return {"strategy": {"error": "Invalid input"}}
 
-    ids = _get_ids(state, graph_input.collection_scope)
+    ids = _get_ids(tool_context, graph_input.collection_scope)
 
     if not generator:
         # Should not happen in production
@@ -547,8 +506,9 @@ def search_node(state: CollectionSearchState) -> dict[str, Any]:
     if not strategy_data:
         return {"search": {"errors": ["No strategy generated"], "results": []}}
 
-    context = state["context"]
-    worker: WebSearchWorker | None = context.get("runtime_search_worker")
+    tool_context = state["tool_context"]
+    runtime = state["runtime"]
+    worker: WebSearchWorker | None = runtime.get("runtime_search_worker")
     if not worker:
         return {"search": {"errors": ["No search worker configured"], "results": []}}
 
@@ -557,7 +517,7 @@ def search_node(state: CollectionSearchState) -> dict[str, Any]:
     except ValidationError:
         return {"search": {"errors": ["Invalid strategy data"], "results": []}}
 
-    ids = _get_ids(state, state.get("input", {}).get("collection_scope", ""))
+    ids = _get_ids(tool_context, state.get("input", {}).get("collection_scope", ""))
 
     aggregated: list[dict[str, Any]] = []
     search_meta: list[dict[str, Any]] = []
@@ -687,7 +647,7 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
     scored_results.sort(key=lambda x: x["embedding_rank_score"], reverse=True)
     top_results = scored_results[:top_k]
 
-    ids = _get_ids(state, raw_input.get("collection_scope", ""))
+    ids = _get_ids(state["tool_context"], raw_input.get("collection_scope", ""))
     meta = dict(ids)
     meta.update({"top_k": len(top_results)})
     _record_transition(
@@ -723,8 +683,9 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
     if not results:
         return {"hybrid": {}}
 
-    context = state["context"]
-    executor: HybridScoreExecutor | None = context.get("runtime_hybrid_executor")
+    tool_context = state["tool_context"]
+    runtime = state["runtime"]
+    executor: HybridScoreExecutor | None = runtime.get("runtime_hybrid_executor")
     if not executor:
         return {"hybrid": {"error": "No hybrid executor configured"}}
 
@@ -778,9 +739,9 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
     )
 
     tenant_ctx = {
-        "tenant_id": context.get("tenant_id"),
-        "trace_id": context.get("trace_id"),
-        "case_id": context.get("case_id"),
+        "tenant_id": tool_context.scope.tenant_id,
+        "trace_id": tool_context.scope.trace_id,
+        "case_id": tool_context.business.case_id,
     }
 
     try:
@@ -793,7 +754,7 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
         LOGGER.exception("hybrid_score_failed")
         return {"hybrid": {"error": str(exc)}}
 
-    ids = _get_ids(state, graph_input.collection_scope)
+    ids = _get_ids(tool_context, graph_input.collection_scope)
     meta = dict(ids)
     meta.update({"ranked_count": len(hybrid_res.ranked)})
     _record_transition(
@@ -811,8 +772,9 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
 @observe_span(name="node.hitl")
 def hitl_node(state: CollectionSearchState) -> dict[str, Any]:
     """Present results to HITL gateway."""
-    context = state["context"]
-    gateway: HitlGateway | None = context.get("runtime_hitl_gateway")
+    tool_context = state["tool_context"]
+    runtime = state["runtime"]
+    gateway: HitlGateway | None = runtime.get("runtime_hitl_gateway")
     if not gateway:
         return {"hitl": {"auto_approved": True}}
 
@@ -826,7 +788,7 @@ def hitl_node(state: CollectionSearchState) -> dict[str, Any]:
     # In a real LangGraph interacting with a human, we'd use an interrupt.
     # Here we mimic the legacy "gateway" pattern.
 
-    ids = _get_ids(state, state["input"]["collection_scope"])
+    ids = _get_ids(tool_context, state["input"]["collection_scope"])
     payload = {
         "tenant_id": ids["tenant_id"],
         "question": state["input"]["question"],
@@ -867,8 +829,7 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
     """Construct and persist the CollectionSearchPlan."""
     raw_input = state["input"]
     graph_input = GraphInput.model_validate(raw_input)
-
-    ids = _get_ids(state, graph_input.collection_scope)
+    ids = _get_ids(state["tool_context"], graph_input.collection_scope)
     strategy = state.get("strategy", {}).get("plan")
     hybrid = state.get("hybrid", {})
     hitl = state.get("hitl", {})
@@ -973,7 +934,8 @@ def optionally_delegate_node(state: CollectionSearchState) -> dict[str, Any]:
         return {"ingestion": {"status": "skipped_no_selection"}}
 
     # Invoke Universal Graph
-    ug_factory = state["context"].get("runtime_universal_ingestion_factory")
+    runtime = state["runtime"]
+    ug_factory = runtime.get("runtime_universal_ingestion_factory")
 
     if ug_factory:
         ug = ug_factory()
@@ -995,18 +957,18 @@ def optionally_delegate_node(state: CollectionSearchState) -> dict[str, Any]:
         # We don't query again
     }
 
-    context = state["context"]
+    tool_context = state["tool_context"]
     # Filter context for UG (Pre-MVP ID Contract: propagate identity)
     ug_context = {
-        "tenant_id": context["tenant_id"],
-        "trace_id": context.get("trace_id"),
-        "case_id": context.get("case_id"),
-        "workflow_id": context.get("workflow_id"),
-        "ingestion_run_id": context.get("ingestion_run_id")
+        "tenant_id": tool_context.scope.tenant_id,
+        "trace_id": tool_context.scope.trace_id,
+        "case_id": tool_context.business.case_id,
+        "workflow_id": tool_context.business.workflow_id,
+        "ingestion_run_id": tool_context.scope.ingestion_run_id
         or str(uuid4()),  # Ensure valid scope
         # Identity IDs (Pre-MVP ID Contract)
-        "user_id": context.get("user_id"),  # User Request Hop
-        "service_id": context.get("service_id"),  # S2S Hop
+        "user_id": tool_context.scope.user_id,  # User Request Hop
+        "service_id": tool_context.scope.service_id,  # S2S Hop
     }
 
     try:
@@ -1060,6 +1022,8 @@ def build_compiled_graph():
 class CollectionSearchAdapter:
     """Adapter to expose the new LangGraph via the legacy .run() API."""
 
+    io_spec: GraphIOSpec = COLLECTION_SEARCH_IO
+
     def __init__(self, dependencies: dict[str, Any]):
         # Compile graph once per adapter instance (Finding #4 fix)
         # No global cache to prevent state leakage across workers
@@ -1073,24 +1037,48 @@ class CollectionSearchAdapter:
 
         # 1. Prepare State
         raw_state = dict(state or {})
+        tool_context: ToolContext | None = None
+        runtime: dict[str, Any] = dict(self.dependencies)
 
-        # Extract input payload (mirroring legacy logic)
-        if "input" in raw_state and isinstance(raw_state["input"], Mapping):
-            input_state = dict(raw_state["input"])
+        if "schema_id" in raw_state or "schema_version" in raw_state:
+            try:
+                boundary = CollectionSearchGraphRequest.model_validate(raw_state)
+            except ValidationError as exc:
+                raise InvalidGraphInput(str(exc)) from exc
+            input_state = boundary.input.model_dump(mode="json")
+            if boundary.tool_context:
+                tool_context = boundary.tool_context
+            if boundary.runtime:
+                runtime.update(boundary.runtime)
         else:
-            input_state = raw_state
+            # Extract input payload (mirroring legacy logic)
+            if "input" in raw_state and isinstance(raw_state["input"], Mapping):
+                input_state = dict(raw_state["input"])
+            else:
+                input_state = raw_state
 
-        # 2. Prepare Context (Dependencies + Meta)
-        context = dict(self.dependencies)
-        if meta:
-            context.update(meta)
+        if tool_context is None:
+            candidate = raw_state.get("tool_context")
+            if isinstance(candidate, ToolContext):
+                tool_context = candidate
+            elif isinstance(candidate, Mapping):
+                tool_context = ToolContext.model_validate(candidate)
 
-        # Enforce tenant isolation (Finding #1 fix)
-        _validate_tenant_context(context)
+        if tool_context is None:
+            if not meta:
+                raise InvalidGraphInput("tool_context required in meta")
+            tool_context = tool_context_from_meta(meta)
+
+        runtime_override = raw_state.get("runtime")
+        if isinstance(runtime_override, Mapping):
+            runtime.update(runtime_override)
+
+        _validate_tenant_context(tool_context)
 
         initial_state: CollectionSearchState = {
             "input": input_state,
-            "context": context,
+            "tool_context": tool_context,
+            "runtime": runtime,
             "strategy": None,
             "search": {},
             "embedding_rank": {},
@@ -1107,8 +1095,16 @@ class CollectionSearchAdapter:
             final_state = self.runnable.invoke(initial_state)
         except Exception as exc:
             LOGGER.exception("graph_execution_failed")
-            # Return error state compatible with legacy expectation
-            return {"error": str(exc)}, {"outcome": "error"}
+            error_payload = CollectionSearchGraphOutput(
+                outcome="error",
+                search=None,
+                telemetry=None,
+                ingestion=None,
+                plan=None,
+                hitl=None,
+                error=str(exc),
+            ).model_dump(mode="json")
+            return {"error": str(exc)}, error_payload
 
         # 4. Map Result (Legacy _build_result compatibility)
         # The legacy run() returned (state, result_dict)
@@ -1117,14 +1113,14 @@ class CollectionSearchAdapter:
         search_res = final_state.get("search", {})
 
         # Construct summary result
-        result_payload = {
-            "outcome": "completed",
-            "search": search_res,
-            "telemetry": final_state.get("telemetry"),
-            "ingestion": final_state.get("ingestion"),
-            "plan": final_state.get("plan"),
-            "hitl": final_state.get("hitl"),
-        }
+        result_payload = CollectionSearchGraphOutput(
+            outcome="completed",
+            search=search_res,
+            telemetry=final_state.get("telemetry"),
+            ingestion=final_state.get("ingestion"),
+            plan=final_state.get("plan"),
+            hitl=final_state.get("hitl"),
+        ).model_dump(mode="json")
 
         # Merge back to raw state just in case caller expects it
         return final_state, result_payload

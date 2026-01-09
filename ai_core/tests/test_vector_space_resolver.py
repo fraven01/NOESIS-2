@@ -36,12 +36,14 @@ def _configure_embeddings(settings) -> None:
     settings.RAG_EMBEDDING_PROFILES = {
         "standard": {
             "model": "oai-embed-large",
+            "model_version": "v1",
             "dimension": 1536,
             "vector_space": "global",
             "chunk_hard_limit": 512,
         },
         "legacy": {
             "model": "oai-embed-small",
+            "model_version": "v1",
             "dimension": 1024,
             "vector_space": "legacy",
             "chunk_hard_limit": 400,
@@ -54,7 +56,7 @@ def test_resolve_vector_space_returns_config(settings) -> None:
 
     resolved = resolve_vector_space("standard")
 
-    assert resolved.id == "global"
+    assert resolved.id == "rag/standard@v1"
     assert resolved.dimension == 1536
     assert resolved.backend == "pgvector"
     assert resolved.schema == "rag"
@@ -67,7 +69,7 @@ def test_resolve_vector_space_full_returns_profile_and_space(settings) -> None:
 
     assert resolution.profile.id == "legacy"
     assert resolution.profile.vector_space == "legacy"
-    assert resolution.vector_space.id == "legacy"
+    assert resolution.vector_space.id == "rag/legacy@v1"
     assert resolution.vector_space.dimension == 1024
 
 
@@ -124,19 +126,19 @@ def test_vector_space_resolution_emits_trace_metadata(settings, monkeypatch) -> 
     monkeypatch.setattr(
         resolver_module,
         "record_span",
-        lambda name, *, attributes=None, trace_id=None: spans.append(
-            (name, attributes, trace_id)
+        lambda name, *, attributes=None: spans.append(
+            (name, attributes, (attributes or {}).get("trace_id"))
         ),
     )
 
     with log_context(trace_id="trace-space", tenant="tenant-a"):
         resolution = resolve_vector_space_full("standard")
 
-    assert resolution.vector_space.id == "global"
+    assert resolution.vector_space.id == "rag/standard@v1"
     assert spans, "expected vector space resolver to emit a span"
     name, metadata, trace_id = spans[0]
     assert name == "rag.vector_space.resolve"
     assert trace_id == "trace-space"
     assert metadata is not None
-    assert metadata["vector_space_id"] == "global"
+    assert metadata["vector_space_id"] == "rag/standard@v1"
     assert metadata["embedding_profile"] == "standard"

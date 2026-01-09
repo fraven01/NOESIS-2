@@ -82,6 +82,7 @@ def _next_run_at(now, frequency: str) -> timezone.datetime:
     destroy=default_extend_schema(),
 )
 class DocumentFavoriteViewSet(viewsets.ModelViewSet):
+    queryset = UserDocumentFavorite.objects.all()
     serializer_class = DocumentFavoriteSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -123,6 +124,7 @@ class DocumentFavoriteViewSet(viewsets.ModelViewSet):
     destroy=default_extend_schema(),
 )
 class DocumentCommentViewSet(viewsets.ModelViewSet):
+    queryset = DocumentComment.objects.all()
     serializer_class = DocumentCommentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -281,6 +283,7 @@ class DocumentCommentViewSet(viewsets.ModelViewSet):
     destroy=default_extend_schema(),
 )
 class SavedSearchViewSet(viewsets.ModelViewSet):
+    queryset = SavedSearch.objects.all()
     serializer_class = SavedSearchSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -336,6 +339,7 @@ class DocumentNotificationViewSet(
     mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
+    queryset = DocumentNotification.objects.all()
     serializer_class = DocumentNotificationSerializer
     permission_classes = [permissions.IsAuthenticated]
     http_method_names = ["get", "patch", "post", "head", "options"]

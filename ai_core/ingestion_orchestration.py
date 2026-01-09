@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Dict
 from collections.abc import Mapping as MappingABC
 
+from ai_core.tool_contracts.base import tool_context_from_meta
+
 
 @dataclass(frozen=True)
 class IngestionContext:
@@ -89,9 +91,14 @@ class IngestionContextBuilder:
         - Raw payload path: Special extraction from state
         """
         state_meta = self._extract_from_mapping(state, "meta")
-        # BREAKING CHANGE (Option A): Business IDs now in business_context, not scope_context
-        scope_meta = self._extract_from_mapping(meta, "scope_context")
-        business_meta = self._extract_from_mapping(meta, "business_context")
+        tool_context = None
+        if isinstance(meta, MappingABC):
+            try:
+                tool_context = tool_context_from_meta(meta)
+            except (TypeError, ValueError):
+                tool_context = None
+        scope_context = tool_context.scope if tool_context else None
+        business_context = tool_context.business if tool_context else None
         raw_reference = self._extract_from_mapping(state, "raw_document")
         raw_metadata = None
         if isinstance(raw_reference, MappingABC):
@@ -102,20 +109,21 @@ class IngestionContextBuilder:
         # Extract tenant_id
         tenant_id = self._coerce_str(
             trace_context.get("tenant_id")
+            or (scope_context.tenant_id if scope_context else None)
             or self._extract_from_mapping(state, "tenant_id")
         )
 
         # Extract case_id (BREAKING CHANGE: now in business_context)
         case_id = self._coerce_str(
             trace_context.get("case_id")
-            or self._extract_from_mapping(business_meta, "case_id")
+            or (business_context.case_id if business_context else None)
             or self._extract_from_mapping(state, "case_id")
         )
 
         # Extract workflow_id (BREAKING CHANGE: now in business_context)
         workflow_id = self._coerce_str(
             trace_context.get("workflow_id")
-            or self._extract_from_mapping(business_meta, "workflow_id")
+            or (business_context.workflow_id if business_context else None)
             or self._extract_from_mapping(state_meta, "workflow_id")
             or self._extract_from_mapping(state, "workflow_id")
             or self._extract_from_mapping(raw_reference, "workflow_id")
@@ -128,7 +136,7 @@ class IngestionContextBuilder:
         # Extract collection_id (BREAKING CHANGE: now in business_context)
         collection_id = self._coerce_str(
             trace_context.get("collection_id")
-            or self._extract_from_mapping(business_meta, "collection_id")
+            or (business_context.collection_id if business_context else None)
             or self._extract_from_mapping(state, "collection_id")
             or self._extract_from_mapping(raw_metadata, "collection_id")
         )
@@ -148,14 +156,14 @@ class IngestionContextBuilder:
         # Extract run_id
         run_id = self._coerce_str(
             trace_context.get("run_id")
-            or self._extract_from_mapping(scope_meta, "run_id")
+            or (scope_context.run_id if scope_context else None)
             or self._extract_from_mapping(state_meta, "run_id")
         )
 
         # Extract ingestion_run_id
         ingestion_run_id = self._coerce_str(
             trace_context.get("ingestion_run_id")
-            or self._extract_from_mapping(scope_meta, "ingestion_run_id")
+            or (scope_context.ingestion_run_id if scope_context else None)
             or self._extract_from_mapping(state_meta, "ingestion_run_id")
         )
 
@@ -246,6 +254,12 @@ class ObservabilityWrapper:
 
         if ingestion_ctx.tenant_id:
             metadata["tenant_id"] = ingestion_ctx.tenant_id
+        user_id = trace_context.get("user_id")
+        if user_id:
+            metadata["user_id"] = str(user_id)
+        service_id = trace_context.get("service_id")
+        if service_id:
+            metadata["service_id"] = str(service_id)
         if ingestion_ctx.case_id:
             metadata["case_id"] = ingestion_ctx.case_id
         if ingestion_ctx.document_id:
@@ -260,7 +274,7 @@ class ObservabilityWrapper:
 
         return ObservabilityContext(
             trace_name="crawler.ingestion",
-            user_id=ingestion_ctx.tenant_id,
+            user_id=str(user_id) if user_id else None,
             session_id=ingestion_ctx.case_id,
             metadata=metadata,
             task_identifier=task_identifier,

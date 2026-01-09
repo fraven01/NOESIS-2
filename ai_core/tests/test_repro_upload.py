@@ -1,5 +1,6 @@
 from uuid import uuid4
 import pytest
+from unittest.mock import patch
 
 from ai_core.services import handle_document_upload
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -19,6 +20,8 @@ def test_reproduce_failure():
         "tenant_id": tenant_id,
         "tenant_schema": tenant_schema,  # Matches view
         "trace_id": uuid4().hex,
+        "invocation_id": uuid4().hex,
+        "run_id": uuid4().hex,
     }
     business_context = {
         "case_id": case_id,
@@ -36,9 +39,11 @@ def test_reproduce_failure():
 
     print(f"Meta: {meta}")
 
-    response = handle_document_upload(
-        upload=uploaded_file, metadata_raw=None, meta=meta, idempotency_key=None
-    )
+    with patch("ai_core.services.document_upload.with_scope_apply_async") as mock_apply:
+        mock_apply.return_value.id = "task-123"
+        response = handle_document_upload(
+            upload=uploaded_file, metadata_raw=None, meta=meta, idempotency_key=None
+        )
 
     if hasattr(response, "render") and getattr(response, "accepted_renderer", None):
         response.render()

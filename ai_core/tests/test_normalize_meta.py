@@ -75,11 +75,11 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
     tool_context = meta["tool_context"]
     assert isinstance(tool_context, dict)
     context = ToolContext.model_validate(tool_context)
-    assert str(context.tenant_id) == tenant_id
-    assert context.case_id == "case-42"
-    assert context.trace_id == "trace-123"
-    assert context.idempotency_key is None
-    assert context.tenant_schema == "tenant_schema"
+    assert str(context.scope.tenant_id) == tenant_id
+    assert context.business.case_id == "case-42"
+    assert context.scope.trace_id == "trace-123"
+    assert context.scope.idempotency_key is None
+    assert context.scope.tenant_schema == "tenant_schema"
     assert context.metadata["graph_name"] == "info_intake"
     assert context.metadata["graph_version"] == "v9"
     assert context.metadata["requested_at"] == meta["requested_at"]
@@ -119,7 +119,7 @@ def test_normalize_meta_defaults_graph_version(monkeypatch):
     assert meta["graph_version"] == "v0"
     tool_context = meta["tool_context"]
     context = ToolContext.model_validate(tool_context)
-    assert context.idempotency_key == "idem-1"
+    assert context.scope.idempotency_key == "idem-1"
     assert context.metadata["graph_version"] == "v0"
     assert meta["scope_context"]["idempotency_key"] == "idem-1"
 
@@ -143,10 +143,10 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
     tool_context = meta["tool_context"]
     assert isinstance(tool_context, dict)
     context = ToolContext.model_validate(tool_context)
-    assert str(context.tenant_id) == tenant_id
-    assert context.case_id == "case-b"
-    assert context.trace_id == "trace-b"
-    assert context.idempotency_key == "idem-b"
+    assert str(context.scope.tenant_id) == tenant_id
+    assert context.business.case_id == "case-b"
+    assert context.scope.trace_id == "trace-b"
+    assert context.scope.idempotency_key == "idem-b"
     assert context.metadata["graph_name"] == "info_intake"
     assert context.metadata["graph_version"] == "v0"
     assert context.metadata["requested_at"] == meta["requested_at"]
@@ -174,4 +174,28 @@ def test_normalize_meta_includes_collection_scope(monkeypatch):
         == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
     )
     context = ToolContext.model_validate(meta["tool_context"])
-    assert context.collection_id == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+    assert context.business.collection_id == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+
+
+@pytest.mark.django_db
+def test_normalize_meta_sets_initiated_by_user_id(monkeypatch):
+    monkeypatch.setattr(schemas, "get_quota", lambda: 1)
+    tenant_id = str(uuid4())
+    user_id = str(uuid4())
+    user = SimpleNamespace(is_authenticated=True, pk=user_id)
+    request = _request(
+        {
+            X_TENANT_ID_HEADER: tenant_id,
+            X_CASE_ID_HEADER: "case-init",
+            X_TRACE_ID_HEADER: "trace-init",
+        },
+        graph_name="info_intake",
+        user=user,
+    )
+
+    meta = normalize_meta(request)
+
+    assert meta["initiated_by_user_id"] == user_id
+    assert meta["context_metadata"]["initiated_by_user_id"] == user_id
+    context = ToolContext.model_validate(meta["tool_context"])
+    assert context.metadata["initiated_by_user_id"] == user_id

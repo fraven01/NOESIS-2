@@ -174,9 +174,8 @@ def test_middleware_rejects_missing_tenant(monkeypatch):
     response = middleware(request)
 
     assert response.status_code == 403
-    assert json.loads(response.content.decode()) == {
-        "detail": "Tenant could not be resolved from request"
-    }
+    payload = json.loads(response.content.decode())
+    assert payload["error"]["message"] == "Tenant could not be resolved from request"
     assert called is False
     assert get_contextvars() == {}
 
@@ -205,9 +204,8 @@ def test_middleware_rejects_header_only_when_headers_disallowed(monkeypatch):
     response = middleware(request)
 
     assert response.status_code == 403
-    assert json.loads(response.content.decode()) == {
-        "detail": "Tenant could not be resolved from request",
-    }
+    payload = json.loads(response.content.decode())
+    assert payload["error"]["message"] == "Tenant could not be resolved from request"
     assert called is False
     assert get_contextvars() == {}
 

@@ -10,7 +10,11 @@ from documents.tasks import run_saved_search_alerts
 from users.tests.factories import UserFactory
 
 
-pytestmark = pytest.mark.django_db
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.django_db,
+    pytest.mark.xdist_group("tenant_ops"),
+]
 
 
 def test_saved_search_scheduler_creates_notification(test_tenant_schema_name):

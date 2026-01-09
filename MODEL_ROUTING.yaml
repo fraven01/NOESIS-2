@@ -2,15 +2,22 @@ labels:
   default: gpt-5-nano          # Cheapest entry
   fast: gpt-5-nano             # High throughput
   simple-query: gpt-5-nano     # Good balance for RAG
-  
+
   # Reasoning & Complex Tasks
   synthesize: gpt-5.1          # Flagship for long context and deep research
   reasoning: gpt-5.1
   analyze: gpt-5-nano
   draft: gpt-5.1               # Strong writing quality
-  
+
   # Special tasks
   classify: gpt-5-nano         # Good for JSON/classification
   extract: claude-4-5-sonnet   # Strong at strict format adherence
 
-  embedding: oai-embed-small
+  # RAG Chunking (SOTA Hybrid Chunker)
+  agentic-chunk: gemini-3-flash-preview     # Pareto-optimal: Latest Gemini 3 Flash (preview, dev/test)
+  # agentic-chunk: gemini-2.0-flash-lite-001  # Stable fallback for production
+  quality-eval: gpt-5-nano                  # LLM-as-Judge for chunk quality scoring
+
+  # Embeddings
+  embedding: oai-embed-small                # Dev/Test (1536D, cheap)
+  # embedding: oai-embed-large              # MVP Prod (3072D, higher quality) - uncomment for production

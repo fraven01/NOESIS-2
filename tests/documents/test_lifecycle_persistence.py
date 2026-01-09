@@ -5,7 +5,9 @@ from django_tenants.utils import schema_context
 from documents.repository import PersistentDocumentLifecycleStore
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_lifecycle_persistence_end_to_end(tenant, transactional_db):
     """Verify that lifecycle changes are persisted to the Document model."""
 

@@ -38,7 +38,7 @@ def _dummy_output() -> retrieve.RetrieveOutput:
         }
     ]
     meta = retrieve.RetrieveMeta(
-        routing={"profile": "default", "vector_space_id": "global"},
+        routing={"profile": "default", "vector_space_id": "rag/default@v1"},
         took_ms=12,
         alpha=0.5,
         min_sim=0.2,
@@ -69,7 +69,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
         context: ToolContext, params: retrieve.RetrieveInput
     ) -> retrieve.RetrieveOutput:
         calls.append("retrieve")
-        assert context.tenant_id == "tenant-42"
+        assert context.scope.tenant_id == "tenant-42"
         assert isinstance(params, retrieve.RetrieveInput)
         return _dummy_output()
 
@@ -111,7 +111,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
     assert retrieval["visibility_effective"] == "active"
     assert retrieval["took_ms"] == 12
     assert retrieval["routing"]["profile"] == "default"
-    assert retrieval["routing"]["vector_space_id"] == "global"
+    assert retrieval["routing"]["vector_space_id"] == "rag/default@v1"
     assert result["answer"] == "answer"
     assert result["prompt_version"] == "v-test"
     assert result["retrieval"] == state["retrieval"]
@@ -124,7 +124,7 @@ def test_graph_normalises_tenant_alias() -> None:
     def _recording_retrieve(
         context: ToolContext, params: retrieve.RetrieveInput
     ) -> retrieve.RetrieveOutput:
-        captured["tenant_id"] = context.tenant_id
+        captured["tenant_id"] = context.scope.tenant_id
         return _dummy_output()
 
     graph = retrieval_augmented_generation.RetrievalAugmentedGenerationGraph(
@@ -147,7 +147,7 @@ def test_graph_normalises_tenant_alias() -> None:
     assert retrieval["visibility_effective"] == "active"
     assert retrieval["took_ms"] == 12
     assert retrieval["routing"]["profile"] == "default"
-    assert retrieval["routing"]["vector_space_id"] == "global"
+    assert retrieval["routing"]["vector_space_id"] == "rag/default@v1"
 
 
 def test_graph_fills_missing_snippet_fields() -> None:
@@ -185,10 +185,10 @@ def test_graph_fills_missing_snippet_fields() -> None:
     assert state["snippets"][0]["source"] == "handbook.md"
 
 
-def test_build_graph_returns_shared_instance() -> None:
+def test_build_graph_returns_new_instance() -> None:
     first = retrieval_augmented_generation.build_graph()
     second = retrieval_augmented_generation.build_graph()
-    assert first is second is retrieval_augmented_generation.GRAPH
+    assert first is not second
 
 
 def test_bootstrap_registers_rag_default() -> None:

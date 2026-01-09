@@ -12,7 +12,6 @@ from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework.views import APIView
 
-from customers.tests.factories import TenantFactory
 from noesis2.api import (
     RATE_LIMIT_JSON_ERROR_STATUSES,
     schema as api_schema,
@@ -22,13 +21,15 @@ from testsupport.tenant_fixtures import ensure_tenant_domain
 
 
 @pytest.fixture
-def tenant(db):
-    tenant = TenantFactory(schema_name="spectacular")
+def tenant(db, tenant_pool):
+    tenant = tenant_pool["alpha"]
     ensure_tenant_domain(tenant, domain="testserver")
     return tenant
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_openapi_schema_endpoint_accessible_without_headers(client, tenant):
     response = client.get(reverse("api-schema"))
 
@@ -44,7 +45,9 @@ def test_schema_description_includes_common_headers():
     assert "| Header |" in description
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 @override_settings(
     ENABLE_API_DOCS=True,
     API_DOCS_TITLE="NOESIS Docs",
@@ -71,7 +74,9 @@ def test_swagger_ui_available(client, tenant, settings, monkeypatch):
     assert swagger_settings["tryItOutEnabled"] is False
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 @override_settings(
     ENABLE_API_DOCS=True,
     API_DOCS_TITLE="NOESIS Docs",
@@ -85,7 +90,9 @@ def test_redoc_uses_custom_title(client, tenant):
     assert redoc_data["title"] == "NOESIS Docs (v9.9.9-stage)"
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 @override_settings(ENABLE_API_DOCS=True, ENABLE_SWAGGER_TRY_IT_OUT=True)
 def test_swagger_ui_try_it_out_enabled(client, tenant, settings, monkeypatch):
     settings.SPECTACULAR_SETTINGS["SWAGGER_UI_SETTINGS"] = build_swagger_ui_settings(
@@ -105,7 +112,9 @@ def test_swagger_ui_try_it_out_enabled(client, tenant, settings, monkeypatch):
     assert "post" in swagger_settings["supportedSubmitMethods"]
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 @override_settings(ENABLE_API_DOCS=False)
 def test_swagger_ui_disabled_returns_404(client, tenant, settings):
     settings.SPECTACULAR_SETTINGS["SWAGGER_UI_SETTINGS"] = build_swagger_ui_settings(
@@ -116,7 +125,9 @@ def test_swagger_ui_disabled_returns_404(client, tenant, settings):
     assert response.status_code == 404
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 @override_settings(ENABLE_API_DOCS=False)
 def test_redoc_disabled_returns_404(client, tenant):
     response = client.get(reverse("api-docs-redoc"))
@@ -124,6 +135,9 @@ def test_redoc_disabled_returns_404(client, tenant):
     assert response.status_code == 404
 
 
+@pytest.mark.slow
+@pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
 def test_schema_components_document_headers_and_security(client, tenant):
     response = client.get(reverse("api-schema"))
 
@@ -199,13 +213,15 @@ def test_default_extend_schema_view_auto_decorates_apiview():
         content = response["content"]["application/json"]
         error_ref = content["schema"]["$ref"]
         _, error_component = _extract_component(schema, error_ref)
-        assert {"detail", "code"}.issubset(error_component["properties"].keys())
+        assert {"status", "error", "meta"}.issubset(
+            error_component["properties"].keys()
+        )
 
     bad_request_examples = responses["400"]["content"]["application/json"].get(
         "examples", {}
     )
     assert any(
-        example.get("value", {}).get("code") == "tenant_not_found"
+        example.get("value", {}).get("error", {}).get("code") == "tenant_not_found"
         for example in bad_request_examples.values()
     )
 
@@ -233,7 +249,9 @@ def test_default_extend_schema_view_auto_decorates_viewset():
             content = response["content"]["application/json"]
             error_ref = content["schema"]["$ref"]
             _, error_component = _extract_component(schema, error_ref)
-            assert {"detail", "code"}.issubset(error_component["properties"].keys())
+            assert {"status", "error", "meta"}.issubset(
+                error_component["properties"].keys()
+            )
 
 
 def test_ai_core_endpoints_expose_serializers():
@@ -313,21 +331,22 @@ def test_ai_core_endpoints_expose_serializers():
         "examples", {}
     )
     assert any(
-        example.get("value", {}).get("code") == "rate_limit_exceeded"
+        example.get("value", {}).get("error", {}).get("code") == "rate_limit_exceeded"
         for example in rate_limit_examples.values()
     )
     unsupported_media_examples = intake_responses["415"]["content"][
         "application/json"
     ].get("examples", {})
     assert any(
-        example.get("value", {}).get("code") == "unsupported_media_type"
+        example.get("value", {}).get("error", {}).get("code")
+        == "unsupported_media_type"
         for example in unsupported_media_examples.values()
     )
     service_unavailable_examples = intake_responses["503"]["content"][
         "application/json"
     ].get("examples", {})
     assert any(
-        example.get("value", {}).get("code") == "service_unavailable"
+        example.get("value", {}).get("error", {}).get("code") == "service_unavailable"
         for example in service_unavailable_examples.values()
     )
 
@@ -382,7 +401,7 @@ def test_ai_core_endpoints_expose_serializers():
     error_components = [
         component
         for component in schema["components"]["schemas"].values()
-        if {"detail", "code"}.issubset(component.get("properties", {}).keys())
+        if {"status", "error", "meta"}.issubset(component.get("properties", {}).keys())
     ]
     assert error_components, "Expected shared error schema to be generated"
 

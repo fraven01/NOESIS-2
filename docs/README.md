@@ -22,7 +22,6 @@ docs/
   README.md
   agents/          # Agent + tool docs (explanatory)
   architecture/    # IDs, ADRs, design notes (explanatory)
-  architektur/     # German architecture docs (legacy naming)
   documents/       # Document subsystem docs
   rag/             # Retrieval/ingestion docs
   crawler/         # Crawler docs
@@ -37,3 +36,5 @@ docs/
   docker/          # Docker/compose notes
   audit/           # Audit reports
 ```
+
+Legacy alias: `docs/architektur/*` now redirects to `docs/architecture/*`; use `docs/architecture/` going forward.

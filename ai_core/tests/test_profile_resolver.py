@@ -238,8 +238,8 @@ def test_profile_resolution_emits_trace_metadata(
     monkeypatch.setattr(
         resolver_module,
         "record_span",
-        lambda name, *, attributes=None, trace_id=None: spans.append(
-            (name, attributes, trace_id)
+        lambda name, *, attributes=None: spans.append(
+            (name, attributes, (attributes or {}).get("trace_id"))
         ),
     )
 
@@ -296,8 +296,8 @@ def test_profile_resolution_marks_default_fallback(
     monkeypatch.setattr(
         resolver_module,
         "record_span",
-        lambda name, *, attributes=None, trace_id=None: spans.append(
-            (name, attributes, trace_id)
+        lambda name, *, attributes=None: spans.append(
+            (name, attributes, (attributes or {}).get("trace_id"))
         ),
     )
 

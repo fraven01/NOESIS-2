@@ -72,6 +72,8 @@ class Redactor:
             # Do not redact identifier fields used for correlation in logs
             "document_id",
             "asset_id",
+            "trace_id",
+            "span_id",
         }
     )
 

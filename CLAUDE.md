@@ -25,7 +25,7 @@ NOESIS 2 ist eine mandantenfähige Django-Plattform (Python 3.12+) mit folgenden
 - **LiteLLM**: Proxy für LLM-Zugriff (Gemini, Vertex AI)
 - **Observability**: Langfuse (Traces) + ELK (Logs)
 
-**Vollständige Architektur & Contracts**: [AGENTS.md](AGENTS.md) → [docs/architektur/overview.md](docs/architektur/overview.md)
+**Vollständige Architektur & Contracts**: [AGENTS.md](AGENTS.md) → [docs/architecture/overview.md](docs/architecture/overview.md)
 
 ### Technologie-Stack
 
@@ -75,9 +75,10 @@ npm run dev:reset    # Komplett-Reset
 
 ### Tests
 
-**Python-Tests (Linux)**:
+**Python-Tests (Plattformunabhängig via Docker)**:
 ```bash
 npm run test:py              # Vollständig (inkl. @pytest.mark.slow)
+npm run test:py:parallel     # EMPFOHLEN: Fast parallel + slow serial (optimiert)
 npm run test:py:single -- <path>  # Einzelner Test oder spezifische Funktion
 npm run test:py:fast         # Schnell (ohne @pytest.mark.slow)
 npm run test:py:unit         # Unit-Tests (ohne DB, super schnell)
@@ -85,7 +86,13 @@ npm run test:py:cov          # Coverage über alles
 npm run test:py:clean        # Clean (pip --no-cache-dir) + vollständig
 ```
 
-**Beispiele für einzelne Tests (Linux)**:
+**Hinweis**: `test:py:parallel` ist die **empfohlene** Methode für lokale Entwicklung:
+- **Phase 1**: Fast tests (`-m 'not slow'`) parallel mit xdist (`-n auto`)
+- **Phase 2**: Slow tests (`-m 'slow'`) serial für Tenant-Operationen
+- Isolierte Test-DBs pro Worker (`test_noesis2_gw0`, etc.)
+- ~5-10x schneller als `test:py` (je nach CPU-Kernen)
+
+**Beispiele für einzelne Tests**:
 ```bash
 # Einzelne Datei
 npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
@@ -97,27 +104,26 @@ npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
 npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::TestClass::test_method
 ```
 
-**Python-Tests (Windows)**:
+**Windows-Aliase** (verweisen auf plattformunabhängige Docker-Befehle):
 ```bash
-npm run win:test:py              # Vollständig
-npm run win:test:py:single -- <path>  # Einzelner Test oder spezifische Funktion
-npm run win:test:py:fast         # Schnell
-npm run win:test:py:unit         # Unit-Tests
-npm run win:test:py:cov          # Coverage
-npm run win:test:py:clean        # Clean + vollständig
+npm run win:test:py              # → test:py
+npm run win:test:py:parallel     # → test:py:parallel (EMPFOHLEN)
+npm run win:test:py:fast         # → test:py:fast
+npm run win:test:py:unit         # → test:py:unit
+npm run win:test:py:cov          # → test:py:cov
+npm run win:test:py:clean        # → test:py:clean
+
+# Platform-spezifische Befehle (PowerShell):
+npm run win:test:py:single -- <path>  # Einzelner Test via PowerShell-Skript
+npm run win:test:py:rag               # RAG-spezifische Tests
 ```
 
-**Beispiele für einzelne Tests (Windows)**:
-```bash
-# Einzelne Datei
-npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
-
-# Spezifische Testfunktion
-npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::test_function_name
-
-# Testklasse und -methode
-npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::TestClass::test_method
-```
+**Test-DB-Isolation (wichtig!)**:
+- **Test-Settings**: `noesis2.settings.test_parallel` konfiguriert worker-spezifische Test-DBs
+- **Produktions-DBs werden NIEMALS für Tests verwendet** (seit 2026-01-02 Fix)
+- **Parallele Workers**: Jeder xdist-Worker (`gw0`, `gw1`, etc.) bekommt eigene DB (`test_noesis2_gw0`, etc.)
+- **Slow Tests**: Laufen gegen dedizierte Test-DB mit eigenem Tenant-Schema (`autotest_gw0`)
+- **Schema-Namen**: MÜSSEN gequotet werden (via `connection.ops.quote_name()`) um Bindestriche zu unterstützen
 
 **Frontend-Tests**:
 ```bash
@@ -125,13 +131,73 @@ npm run test           # Vitest
 npm run e2e            # Playwright E2E
 ```
 
+**Chaos Tests** (2026-01-05 Contract Migration):
+
+Fault-injection tests für Redis, SQL, Rate Limits und Netzwerk-Issues. Validiert System-Resilience und Observability unter Fehlerbedingungen.
+
+```bash
+# Alle Chaos-Tests
+npm run test:py -- tests/chaos/ -v
+
+# Spezifische Test-Suite
+npm run test:py:single -- tests/chaos/test_tool_context_contracts.py
+
+# Mit Fault-Injection
+REDIS_DOWN=1 npm run test:py -- tests/chaos/redis_faults.py -v
+SQL_DOWN=1 npm run test:py -- tests/chaos/sql_faults.py -v
+```
+
+**Neue Meta-Struktur** (ScopeContext + BusinessContext):
+```python
+from tests.chaos.conftest import _build_chaos_meta
+
+meta = _build_chaos_meta(
+    tenant_id="tenant-001",
+    trace_id="trace-001",
+    case_id="case-001",      # Optional business context
+    run_id="run-001",        # XOR ingestion_run_id
+)
+```
+
+**Test-Dateien**:
+- `ingestion_faults.py` - Rate Limits, Deduplication, Dead Letter
+- `sql_faults.py` - SQL Downtime, Idempotency
+- `redis_faults.py` - Broker Downtime, Task Backoff
+- `test_tool_context_contracts.py` - ✨ **NEU**: ToolContext Validierung
+- `test_graph_io_contracts.py` - ✨ **NEU**: Graph I/O Specs (`schema_id`/`schema_version`)
+- `test_chunker_routing.py` - ✨ **NEU**: Chunker Routing
+- `test_observability_contracts.py` - ✨ **NEU**: Langfuse Tag Propagation
+
+**Siehe**: [tests/chaos/README.md](tests/chaos/README.md) für vollständige Migration-Guide.
+
 **Test-Marker**:
 - `@pytest.mark.slow`: DB-intensive Tests (Tenant-Operationen, Schema-Erstellung)
 - `@pytest.mark.gold`: PII-Tests mit `PII_MODE=gold`
 - `@pytest.mark.chaos`: Fault-Injection-Tests
 - `@pytest.mark.perf_smoke`: High-Concurrency-Tests
+- `@pytest.mark.tenant_write`: Tests die Tenant-Schemas erstellen/modifizieren (gruppiert für xdist)
 
-Test-DB: `noesis2_test` (isoliert von Dev-Daten)
+**Häufige Test-Probleme & Lösungen**:
+
+1. **"relation does not exist" in slow tests**:
+   - **Ursache**: Fehlende `TEST["NAME"]` Konfiguration oder nicht-gequotete Schema-Namen
+   - **Lösung**: Bereits gefixt in `noesis2/settings/test_parallel.py` (2026-01-02)
+   - **Verifikation**: `TEST["NAME"]` muss auf `test_noesis2_*` gesetzt sein
+
+2. **"current transaction is aborted" Fehler**:
+   - **Ursache**: Vorheriger SQL-Fehler (oft durch nicht-gequotete Schema-Namen mit `-`)
+   - **Lösung**: Immer `connection.ops.quote_name()` für Schema-/Tabellen-Namen verwenden
+   - **Beispiel**: `cursor.execute(f"SET search_path TO {connection.ops.quote_name(schema)}")`
+
+3. **Tests laufen gegen Production-DB**:
+   - **Ursache**: `TEST["NAME"]` nicht gesetzt, pytest-django verwendet `NAME` statt `TEST["NAME"]`
+   - **Symptom**: DB-Name in Logs zeigt `noesis2` statt `test_noesis2`
+   - **Fix**: Siehe `noesis2/settings/test_parallel.py` Zeilen 30-39
+
+4. **Slow tests überspringen Schemas von fast tests**:
+   - **Ursache**: `_MIGRATED_SCHEMAS` Set ist prozess-global, aber Tests laufen in separaten Prozessen
+   - **Lösung**: `test_tenant_schema_name` Fixture prüft fehlende Tabellen und migriert nach
+   - **Siehe**: `conftest.py` Zeilen 537-622
 
 ### Linting & Formatierung
 
@@ -218,10 +284,11 @@ python manage.py check_rag_schemas   # Health-Check
 ### Bei Graph-Entwicklung
 
 1. Lies [ai_core/graphs/README.md](ai_core/graphs/README.md)
-2. Nutze `GraphNode` & `GraphTransition`
-3. Teste mit Fake-Services/Retrievers
-4. Emittiere strukturierte Transitions
-5. Dokumentiere Guardrails
+2. Definiere Graph I/O Spezifikationen: versionierte Pydantic Input/Output Modelle mit `schema_id`/`schema_version` und `io_spec` (siehe `ai_core/graph/io.py`)
+3. Nutze `GraphNode` & `GraphTransition`
+4. Teste mit Fake-Services/Retrievers
+5. Emittiere strukturierte Transitions
+6. Dokumentiere Guardrails
 
 ## Multi-Tenancy (Setup & Commands)
 
@@ -390,7 +457,7 @@ make sdk                   # Generate SDKs
 ### Contracts & Architektur (AGENTS.md)
 
 1. **[AGENTS.md](AGENTS.md)** - Hauptleitfaden (Contracts, Glossar, Schnittstellen)
-2. [docs/architektur/overview.md](docs/architektur/overview.md) - Systemarchitektur
+2. [docs/architecture/overview.md](docs/architecture/overview.md) - Systemarchitektur
 3. [docs/multi-tenancy.md](docs/multi-tenancy.md) - Mandantenfähigkeit
 4. [docs/architecture/id-semantics.md](docs/architecture/id-semantics.md) & [docs/architecture/id-propagation.md](docs/architecture/id-propagation.md) - ID-Semantik & End-to-End-Propagation
 5. [docs/architecture/id-guide-for-agents.md](docs/architecture/id-guide-for-agents.md) - Praktischer Implementierungs-Guide für Agenten

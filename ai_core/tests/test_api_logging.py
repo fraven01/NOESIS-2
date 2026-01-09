@@ -8,7 +8,7 @@ from common import logging as common_logging
 
 from ai_core import api as ai_api
 from ai_core.rag.delta import DeltaDecision
-from ai_core.rag.vector_client import DedupSignatures
+from ai_core.rag.deduplication import DedupSignatures
 from documents.api import normalize_from_raw
 from documents.contracts import DocumentBlobDescriptorV1, NormalizedDocumentInputV1
 

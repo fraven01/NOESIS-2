@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Mapping
+from uuid import uuid4
 
 import pytest
 
 
 from ai_core.graphs.transition_contracts import StandardTransitionResult
 from ai_core.infra import object_store
+from ai_core.tool_contracts.base import ToolContext, ScopeContext, BusinessContext
 from common.assets import perceptual_hash, sha256_bytes
 from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import (
@@ -19,6 +21,29 @@ from crawler.fetcher import (
     PolitenessContext,
 )
 from crawler.worker import CrawlerWorker
+
+
+def _make_test_context(
+    *,
+    tenant_id: str = "tenant-a",
+    case_id: str | None = None,
+    trace_id: str | None = None,
+    invocation_id: str | None = None,
+    idempotency_key: str | None = None,
+    crawl_id: str | None = None,
+    run_id: str | None = None,
+) -> ToolContext:
+    """Build a ToolContext for testing."""
+    scope = ScopeContext(
+        tenant_id=tenant_id,
+        trace_id=trace_id or uuid4().hex,
+        invocation_id=invocation_id or uuid4().hex,
+        idempotency_key=idempotency_key,
+        run_id=run_id or uuid4().hex,
+    )
+    business = BusinessContext(case_id=case_id)
+    metadata = {"crawl_id": crawl_id} if crawl_id else {}
+    return ToolContext(scope=scope, business=business, metadata=metadata)
 
 
 def _build_fetch_result(
@@ -161,10 +186,10 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
         ingestion_event_emitter=event_callback,
     )
 
+    context = _make_test_context(tenant_id="tenant-a", case_id="case-b")
     worker.process(
         fetch_result.request,
-        tenant_id="tenant-a",
-        case_id="case-b",
+        context,
         document_id="doc-1",
         document_metadata={"source": "crawler"},
     )
@@ -189,22 +214,23 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     request = fetch_result.request
     overrides = {"guardrails": {"max_document_bytes": 1024}}
     metadata = {"provider": "docs", "tags": ["hr"], "source": "integration"}
-    meta_overrides = {"trace_id": "trace-1"}
 
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
-    publish_result = worker.process(
-        request,
+    context = _make_test_context(
         tenant_id="tenant-a",
         case_id="case-b",
         crawl_id="crawl-1",
         idempotency_key="idemp-1",
+        trace_id="trace-1",
+    )
+    publish_result = worker.process(
+        request,
+        context,
         frontier_state={"slot": "default"},
         document_id="doc-1",
         document_metadata=metadata,
         ingestion_overrides=overrides,
-        meta_overrides=meta_overrides,
-        trace_id="trace-1",
     )
 
     assert publish_result.status == "published"
@@ -249,10 +275,14 @@ def test_worker_propagates_trace_id_from_request_metadata(
 
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
-    publish_result = worker.process(
-        fetch_result.request,
+    context = _make_test_context(
         tenant_id="tenant-a",
         case_id="case-b",
+        trace_id="trace-from-request",
+    )
+    publish_result = worker.process(
+        fetch_result.request,
+        context,
         document_metadata={"source": "crawler"},
     )
 
@@ -278,9 +308,10 @@ def test_worker_returns_failure_without_publishing() -> None:
     task = _StubTask()
     worker = CrawlerWorker(fetcher, ingestion_task=task)
 
+    context = _make_test_context(tenant_id="tenant-a")
     publish_result = worker.process(
         fetch_result.request,
-        tenant_id="tenant-a",
+        context,
     )
 
     assert publish_result.status == FetchStatus.TEMPORARY_ERROR.value
@@ -296,10 +327,10 @@ def test_worker_sets_default_provider_from_source(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
+    context = _make_test_context(tenant_id="tenant-a", case_id="case-b")
     publish_result = worker.process(
         fetch_result.request,
-        tenant_id="tenant-a",
-        case_id="case-b",
+        context,
         document_metadata={"source": "crawler"},
     )
 
@@ -319,11 +350,11 @@ def test_worker_raises_without_source_metadata(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
+    context = _make_test_context(tenant_id="tenant-a", case_id="case-b")
     with pytest.raises(ValueError) as excinfo:
         worker.process(
             fetch_result.request,
-            tenant_id="tenant-a",
-            case_id="case-b",
+            context,
         )
 
     assert str(excinfo.value) == "document_metadata.source_required"
@@ -349,11 +380,12 @@ def test_worker_extracts_image_assets(tmp_path, monkeypatch) -> None:
 
     worker = CrawlerWorker(fetcher, ingestion_task=task)
 
+    context = _make_test_context(
+        tenant_id="tenant-a", case_id="case-b", crawl_id="crawl-1"
+    )
     publish_result = worker.process(
         page_result.request,
-        tenant_id="tenant-a",
-        case_id="case-b",
-        crawl_id="crawl-1",
+        context,
         document_id="doc-1",
         document_metadata={"source": "crawler"},
     )

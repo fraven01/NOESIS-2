@@ -4,13 +4,58 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, MutableMapping
-from dataclasses import dataclass
-from typing import Any, Protocol, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol, Tuple, TypedDict, cast
+from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.nodes import compose, retrieve
 from ai_core.tool_contracts import ContextError, ToolContext
+from ai_core.tool_contracts.base import tool_context_from_meta
+from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 
 logger = logging.getLogger(__name__)
+
+
+RAG_SCHEMA_ID = "noesis.graphs.retrieval_augmented_generation"
+RAG_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
+RAG_IO_VERSION_STRING = RAG_IO_VERSION.as_string()
+
+
+class RetrievalAugmentedGenerationInput(retrieve.RetrieveInput):
+    """Boundary input model for the retrieval augmented generation graph."""
+
+    schema_id: Literal[RAG_SCHEMA_ID] = RAG_SCHEMA_ID
+    schema_version: Literal[RAG_IO_VERSION_STRING] = RAG_IO_VERSION_STRING
+
+    question: str | None = None
+
+    model_config = ConfigDict(
+        extra="forbid",
+        arbitrary_types_allowed=True,
+        frozen=True,
+    )
+
+
+class RetrievalAugmentedGenerationOutput(BaseModel):
+    """Boundary output model for the retrieval augmented generation graph."""
+
+    schema_id: Literal[RAG_SCHEMA_ID] = RAG_SCHEMA_ID
+    schema_version: Literal[RAG_IO_VERSION_STRING] = RAG_IO_VERSION_STRING
+    answer: str | None
+    prompt_version: str | None
+    retrieval: Mapping[str, Any]
+    snippets: list[dict[str, Any]]
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+RAG_GRAPH_IO = GraphIOSpec(
+    schema_id=RAG_SCHEMA_ID,
+    version=RAG_IO_VERSION,
+    input_model=RetrievalAugmentedGenerationInput,
+    output_model=RetrievalAugmentedGenerationOutput,
+)
 
 
 class RetrieveNode(Protocol):
@@ -31,6 +76,16 @@ class ComposeNode(Protocol):
         self, state: MutableMapping[str, Any], meta: MutableMapping[str, Any]
     ) -> Tuple[MutableMapping[str, Any], Mapping[str, Any]]:
         """Execute composition and return the updated state and payload."""
+
+
+class RetrievalAugmentedGenerationState(TypedDict, total=False):
+    """Runtime state for the retrieval augmented generation LangGraph."""
+
+    state: MutableMapping[str, Any]
+    meta: MutableMapping[str, Any]
+    context: ToolContext
+    retrieval_output: retrieve.RetrieveOutput
+    result: Mapping[str, Any]
 
 
 def _ensure_mutable_state(
@@ -129,52 +184,40 @@ def _normalise_snippets(
 
 
 def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
-    # 1. Try to use pre-built tool_context from meta (injected by normalize_meta)
-    prebuilt = meta.get("tool_context")
-    if isinstance(prebuilt, dict):
-        return ToolContext(**prebuilt)
-    if isinstance(prebuilt, ToolContext):
-        return prebuilt
-
-    # 2. Try to build from scope_context if available
-    scope_data = meta.get("scope_context")
-    if scope_data:
-        from ai_core.contracts.scope import ScopeContext
-        from ai_core.tool_contracts.base import tool_context_from_scope
-
-        if isinstance(scope_data, dict):
-            scope = ScopeContext.model_validate(scope_data)
-            return tool_context_from_scope(scope, metadata=dict(meta))
-        if isinstance(scope_data, ScopeContext):
-            return tool_context_from_scope(scope_data, metadata=dict(meta))
-
-    raise ContextError(
-        "scope_context or tool_context is required for retrieval graphs",
-        field="scope_context",
-    )
+    try:
+        return tool_context_from_meta(meta)
+    except Exception as exc:
+        raise ContextError(
+            "scope_context or tool_context is required for retrieval graphs",
+            field="scope_context",
+        ) from exc
 
 
-@dataclass(frozen=True)
-class RetrievalAugmentedGenerationGraph:
-    """Graph executing the production RAG workflow (retrieve → compose).
+def _build_compiled_graph(
+    *,
+    retrieve_node: RetrieveNode,
+    compose_node: ComposeNode,
+) -> Any:
+    def _retrieve_step(
+        graph_state: RetrievalAugmentedGenerationState,
+    ) -> dict[str, Any]:
+        working_state = graph_state["state"]
+        working_meta = graph_state["meta"]
 
-    MVP 2025-10 — Breaking Contract v2: Response enthält answer, prompt_version, retrieval, snippets.
-    """
-
-    retrieve_node: RetrieveNode = retrieve.run
-    compose_node: ComposeNode = compose.run
-
-    def run(
-        self,
-        state: Mapping[str, Any] | MutableMapping[str, Any],
-        meta: Mapping[str, Any] | MutableMapping[str, Any],
-    ) -> Tuple[MutableMapping[str, Any], Mapping[str, Any]]:
-        working_state = _ensure_mutable_state(state)
-        working_meta = _ensure_mutable_meta(meta)
+        try:
+            graph_input = RetrievalAugmentedGenerationInput.model_validate(
+                working_state
+            )
+        except ValidationError as exc:
+            # This graph fails fast on invalid input instead of returning state errors.
+            raise ValueError(f"Invalid graph input: {exc.errors()}") from exc
 
         context = _build_tool_context(working_meta)
-        params = retrieve.RetrieveInput.from_state(working_state)
-        retrieve_output = self.retrieve_node(context, params)
+        params = retrieve.RetrieveInput.model_validate(
+            graph_input.model_dump(exclude={"schema_id", "schema_version", "question"})
+        )
+        retrieve_output = retrieve_node(context, params)
+
         retrieval_meta = retrieve_output.meta.model_dump(mode="json", exclude_none=True)
         took_ms = retrieval_meta.get("took_ms")
         try:
@@ -183,11 +226,34 @@ class RetrievalAugmentedGenerationGraph:
             retrieval_meta["took_ms"] = int(
                 getattr(retrieve_output.meta, "took_ms", 0) or 0
             )
+
         working_state["matches"] = retrieve_output.matches
         working_state["snippets"] = retrieve_output.matches
         working_state["retrieval"] = retrieval_meta
 
-        final_state, compose_result = self.compose_node(working_state, working_meta)
+        return {
+            "state": working_state,
+            "context": context,
+            "retrieval_output": retrieve_output,
+        }
+
+    def _compose_step(
+        graph_state: RetrievalAugmentedGenerationState,
+    ) -> dict[str, Any]:
+        working_state = graph_state["state"]
+        working_meta = graph_state["meta"]
+        retrieval_output = graph_state.get("retrieval_output")
+        context = graph_state.get("context")
+
+        final_state, compose_result = compose_node(working_state, working_meta)
+
+        retrieval_meta: dict[str, Any] = {}
+        if retrieval_output is not None:
+            retrieval_meta = retrieval_output.meta.model_dump(
+                mode="json", exclude_none=True
+            )
+        elif isinstance(final_state.get("retrieval"), Mapping):
+            retrieval_meta = dict(final_state.get("retrieval", {}))
 
         retrieval_payload = final_state.get("retrieval", retrieval_meta)
         if not isinstance(retrieval_payload, Mapping):
@@ -201,24 +267,32 @@ class RetrievalAugmentedGenerationGraph:
         except (TypeError, ValueError, OverflowError):
             retrieval_payload["took_ms"] = retrieval_meta.get("took_ms", 0)
 
-        snippets_payload = final_state.get("snippets", retrieve_output.matches)
-        snippets_payload = _normalise_snippets(
-            snippets_payload, retrieve_output.matches
-        )
+        fallback_matches: list[Mapping[str, Any]] = []
+        if retrieval_output is not None:
+            fallback_matches = retrieval_output.matches
+        elif isinstance(working_state.get("matches"), list):
+            fallback_matches = cast(
+                list[Mapping[str, Any]], working_state.get("matches")
+            )
 
-        result_payload = {
-            "answer": compose_result.get("answer"),
-            "prompt_version": compose_result.get("prompt_version"),
-            "retrieval": retrieval_payload,
-            "snippets": snippets_payload,
-        }
+        snippets_payload = final_state.get("snippets", fallback_matches)
+        snippets_payload = _normalise_snippets(snippets_payload, fallback_matches)
+
+        result_payload = RetrievalAugmentedGenerationOutput(
+            answer=compose_result.get("answer"),
+            prompt_version=compose_result.get("prompt_version"),
+            retrieval=retrieval_payload,
+            snippets=snippets_payload,
+        ).model_dump(mode="json")
 
         if result_payload["prompt_version"] is None:
+            if context is None:
+                context = _build_tool_context(working_meta)
             logger.warning(
                 "rag.compose.missing_prompt_version",
                 extra={
-                    "tenant_id": context.tenant_id,
-                    "case_id": context.case_id,
+                    "tenant_id": context.scope.tenant_id,
+                    "case_id": context.business.case_id,
                     "graph": getattr(context, "graph_name", "rag.default"),
                 },
             )
@@ -227,28 +301,80 @@ class RetrievalAugmentedGenerationGraph:
             final_state["retrieval"] = retrieval_payload
             final_state["snippets"] = snippets_payload
 
-        return final_state, result_payload
+        return {"state": final_state, "result": result_payload}
+
+    workflow = StateGraph(RetrievalAugmentedGenerationState)
+    workflow.add_node("retrieve", _retrieve_step)
+    workflow.add_node("compose", _compose_step)
+    workflow.set_entry_point("retrieve")
+    workflow.add_edge("retrieve", "compose")
+    workflow.add_edge("compose", END)
+
+    graph = workflow.compile()
+    setattr(graph, "io_spec", RAG_GRAPH_IO)
+    return graph
 
 
-GRAPH = RetrievalAugmentedGenerationGraph()
+@dataclass(frozen=True)
+class RetrievalAugmentedGenerationGraph:
+    """Graph executing the production RAG workflow (retrieve → compose).
+
+    MVP 2025-10 — Breaking Contract v2: Response enthält answer, prompt_version, retrieval, snippets.
+    """
+
+    retrieve_node: RetrieveNode = retrieve.run
+    compose_node: ComposeNode = compose.run
+    io_spec: GraphIOSpec = RAG_GRAPH_IO
+    _graph: Any = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_graph",
+            _build_compiled_graph(
+                retrieve_node=self.retrieve_node,
+                compose_node=self.compose_node,
+            ),
+        )
+
+    def run(
+        self,
+        state: Mapping[str, Any] | MutableMapping[str, Any],
+        meta: Mapping[str, Any] | MutableMapping[str, Any],
+    ) -> Tuple[MutableMapping[str, Any], Mapping[str, Any]]:
+        working_state = _ensure_mutable_state(state)
+        working_meta = _ensure_mutable_meta(meta)
+
+        graph_state: RetrievalAugmentedGenerationState = {
+            "state": working_state,
+            "meta": working_meta,
+        }
+        final_state = self._graph.invoke(graph_state)
+
+        updated_state = final_state.get("state", working_state)
+        result_payload = final_state.get("result") or {}
+        if not isinstance(result_payload, Mapping):
+            result_payload = {}
+
+        return updated_state, result_payload
 
 
 def build_graph() -> RetrievalAugmentedGenerationGraph:
-    """Return the shared retrieval augmented generation graph instance."""
+    """Return a retrieval augmented generation graph instance."""
 
-    return GRAPH
+    return RetrievalAugmentedGenerationGraph()
 
 
 def run(
     state: Mapping[str, Any] | MutableMapping[str, Any],
     meta: Mapping[str, Any] | MutableMapping[str, Any],
 ) -> Tuple[MutableMapping[str, Any], Mapping[str, Any]]:
-    """Module-level convenience delegating to :data:`GRAPH`.
+    """Module-level convenience delegating to :func:`build_graph`.
 
     MVP 2025-10 — Breaking Contract v2: Response enthält answer, prompt_version, retrieval, snippets.
     """
 
-    return GRAPH.run(state, meta)
+    return build_graph().run(state, meta)
 
 
-__all__ = ["RetrievalAugmentedGenerationGraph", "GRAPH", "build_graph", "run"]
+__all__ = ["RetrievalAugmentedGenerationGraph", "build_graph", "run"]

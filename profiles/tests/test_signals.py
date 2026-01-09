@@ -3,17 +3,20 @@ from django.conf import settings
 from django.db import connection
 from django_tenants.utils import schema_context
 
-from customers.tests.factories import TenantFactory
 from profiles.models import UserProfile
 from profiles.signals import create_user_profile
 from users.tests.factories import UserFactory
 
 
-pytestmark = pytest.mark.django_db
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.django_db,
+    pytest.mark.xdist_group("tenant_ops"),
+]
 
 
-def test_signal_skips_public_schema(monkeypatch):
-    tenant = TenantFactory(schema_name="alpha")
+def test_signal_skips_public_schema(monkeypatch, tenant_pool):
+    tenant = tenant_pool["alpha"]
     with schema_context(tenant.schema_name):
         user = UserFactory()
         UserProfile.objects.all().delete()
@@ -24,9 +27,9 @@ def test_signal_skips_public_schema(monkeypatch):
             assert not UserProfile.objects.filter(user=user).exists()
 
 
-def test_signal_creates_profile_per_tenant():
-    tenant1 = TenantFactory(schema_name="alpha")
-    tenant2 = TenantFactory(schema_name="beta")
+def test_signal_creates_profile_per_tenant(tenant_pool):
+    tenant1 = tenant_pool["alpha"]
+    tenant2 = tenant_pool["beta"]
     with schema_context(tenant1.schema_name):
         user1 = UserFactory()
     with schema_context(tenant2.schema_name):

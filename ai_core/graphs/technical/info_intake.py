@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict, Tuple
+
+from ai_core.tool_contracts.base import tool_context_from_meta
+
+logger = logging.getLogger(__name__)
 
 
 def run(state: Dict, meta: Dict) -> Tuple[Dict, Dict]:
@@ -24,15 +29,18 @@ def run(state: Dict, meta: Dict) -> Tuple[Dict, Dict]:
 
     new_state = dict(state)
     new_state.setdefault("meta", meta)
-    scope_context = meta.get("scope_context", {})
-    # BREAKING CHANGE (Option A): Extract business_context for business IDs
-    business_context = meta.get("business_context", {})
+    context = tool_context_from_meta(meta)
+    logger.warning(
+        "graph.info_intake.deprecated",
+        extra={
+            "tenant_id": context.scope.tenant_id,
+            "case_id": context.business.case_id,
+        },
+    )
 
     result = {
         "received": True,
-        "tenant_id": scope_context.get("tenant_id"),
-        "case_id": business_context.get(
-            "case_id"
-        ),  # BREAKING CHANGE: from business_context
+        "tenant_id": context.scope.tenant_id,
+        "case_id": context.business.case_id,  # BREAKING CHANGE: from business_context
     }
     return new_state, result

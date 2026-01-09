@@ -19,12 +19,13 @@ class TenantFactory(DjangoModelFactory):
 
     @classmethod
     def _create(cls, model_class, *args, **kwargs):
+        migrate = kwargs.pop("migrate", True)
         # Tenants must be created from the public schema in django-tenants.
         from django_tenants.utils import schema_context, get_public_schema_name
 
         with schema_context(get_public_schema_name()):
             obj = super()._create(model_class, *args, **kwargs)
-        bootstrap_tenant_schema(obj)
+        bootstrap_tenant_schema(obj, migrate=migrate)
         return obj
 
 
@@ -32,6 +33,6 @@ class DomainFactory(DjangoModelFactory):
     class Meta:
         model = Domain
 
-    tenant = factory.SubFactory(TenantFactory)
+    tenant = factory.SubFactory(TenantFactory, migrate=False)
     domain = factory.Sequence(lambda n: f"domain{n}.example.com")
     is_primary = True

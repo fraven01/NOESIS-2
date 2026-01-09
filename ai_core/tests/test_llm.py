@@ -39,8 +39,8 @@ def test_resolve_merges_base_and_override(tmp_path, monkeypatch):
 
 def test_llm_client_masks_and_records(monkeypatch):
     metadata = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
         "key_alias": "alias-01",
@@ -97,7 +97,7 @@ def test_llm_client_masks_and_records(monkeypatch):
     assert res["model"]
     assert res["prompt_version"] == "v1"
     assert ledger_calls["meta"]["label"] == "simple-query"
-    assert ledger_calls["meta"]["tenant"] == "t1"
+    assert ledger_calls["meta"]["tenant_id"] == "t1"
     assert ledger_calls["meta"]["usage"] == {
         "prompt_tokens": 1,
         "completion_tokens": 1,
@@ -109,8 +109,8 @@ def test_llm_client_masks_and_records(monkeypatch):
 
 def test_llm_client_flattens_structured_content(monkeypatch):
     metadata = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
@@ -150,8 +150,8 @@ def test_llm_client_flattens_structured_content(monkeypatch):
 
 def test_llm_client_falls_back_to_choice_text(monkeypatch):
     metadata = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
@@ -185,8 +185,8 @@ def test_llm_client_falls_back_to_choice_text(monkeypatch):
 
 def test_llm_client_raises_when_content_missing(monkeypatch):
     metadata = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
@@ -219,8 +219,8 @@ def test_llm_client_raises_when_content_missing(monkeypatch):
 
 def test_llm_idempotency_key_changes_with_prompt_version(monkeypatch):
     metadata_v1 = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
@@ -274,8 +274,8 @@ def _prepare_env(monkeypatch):
 
 def test_llm_client_logs_masked_context_on_5xx(monkeypatch):
     metadata = {
-        "tenant": "tenant-123",
-        "case": "case-456",
+        "tenant_id": "tenant-123",
+        "case_id": "case-456",
         "trace_id": "trace-789",
         "prompt_version": "v1",
         "key_alias": "alias-999",
@@ -319,8 +319,8 @@ def test_llm_client_logs_masked_context_on_5xx(monkeypatch):
 
     expected_extra = {
         "trace_id": mask_value(metadata["trace_id"]),
-        "case_id": mask_value(metadata["case"]),
-        "tenant": mask_value(metadata["tenant"]),
+        "case_id": mask_value(metadata["case_id"]),
+        "tenant_id": mask_value(metadata["tenant_id"]),
         "key_alias": mask_value(metadata["key_alias"]),
         "status": 502,
     }
@@ -331,8 +331,8 @@ def test_llm_client_logs_masked_context_on_5xx(monkeypatch):
 
 def test_llm_client_logs_masked_context_on_request_error(monkeypatch):
     metadata = {
-        "tenant": "tenant-123",
-        "case": "case-456",
+        "tenant_id": "tenant-123",
+        "case_id": "case-456",
         "trace_id": "trace-789",
         "prompt_version": "v1",
         "key_alias": "alias-999",
@@ -370,8 +370,8 @@ def test_llm_client_logs_masked_context_on_request_error(monkeypatch):
 
     expected_extra = {
         "trace_id": mask_value(metadata["trace_id"]),
-        "case_id": mask_value(metadata["case"]),
-        "tenant": mask_value(metadata["tenant"]),
+        "case_id": mask_value(metadata["case_id"]),
+        "tenant_id": mask_value(metadata["tenant_id"]),
         "key_alias": mask_value(metadata["key_alias"]),
         "status": None,
     }
@@ -383,8 +383,8 @@ def test_llm_client_logs_masked_context_on_request_error(monkeypatch):
 
 def test_llm_client_raises_llmclienterror_with_json_error(monkeypatch):
     metadata = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
@@ -441,8 +441,8 @@ def test_llm_client_raises_llmclienterror_with_json_error(monkeypatch):
 
 def test_llm_client_raises_llmclienterror_with_text_error(monkeypatch):
     metadata = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
@@ -495,8 +495,8 @@ def test_llm_client_raises_llmclienterror_with_text_error(monkeypatch):
 
 def test_llm_client_raises_rate_limit_error_with_json_body(monkeypatch):
     metadata = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
@@ -549,8 +549,8 @@ def test_llm_client_raises_rate_limit_error_with_json_body(monkeypatch):
 
 def test_llm_client_raises_rate_limit_error_with_text_body(monkeypatch):
     metadata = {
-        "tenant": "t1",
-        "case": "c1",
+        "tenant_id": "t1",
+        "case_id": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
@@ -603,8 +603,8 @@ def test_llm_client_raises_rate_limit_error_with_text_body(monkeypatch):
 
 def test_llm_client_updates_observation_on_success(monkeypatch):
     metadata = {
-        "tenant": "tenant-1",
-        "case": "case-1",
+        "tenant_id": "tenant-1",
+        "case_id": "case-1",
         "trace_id": "trace-1",
         "prompt_version": "v1",
     }
@@ -656,8 +656,8 @@ def test_llm_client_updates_observation_on_success(monkeypatch):
 
 def test_llm_client_updates_observation_on_error(monkeypatch):
     metadata = {
-        "tenant": "tenant-2",
-        "case": "case-2",
+        "tenant_id": "tenant-2",
+        "case_id": "case-2",
         "trace_id": "trace-2",
         "prompt_version": "v2",
     }

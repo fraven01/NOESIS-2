@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from ai_core.infra.mask_prompt import mask_prompt
 from ai_core.infra.prompts import load
@@ -61,14 +62,18 @@ class _DummyConfig:
         self.embedding_profiles = {profile: _DummyProfile(vector_space)}
 
 
-def _patch_routing(monkeypatch, profile: str = "standard", space: str = "rag/global"):
+def _patch_routing(
+    monkeypatch, profile: str = "standard", space: str = "rag/standard@v1"
+):
     monkeypatch.setattr(
         "ai_core.nodes.retrieve.resolve_embedding_profile",
         lambda *, tenant_id, process=None, doc_class=None, collection_id=None, workflow_id=None: profile,
     )
     monkeypatch.setattr(
-        "ai_core.nodes.retrieve.get_embedding_configuration",
-        lambda: _DummyConfig(profile, space),
+        "ai_core.nodes.retrieve.resolve_vector_space_full",
+        lambda _profile_id: SimpleNamespace(
+            vector_space=SimpleNamespace(id=space, schema="rag")
+        ),
     )
 
 
@@ -76,8 +81,8 @@ def test_retrieve_hybrid_search(monkeypatch):
     _patch_routing(monkeypatch)
 
     chunk = Chunk(
-        "Hybrid Result",
-        {
+        content="Hybrid Result",
+        meta={
             "id": "doc-1",
             "source": "src",
             "hash": "h1",
@@ -160,7 +165,7 @@ def test_retrieve_hybrid_search(monkeypatch):
     assert meta_payload.lexical_candidates == 41
     assert meta_payload.deleted_matches_blocked == 3
     assert meta_payload.routing.profile == "standard"
-    assert meta_payload.routing.vector_space_id == "rag/global"
+    assert meta_payload.routing.vector_space_id == "rag/standard@v1"
     assert meta_payload.visibility_effective == "active"
 
 
@@ -234,8 +239,8 @@ def test_retrieve_deduplicates_matches(monkeypatch):
 
     chunks = [
         Chunk(
-            "First",
-            {
+            content="First",
+            meta={
                 "id": "doc-1",
                 "chunk_id": "chunk-1",
                 "score": 0.4,
@@ -245,8 +250,8 @@ def test_retrieve_deduplicates_matches(monkeypatch):
             },
         ),
         Chunk(
-            "Second",
-            {
+            content="Second",
+            meta={
                 "id": "doc-1",
                 "chunk_id": "chunk-1",
                 "score": 0.9,
@@ -257,8 +262,8 @@ def test_retrieve_deduplicates_matches(monkeypatch):
             },
         ),
         Chunk(
-            "Third",
-            {
+            content="Third",
+            meta={
                 "id": "doc-1",
                 "chunk_id": "chunk-2",
                 "score": 0.6,
@@ -268,8 +273,8 @@ def test_retrieve_deduplicates_matches(monkeypatch):
             },
         ),
         Chunk(
-            "Fourth",
-            {
+            content="Fourth",
+            meta={
                 "id": "doc-2",
                 "chunk_id": "chunk-3",
                 "score": 0.5,
@@ -324,7 +329,7 @@ def test_retrieve_deduplicates_matches(monkeypatch):
 def test_retrieve_raises_on_chunks_without_ids(monkeypatch):
     _patch_routing(monkeypatch)
 
-    chunk = Chunk("Invalid", {"tenant_id": "tenant-1"})
+    chunk = Chunk(content="Invalid", meta={"tenant_id": "tenant-1"})
     hybrid_result = HybridSearchResult(
         chunks=[chunk],
         vector_candidates=1,

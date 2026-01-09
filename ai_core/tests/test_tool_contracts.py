@@ -43,7 +43,7 @@ def test_tool_result_roundtrip() -> None:
     result = ToolResult[_TestInput, _TestOutput](
         input=tool_input,
         data=tool_output,
-        meta=ToolResultMeta(took_ms=42, routing={"trace_id": context.trace_id}),
+        meta=ToolResultMeta(took_ms=42, routing={"trace_id": context.scope.trace_id}),
     )
 
     json_payload = result.model_dump_json()

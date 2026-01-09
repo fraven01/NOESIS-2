@@ -1,4 +1,5 @@
 import secrets
+import uuid
 
 import factory
 from django.utils import timezone
@@ -27,16 +28,7 @@ class UserFactory(DjangoModelFactory):
         is_active_from_kwargs = kwargs.get("is_active", None)
         profile_is_active = kwargs.pop("profile_is_active", is_active_from_kwargs)
 
-        # Ensure user IDs are globally unique across tenant schemas in tests to
-        # avoid PK collisions when comparing FK relations across schemas.
-        from django.db import connection
-
-        schema = getattr(connection, "schema_name", "public") or "public"
-        # Derive a large, schema-specific offset to keep sequences disjoint.
-        base = (abs(hash(schema)) % 1000 + 1) * 1_000_000
-        seq = getattr(cls, "_id_seq", 0) + 1
-        cls._id_seq = seq
-        kwargs.setdefault("id", base + seq)
+        kwargs.setdefault("id", uuid.uuid4())
 
         user = super()._create(model_class, *args, **kwargs)
 

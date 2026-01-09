@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-
-from typing import Iterable, Mapping, MutableMapping
+import hashlib
+import math
+import random
+from typing import Iterable, Mapping, MutableMapping, Sequence
 from types import MappingProxyType
+
+from django.utils import timezone
 
 from common.logging import get_log_context, get_logger
 
@@ -18,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from documents.contracts import NormalizedDocument
 from documents.providers import parse_provider_reference
 
-from ai_core.rag.vector_client import DedupSignatures
+from ai_core.rag.deduplication import DedupSignatures
 
 from .schemas import Chunk
 
@@ -28,9 +32,11 @@ from .vector_space_resolver import (
     VectorSpaceResolverErrorCode,
     resolve_vector_space_full,
 )
+from .embedding_config import build_embedding_model_version
 
 
 logger = get_logger(__name__)
+_ZERO_EPSILON = 1e-12
 
 
 class IngestionContractErrorCode:
@@ -41,6 +47,8 @@ class IngestionContractErrorCode:
     PROFILE_UNKNOWN = "INGEST_PROFILE_UNKNOWN"
     VECTOR_SPACE_UNKNOWN = "INGEST_VECTOR_SPACE_UNKNOWN"
     VECTOR_DIMENSION_MISMATCH = "INGEST_VECTOR_DIMENSION_MISMATCH"
+    EMBEDDING_INVALID = "INGEST_EMBEDDING_INVALID"
+    EMBEDDING_ZERO = "INGEST_EMBEDDING_ZERO"
 
 
 def map_ingestion_error_to_status(code: str) -> int:
@@ -68,6 +76,8 @@ class ChunkMeta(BaseModel):
     external_id: str
     content_hash: str
     embedding_profile: str | None = None
+    embedding_model_version: str | None = None
+    embedding_created_at: str | None = None
     vector_space_id: str | None = None
     process: str | None = None
     workflow_id: str | None = None
@@ -182,9 +192,9 @@ def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolut
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
+        metadata["trace_id"] = str(trace_id)
         record_span(
             "rag.ingestion.profile.resolve",
-            trace_id=str(trace_id),
             attributes=metadata,
         )
 
@@ -201,17 +211,46 @@ def ensure_embedding_dimensions(
     embedding_profile: str | None = None,
     vector_space_id: str | None = None,
 ) -> None:
-    """Raise when embeddings do not match the configured vector space dimension."""
+    """Raise when embeddings fail pre-upsert validation checks."""
 
-    if expected_dimension is None:
-        return
+    if expected_dimension is not None and expected_dimension < 0:
+        expected_dimension = None
 
     for index, chunk in enumerate(chunks):
         embedding = chunk.embedding
         if embedding is None:
             continue
-        observed = len(embedding)
-        if observed != expected_dimension:
+        floats = _coerce_embedding_values(embedding)
+        if floats is None:
+            _raise_embedding_invalid(
+                "embedding contains non-numeric values",
+                index=index,
+                tenant_id=tenant_id,
+                process=process,
+                workflow_id=workflow_id,
+                embedding_profile=embedding_profile,
+                vector_space_id=vector_space_id,
+                chunk=chunk,
+            )
+
+        invalid_index = _first_non_finite_index(floats)
+        if invalid_index is not None:
+            _raise_embedding_invalid(
+                "embedding contains NaN or Inf values",
+                index=index,
+                tenant_id=tenant_id,
+                process=process,
+                workflow_id=workflow_id,
+                embedding_profile=embedding_profile,
+                vector_space_id=vector_space_id,
+                chunk=chunk,
+                invalid_index=invalid_index,
+                invalid_value=floats[invalid_index],
+                invalid_reason="non_finite",
+            )
+
+        observed = len(floats)
+        if expected_dimension is not None and observed != expected_dimension:
             context = {
                 "tenant": tenant_id,
                 "process": process,
@@ -234,6 +273,246 @@ def ensure_embedding_dimensions(
                 context=context,
             )
 
+        norm_sq = math.fsum(value * value for value in floats)
+        if norm_sq <= _ZERO_EPSILON:
+            context = _base_embedding_context(
+                index=index,
+                tenant_id=tenant_id,
+                process=process,
+                workflow_id=workflow_id,
+                embedding_profile=embedding_profile,
+                vector_space_id=vector_space_id,
+                chunk=chunk,
+            )
+            context["norm_sq"] = norm_sq
+            raise InputError(
+                IngestionContractErrorCode.EMBEDDING_ZERO,
+                "embedding vector norm is zero; refusing to persist",
+                context=context,
+            )
+
+
+def _coerce_embedding_values(values: Iterable[object]) -> list[float] | None:
+    try:
+        floats = [float(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    return floats
+
+
+def _first_non_finite_index(values: Sequence[float]) -> int | None:
+    for index, value in enumerate(values):
+        if not math.isfinite(value):
+            return index
+    return None
+
+
+def _base_embedding_context(
+    *,
+    index: int,
+    tenant_id: str | None,
+    process: str | None,
+    workflow_id: str | None,
+    embedding_profile: str | None,
+    vector_space_id: str | None,
+    chunk: Chunk,
+) -> dict[str, object]:
+    context: dict[str, object] = {
+        "tenant": tenant_id,
+        "process": process,
+        "workflow_id": workflow_id,
+        "embedding_profile": embedding_profile,
+        "vector_space_id": vector_space_id,
+        "chunk_index": index,
+    }
+    external_id = chunk.meta.get("external_id") if chunk.meta else None
+    if external_id is not None:
+        context["external_id"] = external_id
+    return context
+
+
+def _raise_embedding_invalid(
+    message: str,
+    *,
+    index: int,
+    tenant_id: str | None,
+    process: str | None,
+    workflow_id: str | None,
+    embedding_profile: str | None,
+    vector_space_id: str | None,
+    chunk: Chunk,
+    invalid_index: int | None = None,
+    invalid_value: float | None = None,
+    invalid_reason: str | None = None,
+) -> None:
+    context = _base_embedding_context(
+        index=index,
+        tenant_id=tenant_id,
+        process=process,
+        workflow_id=workflow_id,
+        embedding_profile=embedding_profile,
+        vector_space_id=vector_space_id,
+        chunk=chunk,
+    )
+    if invalid_index is not None:
+        context["invalid_index"] = invalid_index
+    if invalid_value is not None:
+        context["invalid_value"] = invalid_value
+    if invalid_reason:
+        context["invalid_reason"] = invalid_reason
+    raise InputError(
+        IngestionContractErrorCode.EMBEDDING_INVALID,
+        message,
+        context=context,
+    )
+
+
+def _compute_embedding_quality_stats(
+    chunks: Iterable[Chunk],
+    *,
+    sample_size: int,
+    outlier_threshold: float,
+) -> dict[str, object] | None:
+    vectors: list[tuple[int, list[float], str | None]] = []
+
+    for index, chunk in enumerate(chunks):
+        embedding = chunk.embedding
+        if embedding is None:
+            continue
+        floats = _coerce_embedding_values(embedding)
+        if not floats:
+            continue
+        if _first_non_finite_index(floats) is not None:
+            continue
+        norm_sq = math.fsum(value * value for value in floats)
+        if norm_sq <= _ZERO_EPSILON:
+            continue
+        norm = math.sqrt(norm_sq)
+        if not math.isfinite(norm) or norm <= _ZERO_EPSILON:
+            continue
+        unit = [value / norm for value in floats]
+        external_id = chunk.meta.get("external_id") if chunk.meta else None
+        vectors.append((index, unit, str(external_id) if external_id else None))
+
+    total_vectors = len(vectors)
+    if total_vectors < 2:
+        return None
+    dimension = len(vectors[0][1])
+    vectors = [entry for entry in vectors if len(entry[1]) == dimension]
+    total_vectors = len(vectors)
+    if total_vectors < 2:
+        return None
+
+    effective_sample = min(max(2, sample_size), total_vectors)
+    trace_id = get_log_context().get("trace_id")
+    seed_source = str(trace_id) if trace_id else str(total_vectors)
+    seed = int(hashlib.sha256(seed_source.encode("utf-8")).hexdigest()[:8], 16)
+    rng = random.Random(seed)
+    sample = rng.sample(vectors, k=effective_sample)
+
+    ref_vector = rng.choice(sample)[1]
+    mean_cosine = 0.0
+    for _, vector, _ in sample:
+        mean_cosine += _dot_product(ref_vector, vector)
+    mean_cosine = mean_cosine / float(effective_sample)
+
+    mean_vector = [0.0] * dimension
+    for _, vector, _ in sample:
+        for idx, value in enumerate(vector):
+            mean_vector[idx] += value
+    mean_vector = [value / float(effective_sample) for value in mean_vector]
+    mean_norm_sq = math.fsum(value * value for value in mean_vector)
+    if mean_norm_sq <= _ZERO_EPSILON:
+        return {
+            "embedding_count": total_vectors,
+            "sample_size": effective_sample,
+            "sample_mean_cosine": round(mean_cosine, 6),
+            "outlier_threshold": outlier_threshold,
+            "outlier_count": 0,
+            "outlier_ratio": 0.0,
+        }
+
+    mean_norm = math.sqrt(mean_norm_sq)
+    if not math.isfinite(mean_norm) or mean_norm <= _ZERO_EPSILON:
+        return None
+    mean_unit = [value / mean_norm for value in mean_vector]
+
+    outliers: list[dict[str, object]] = []
+    outlier_count = 0
+    for index, vector, external_id in sample:
+        similarity = _dot_product(mean_unit, vector)
+        if similarity < outlier_threshold:
+            outlier_count += 1
+            if len(outliers) < 5:
+                outlier_entry = {"chunk_index": index, "similarity": similarity}
+                if external_id:
+                    outlier_entry["external_id"] = external_id
+                outliers.append(outlier_entry)
+
+    outlier_ratio = outlier_count / float(effective_sample)
+
+    payload: dict[str, object] = {
+        "embedding_count": total_vectors,
+        "sample_size": effective_sample,
+        "sample_mean_cosine": round(mean_cosine, 6),
+        "outlier_threshold": outlier_threshold,
+        "outlier_count": outlier_count,
+        "outlier_ratio": round(outlier_ratio, 6),
+    }
+    if outliers:
+        payload["outlier_examples"] = outliers
+    return payload
+
+
+def _dot_product(vec_a: Sequence[float], vec_b: Sequence[float]) -> float:
+    return math.fsum(value * vec_b[idx] for idx, value in enumerate(vec_a))
+
+
+def log_embedding_quality_stats(
+    chunks: Iterable[Chunk],
+    *,
+    tenant_id: str | None = None,
+    process: str | None = None,
+    workflow_id: str | None = None,
+    embedding_profile: str | None = None,
+    vector_space_id: str | None = None,
+    sample_size: int = 256,
+    outlier_threshold: float = 0.1,
+) -> dict[str, object] | None:
+    """Log cosine similarity stats and outlier counts for a chunk batch."""
+
+    stats = _compute_embedding_quality_stats(
+        chunks,
+        sample_size=sample_size,
+        outlier_threshold=outlier_threshold,
+    )
+    if not stats:
+        return None
+
+    payload: dict[str, object] = {
+        "tenant_id": tenant_id,
+        "process": process,
+        "workflow_id": workflow_id,
+        "embedding_profile": embedding_profile,
+        "vector_space_id": vector_space_id,
+        **stats,
+    }
+
+    logger.info("embedding.quality.stats", extra=payload)
+    outlier_count = stats.get("outlier_count", 0)
+    if isinstance(outlier_count, int) and outlier_count > 0:
+        logger.warning("embedding.quality.outliers", extra=payload)
+
+    trace_id = get_log_context().get("trace_id")
+    if trace_id:
+        payload["trace_id"] = str(trace_id)
+        record_span(
+            "embedding.quality.stats",
+            attributes=payload,
+        )
+
+    return payload
+
 
 __all__ = [
     "IngestionContractErrorCode",
@@ -245,6 +524,7 @@ __all__ = [
     "build_crawler_ingestion_payload",
     "resolve_ingestion_profile",
     "ensure_embedding_dimensions",
+    "log_embedding_quality_stats",
 ]
 
 
@@ -271,14 +551,22 @@ def build_crawler_ingestion_payload(
 
     profile_id: str | None
     vector_space_id: str | None
+    embedding_model_version: str | None
+    embedding_created_at: str | None
 
     if action is IngestionAction.RETIRE:
         profile_id = _coerce_optional_string(embedding_profile)
         vector_space_id = None
+        embedding_model_version = None
+        embedding_created_at = None
     else:
         profile_binding = _resolve_embedding_profile(embedding_profile)
         profile_id = profile_binding.profile_id
         vector_space_id = profile_binding.resolution.vector_space.id
+        embedding_model_version = build_embedding_model_version(
+            profile_binding.resolution.profile
+        )
+        embedding_created_at = timezone.now().isoformat()
 
     provider = parse_provider_reference(document.meta)
 
@@ -297,6 +585,8 @@ def build_crawler_ingestion_payload(
         external_id=provider.external_id,
         content_hash=signatures.content_hash,
         embedding_profile=profile_id,
+        embedding_model_version=embedding_model_version,
+        embedding_created_at=embedding_created_at,
         vector_space_id=vector_space_id,
         process=resolved_process,
         workflow_id=document.ref.workflow_id,

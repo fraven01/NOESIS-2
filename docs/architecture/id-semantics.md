@@ -18,15 +18,15 @@ This document describes how IDs are represented in the current codebase and poin
 | ID | Where it appears | Notes in code |
 | --- | --- | --- |
 | `tenant_id` | scope/meta/tool context | Required field in `ScopeContext` (`ai_core/contracts/scope.py`) |
-| `case_id` | scope/meta/tool context | Optional at HTTP request level; required for tool invocations and graph meta (`ai_core/graph/schemas.py:normalize_meta`) |
-| `workflow_id` | scope/meta/tool context | Accepted as optional in `ScopeContext`; some call paths default it |
+| `case_id` | business/meta/tool context | Optional at HTTP request level; graphs validate when required (`ai_core/graph/schemas.py:normalize_meta`) |
+| `workflow_id` | business/meta/tool context | Optional business identifier; defaults are handled by specific call paths |
 | `run_id` | scope/tool context; graph execution | May co-exist with `ingestion_run_id` (e.g., when workflow triggers ingestion) |
 | `ingestion_run_id` | scope/tool context; ingestion tasks | May co-exist with `run_id`; ingestion task entrypoints live in `ai_core/tasks.py` |
 | `trace_id` | scope/meta/tool context | Normalized/coerced by `ai_core/ids/*`; generated when absent |
 | `invocation_id` | scope/tool context | Generated when absent by the normalizers; new per "hop" (HTTP request or Celery task) |
-| `user_id` | scope/tool context | User identity for User Request Hops; extracted from Django auth; mutually exclusive with `service_id` |
+| `user_id` | scope/tool context | User identity for User Request Hops (UUID string); extracted from Django auth; mutually exclusive with `service_id` |
 | `service_id` | scope/tool context | Service identity for S2S Hops (e.g., "celery-ingestion-worker"); mutually exclusive with `user_id` |
-| `collection_id` | scope/tool context | UUID-string for scoped operations ("Aktenschrank"); optional |
+| `collection_id` | business/tool context | UUID-string for scoped operations ("Aktenschrank"); optional |
 
 ## Identity IDs (Pre-MVP ID Contract)
 
@@ -37,6 +37,8 @@ This document describes how IDs are represented in the current codebase and poin
 | User Request Hop | REQUIRED (when auth) | ABSENT | `normalize_request()` |
 | S2S Hop | ABSENT | REQUIRED | `normalize_task_context()` |
 | Public Endpoint | ABSENT | ABSENT | `normalize_request()` |
+
+Telemetry rule: `tenant_id` and `user_id` are distinct fields. Never pass tenant IDs into user identity fields.
 
 ## Audit Meta (Entity Persistence)
 

@@ -18,6 +18,7 @@ def submit_worker_task(
     ledger_identifier: str | None = None,
     initial_cost_total: float | None = None,
     timeout_s: float | None = None,
+    priority: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """
     Enqueue a worker task and optionally wait for the synchronous result.
@@ -30,7 +31,15 @@ def submit_worker_task(
     - tenant_id, case_id, trace_id (required)
     - user_id (optional, for User Request Hops)
     - workflow_id, run_id, ingestion_run_id (optional)
+
+    ``priority`` routes the task to agents-high (default) or agents-low.
     """
+
+    def _resolve_queue(payload: Mapping[str, Any], level: str | None) -> str:
+        candidate = (level or payload.get("priority") or "").strip().lower()
+        if candidate in {"low", "background", "bulk"}:
+            return "agents-low"
+        return "agents-high"
 
     meta = dict(task_payload)
 
@@ -102,9 +111,11 @@ def submit_worker_task(
             "ledger_identifier": ledger_identifier,
             "initial_cost_total": initial_cost_total,
         },
-        queue="agents",
+        queue=_resolve_queue(task_payload, priority),
     )
 
+    # Pre-MVP: We don't strictly enforce task_id determinism here yet as per roadmap
+    # but we must respect the new signature (explicit params)
     async_result = with_scope_apply_async(signature, scope_context)
 
     timeout = timeout_s

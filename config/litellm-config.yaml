@@ -6,14 +6,31 @@ general_settings:
 
 model_list:
   # ---------------------------------------------------------
-  # GOOGLE (AI Studio) - kept for future use
+  # GOOGLE (AI Studio) - Gemini 3 (Preview)
   # ---------------------------------------------------------
-  - model_name: gemini-3.0-pro
+  - model_name: gemini-3-pro-preview
     litellm_params:
       model: gemini/gemini-3-pro-preview
       api_key: os.environ/GEMINI_API_KEY
     model_info:
       fallback_models: [gpt-5.1, claude-4-5-sonnet]
+
+  - model_name: gemini-3-flash-preview
+    litellm_params:
+      model: gemini/gemini-3-flash-preview
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      fallback_models: [gpt-5-nano, claude-haiku-4.5]
+
+  # ---------------------------------------------------------
+  # GOOGLE (AI Studio) - Gemini 2 (Stable)
+  # ---------------------------------------------------------
+  - model_name: gemini-2.0-flash-lite-001
+    litellm_params:
+      model: gemini/gemini-2.0-flash-lite-001
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      fallback_models: [gpt-5-nano, claude-haiku-4.5]
 
   - model_name: gemini-2.5-flash
     litellm_params:

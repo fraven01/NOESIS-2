@@ -43,7 +43,21 @@
       "Bash(git commit:*)",
       "Bash(npm run lint)",
       "Bash(python manage.py:*)",
-      "Bash(gh pr list:*)"
+      "Bash(gh pr list:*)",
+      "Bash(tee:*)",
+      "Bash(npm run win:test:py:*)",
+      "Bash(npm run win:dev:manage:*)",
+      "Bash(for i in {0..9})",
+      "Bash(do docker compose -f docker-compose.dev.yml exec -T db psql -U noesis2 -c \"DROP DATABASE IF EXISTS noesis2_gw$i;\")",
+      "Bash(done)",
+      "Bash(timeout 60 docker compose:*)",
+      "Bash(python3:*)",
+      "Bash(npm run test:py:parallel:*)",
+      "Bash(npm run dev:up:*)",
+      "Bash(npm run dev:manage shell:*)",
+      "Bash(python -m ruff check:*)",
+      "Bash(python test_upload.py:*)",
+      "Bash(npm run test:py:fast:*)"
     ],
     "deny": [],
     "ask": []

@@ -24,6 +24,7 @@ from ai_core.infra import object_store
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits
 from ai_core.schemas import CrawlerRunRequest
+from ai_core.tool_contracts.base import tool_context_from_meta
 
 # NOTE: build_universal_ingestion_graph imported lazily inside run_crawler_runner()
 # to prevent OOM in test environments that mock heavy modules.
@@ -35,7 +36,7 @@ from documents.domain_service import (
 )
 
 import ai_core.services as services_module
-from . import _get_documents_repository, _make_json_safe
+from . import _get_documents_repository, _dump_jsonable
 from .crawler_state_builder import build_crawler_state
 from documents.normalization import normalize_url
 
@@ -51,6 +52,75 @@ class CrawlerRunnerCoordinatorResult:
     idempotency_key: str | None
 
 
+@dataclass(slots=True)
+class CrawlerRunResultSummary:
+    """Minimal result summary for a crawler ingestion run."""
+
+    decision: str | None
+    reason: str | None
+
+    @classmethod
+    def from_output(cls, output: Mapping[str, object]) -> CrawlerRunResultSummary:
+        decision = output.get("decision")
+        reason = output.get("reason")
+        return cls(
+            decision=str(decision) if decision is not None else None,
+            reason=str(reason) if reason is not None else None,
+        )
+
+    def as_mapping(self) -> dict[str, object]:
+        return {"decision": self.decision, "reason": self.reason}
+
+
+@dataclass(slots=True)
+class CrawlerRunState:
+    """Structured state extracted from graph output."""
+
+    artifacts: dict[str, object]
+    transitions: list[object]
+    control: dict[str, object]
+
+    @classmethod
+    def from_result(
+        cls,
+        *,
+        result: Mapping[str, object],
+        output: Mapping[str, object],
+        build: CrawlerStateBundle,
+    ) -> CrawlerRunState:
+        artifacts = result.get("artifacts", {})
+        if not isinstance(artifacts, Mapping):
+            artifacts = {}
+        transitions = output.get("transitions", [])
+        if isinstance(transitions, (list, tuple)):
+            transitions = list(transitions)
+        else:
+            transitions = []
+        control = build.state.control.as_mapping()
+        return cls(
+            artifacts=dict(artifacts),
+            transitions=transitions,
+            control=dict(control),
+        )
+
+    def as_mapping(self) -> dict[str, object]:
+        return {
+            "artifacts": self.artifacts,
+            "transitions": self.transitions,
+            "control": self.control,
+        }
+
+
+@dataclass(slots=True)
+class CrawlerRunEntry:
+    """Structured entry for a completed crawler run."""
+
+    build: CrawlerStateBundle
+    result: CrawlerRunResultSummary
+    state: CrawlerRunState
+    ingestion_run_id: str | None = None
+
+
 def run_crawler_runner(
     *,
     meta: dict[str, Any],
@@ -60,11 +130,11 @@ def run_crawler_runner(
 ) -> CrawlerRunnerCoordinatorResult:
     """Execute the crawler ingestion LangGraph for the provided request."""
 
-    scope_context = meta["scope_context"]
-    scope_meta = scope_context
+    tool_context = tool_context_from_meta(meta)
+    scope_meta = tool_context.scope
     # BREAKING CHANGE (Option A - Strict Separation):
     # Business IDs (case_id, workflow_id) now in business_context
-    business_meta = meta.get("business_context", {})
+    business_meta = tool_context.business
 
     # Lazy import to prevent OOM in test environments
     from ai_core.graphs.technical.universal_ingestion_graph import (
@@ -73,8 +143,18 @@ def run_crawler_runner(
     )
 
     # BREAKING CHANGE (Option A): collection_id goes to business_context, not scope_context
-    if request_model.collection_id:
-        business_meta["collection_id"] = request_model.collection_id
+    if request_model.collection_id and (
+        request_model.collection_id != business_meta.collection_id
+    ):
+        updated_business = business_meta.model_copy(
+            update={"collection_id": request_model.collection_id}
+        )
+        tool_context = tool_context.model_copy(update={"business": updated_business})
+        meta["business_context"] = updated_business.model_dump(
+            mode="json", exclude_none=True
+        )
+        meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
+        business_meta = updated_business
 
     workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
     workflow_resolved = resolve_workflow_id(
@@ -113,14 +193,14 @@ def run_crawler_runner(
 
     # Idempotency: compute a lightweight fingerprint so repeat calls can be flagged.
     # NOTE: This must run BEFORE ID validation to allow early return for idempotent requests
-    idempotency_key = scope_meta.get("idempotency_key")
+    idempotency_key = scope_meta.idempotency_key
     idempotent_flag = False
     fingerprint = None
 
     # Pre-validate required IDs for fingerprinting (full validation happens later)
-    tenant_id_for_fp = scope_meta.get("tenant_id")
+    tenant_id_for_fp = scope_meta.tenant_id
     # BREAKING CHANGE (Option A): case_id from business_context
-    case_id_for_fp = business_meta.get("case_id")  # Optional - may be None
+    case_id_for_fp = business_meta.case_id  # Optional - may be None
 
     if not tenant_id_for_fp:
         raise ValueError("tenant_id is required for idempotency fingerprinting")
@@ -203,29 +283,29 @@ def run_crawler_runner(
     }
 
     for field, error_msg in required_ids.items():
-        if not scope_meta.get(field):
+        if not getattr(scope_meta, field, None):
             raise ValueError(error_msg)
 
     # Extract validated IDs
-    tenant_id = scope_meta["tenant_id"]
+    tenant_id = scope_meta.tenant_id
     # BREAKING CHANGE (Option A): case_id from business_context
-    case_id = business_meta.get("case_id")  # Optional at HTTP level
-    trace_id = scope_meta["trace_id"]
+    case_id = business_meta.case_id  # Optional at HTTP level
+    trace_id = scope_meta.trace_id
 
     # Identity IDs (Pre-MVP ID Contract)
     # HTTP requests have user_id (if authenticated), service_id is None
     # S2S hops (Celery tasks) have service_id, user_id may be present for audit trail
     # Crawler runner accepts both patterns since it can be called from HTTP or Celery
-    _service_id = scope_meta.get("service_id")
-    _user_id = scope_meta.get("user_id")
+    _service_id = scope_meta.service_id
+    _user_id = scope_meta.user_id
 
-    completed_runs: list[dict[str, object]] = []
+    completed_runs: list[CrawlerRunEntry] = []
     # Updated to use UniversalIngestionGraph
     graph_app = build_universal_ingestion_graph()
 
     for build in state_builds:
         # Construct Input for Universal Graph
-        normalized = build.state.get("normalized_document_input")
+        normalized = build.state.normalized_document_input
         input_payload: UniversalIngestionInput = {
             "source": "crawler",
             "mode": "ingest_only",
@@ -295,23 +375,20 @@ def run_crawler_runner(
         # Map to legacy entry format for response builder
         # Synthesize state from output
         # Per contract: artifacts in root state, transitions in output
-        synthesized_state = {
-            "artifacts": result.get("artifacts", {}),
-            "transitions": output.get("transitions", []),
-            "control": build.state.get("control", {}),
-        }
+        synthesized_state = CrawlerRunState.from_result(
+            result=result,
+            output=output,
+            build=build,
+        )
 
         # DO NOT set ingest_action - Universal Graph handles ingestion internally
         # No legacy start_ingestion_run should be triggered
 
-        entry = {
-            "build": build,
-            "result": {
-                "decision": output.get("decision"),
-                "reason": output.get("reason"),
-            },
-            "state": synthesized_state,
-        }
+        entry = CrawlerRunEntry(
+            build=build,
+            result=CrawlerRunResultSummary.from_output(output),
+            state=synthesized_state,
+        )
 
         # Validate and use canonical ingestion_run_id
         output_run_id = output.get("ingestion_run_id")
@@ -328,7 +405,7 @@ def run_crawler_runner(
             )
 
         # Always use canonical ID (coordinator is source of truth)
-        entry["ingestion_run_id"] = canonical_ingestion_run_id
+        entry.ingestion_run_id = canonical_ingestion_run_id
 
         completed_runs.append(entry)
 
@@ -364,7 +441,7 @@ def _build_ingest_specs(
     pairs: list[tuple[CrawlerStateBundle, DocumentIngestSpec]] = []
 
     for build in builds:
-        normalized = build.state.get("normalized_document_input")
+        normalized = build.state.normalized_document_input
         if not isinstance(normalized, Mapping):
             continue
 
@@ -412,9 +489,9 @@ def _apply_ingest_result_to_build(
 ) -> None:
     document_id = str(record.result.document.id)
     build.document_id = document_id
-    build.state["document_id"] = document_id
+    build.state.document_id = document_id
 
-    normalized = build.state.get("normalized_document_input")
+    normalized = build.state.normalized_document_input
     if not isinstance(normalized, Mapping):
         return
 
@@ -434,7 +511,7 @@ def _apply_ingest_result_to_build(
 
     normalized_mutable["ref"] = ref_payload
     normalized_mutable["checksum"] = record.spec.content_hash
-    build.state["normalized_document_input"] = normalized_mutable
+    build.state.normalized_document_input = normalized_mutable
 
 
 def _resolve_tenant(identifier: object):
@@ -451,27 +528,21 @@ def _resolve_tenant(identifier: object):
 
 
 def _detect_guardrail_error(
-    completed_runs: list[dict[str, object]],
+    completed_runs: list[CrawlerRunEntry],
 ) -> dict[str, object] | None:
     for entry in completed_runs:
-        state_data = entry.get("state")
-        if not isinstance(state_data, Mapping):
-            continue
-        artifacts = state_data.get("artifacts")
-        if not isinstance(artifacts, Mapping):
-            continue
         guardrail_decision = _coerce_guardrail_decision(
-            artifacts.get("guardrail_decision")
+            entry.state.artifacts.get("guardrail_decision")
         )
         if guardrail_decision and not guardrail_decision.allowed:
-            return _build_guardrail_denied_payload(entry["build"], guardrail_decision)
+            return _build_guardrail_denied_payload(entry.build, guardrail_decision)
     return None
 
 
 def _build_synchronous_payload(
     request_model: CrawlerRunRequest,
     workflow_id: str,
-    completed_runs: list[dict[str, object]],
+    completed_runs: list[CrawlerRunEntry],
     meta: Mapping[str, Any],
     idempotent_flag: bool,
 ) -> dict[str, object]:
@@ -481,25 +552,21 @@ def _build_synchronous_payload(
     errors_payload: list[dict[str, object]] = []
 
     for entry in completed_runs:
-        build = entry["build"]
-        state_data = entry.get("state")
-        if not isinstance(state_data, Mapping):
-            state_data = {}
-        result_payload = entry.get("result")
-        if not isinstance(result_payload, Mapping):
-            result_payload = {}
+        build = entry.build
+        state_data = entry.state.as_mapping()
+        result_payload = entry.result.as_mapping()
         telemetry_payload.append(_build_fetch_telemetry_entry(build))
         transitions_payload.append(
             {
                 "origin": build.origin,
                 # Single source: state.transitions (populated from output.transitions)
-                "transitions": _make_json_safe(state_data.get("transitions", [])),
+                "transitions": _dump_jsonable(state_data.get("transitions", [])),
             }
         )
         errors_payload.extend(_extract_origin_errors(build, state_data))
 
         # Use existing ingestion_run_id if present (from Universal Graph)
-        ingestion_run_id = entry.get("ingestion_run_id")
+        ingestion_run_id = entry.ingestion_run_id
         if not ingestion_run_id:
             ingestion_run_id = _maybe_start_ingestion(build, state_data, meta)
 
@@ -534,11 +601,10 @@ def _maybe_start_ingestion(
     if build.collection_id:
         payload["collection_id"] = build.collection_id
 
-    scope_context = meta["scope_context"]
-    scope_meta = scope_context
     try:
+        context = tool_context_from_meta(meta)
         response = services_module.start_ingestion_run(
-            payload, dict(meta), scope_meta.get("idempotency_key")
+            payload, dict(meta), context.scope.idempotency_key
         )
     except Exception:
         logger.exception(
@@ -586,7 +652,7 @@ def _extract_origin_errors(
     for error in errors:
         if not isinstance(error, Mapping):
             continue
-        serialised.append({"origin": build.origin, **_make_json_safe(error)})
+        serialised.append({"origin": build.origin, **_dump_jsonable(error)})
     return serialised
 
 
@@ -624,12 +690,12 @@ def _summarize_origin_entry(
         "origin": build.origin,
         "provider": build.provider,
         "document_id": build.document_id,
-        "result": _make_json_safe(result_payload),
-        "control": _make_json_safe(control),
+        "result": _dump_jsonable(result_payload),
+        "control": _dump_jsonable(control),
         "ingest_action": state.get("ingest_action"),
         "gating_score": state.get("gating_score"),
         "graph_run_id": state.get("graph_run_id") or result_payload.get("graph_run_id"),
-        "state": _make_json_safe(summary_state),
+        "state": _dump_jsonable(summary_state),
         "collection_id": build.collection_id,
         "review": build.review,
         "dry_run": build.dry_run,
@@ -662,11 +728,11 @@ def _serialise_guardrail_component(value: object) -> object:
             str(key): _serialise_guardrail_component(value)
             for key, value in candidate.items()
         }
-        return _make_json_safe(processed)
+        return _dump_jsonable(processed)
     if isinstance(candidate, (list, tuple, set)):
         processed_list = [_serialise_guardrail_component(item) for item in candidate]
-        return _make_json_safe(processed_list)
-    return _make_json_safe(candidate)
+        return _dump_jsonable(processed_list)
+    return _dump_jsonable(candidate)
 
 
 def _serialise_guardrail_attributes(
@@ -711,7 +777,7 @@ def _build_guardrail_denied_payload(
     decision: guardrails_middleware.GuardrailDecision,
 ) -> dict[str, object]:
     limits = {}
-    guardrail_state = build.state.get("guardrails")
+    guardrail_state = build.state.guardrails
     if isinstance(guardrail_state, Mapping):
         limits = guardrail_state.get("limits") or {}
     return {

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
+import io
 import inspect
 import math
 import time
 from functools import wraps
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional
+import logging
+import sys
 from uuid import UUID
 
 from common.logging import get_logger
@@ -49,6 +53,49 @@ def log_extra(
         log_extra_exit(**dict(exit))
 
 
+@contextlib.contextmanager
+def suppress_logging() -> Iterable[None]:
+    root_logger = logging.getLogger()
+    swapped: list[tuple[logging.StreamHandler, object]] = []
+    previous_raise: bool = logging.raiseExceptions
+    logging.raiseExceptions = False
+    previous_stderr = sys.stderr
+    stderr_buffer = io.StringIO()
+    sys.stderr = stderr_buffer
+    for handler in root_logger.handlers:
+        if not isinstance(handler, logging.StreamHandler):
+            continue
+        if getattr(handler, "_noesis_file_handler", False):
+            continue
+        stream = getattr(handler, "stream", None)
+        if not hasattr(handler, "setStream"):
+            continue
+        if stream is None:
+            continue
+        swapped.append((handler, stream))
+        try:
+            handler.setStream(io.StringIO())
+        except ValueError:
+            handler.stream = io.StringIO()
+    try:
+        yield
+    finally:
+        sys.stderr = previous_stderr
+        logging.raiseExceptions = previous_raise
+        for handler, stream in swapped:
+            try:
+                if stream is None or getattr(stream, "closed", False):
+                    target = sys.stderr
+                else:
+                    target = stream
+                try:
+                    handler.setStream(target)
+                except ValueError:
+                    handler.stream = target
+            except Exception:
+                pass
+
+
 def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator emitting structured start/stop logs for the wrapped callable."""
 
@@ -61,14 +108,14 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             start = time.perf_counter()
             entry_token = _ENTRY_EXTRA.set({})
             exit_token = _EXIT_EXTRA.set({})
-            bound = signature.bind_partial(*args, **kwargs)
-            entry_fields = _coerce_fields(_extract_entry_fields(bound.arguments))
-            extra_entry = _ENTRY_EXTRA.get() or {}
-            if extra_entry:
-                entry_fields.update(_coerce_fields(extra_entry))
-            workflow_label = entry_fields.get("workflow_id")
-            tracer = trace.get_tracer(func.__module__ or __name__)
             try:
+                bound = signature.bind_partial(*args, **kwargs)
+                entry_fields = _coerce_fields(_extract_entry_fields(bound.arguments))
+                extra_entry = _ENTRY_EXTRA.get() or {}
+                if extra_entry:
+                    entry_fields.update(_coerce_fields(extra_entry))
+                workflow_label = entry_fields.get("workflow_id")
+                tracer = trace.get_tracer(func.__module__ or __name__)
                 with tracer.start_as_current_span(event) as span:
                     _set_span_attributes(span, entry_fields)
                     logger.info(event, phase="start", **entry_fields)
@@ -357,5 +404,6 @@ __all__ = [
     "log_extra",
     "log_extra_entry",
     "log_extra_exit",
+    "suppress_logging",
     "uri_kind_from_uri",
 ]

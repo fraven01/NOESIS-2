@@ -21,7 +21,7 @@ Operativer Leitfaden für den Gemini-Code-Agenten in NOESIS 2. **Alle Contracts,
 - Mandantenfähige Django-Plattform mit LangGraph-Agenten und Celery-Workern (`agents`, `ingestion`).
 - RAG-Store: PostgreSQL + `pgvector`; LLM-Zugriff über LiteLLM (Gemini, Vertex AI, weitere Modelle).
 - Observability: Langfuse Traces + ELK Logs; korrelieren immer über `trace_id`.
-- Vollständige Architektur: [docs/architektur/overview.md](docs/architektur/overview.md).
+- Vollständige Architektur: [docs/architecture/overview.md](docs/architecture/overview.md).
 
 ## Arbeitsweise & Commands (Pointer)
 

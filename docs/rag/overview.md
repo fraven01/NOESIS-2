@@ -65,7 +65,7 @@ Alle drei Scopes landen als Trace-/Event-Tags in Langfuse, sodass komplette Case
 
 Wir unterscheiden künftig drei orthogonale Dimensionen, die Einfluss auf den Vektor-Speicher haben: (1) **Tenant** bzw. gebuchtes Service-Level, (2) **Prozesskontext** (z. B. Draft, Review, Final) und (3) **Dokumentklasse** (z. B. juristische Dokumente, technische Handbücher). Das aktuelle Setup unterstützt zwar Tenants über `tenant_id`, koppelt aber alle weiteren Dimensionen an ein einziges Embedding-Profil (`vector(1536)` + `oai-embed-large`).
 
-> **Begriff Vector Space:** Ein Vector Space ist die kleinste persistente Einheit des RAG-Stores mit fester `embedding_dim`, eindeutigem Backend (z. B. pgvector, Faiss) und eigener Tabelle bzw. eigenem Schema. Jeder Vector Space korrespondiert mit einem Eintrag in `RAG_VECTOR_STORES` und den Staging-/Prod-Datenpfaden aus der [Architekturübersicht](../architektur/overview.md#datenpfade-und-tenancy). Damit verankern wir „Dimension ist physische Eigenschaft des Stores“ als Schnittstellenvertrag; Details zum Ingestionspfad stehen im [RAG-Store-Kapitel](ingestion.md).
+> **Begriff Vector Space:** Ein Vector Space ist die kleinste persistente Einheit des RAG-Stores mit fester `embedding_dim`, eindeutigem Backend (z. B. pgvector, Faiss) und eigener Tabelle bzw. eigenem Schema. Jeder Vector Space korrespondiert mit einem Eintrag in `RAG_VECTOR_STORES` und den Staging-/Prod-Datenpfaden aus der [Architekturübersicht](../architecture/overview.md#datenpfade-und-tenancy). Damit verankern wir „Dimension ist physische Eigenschaft des Stores“ als Schnittstellenvertrag; Details zum Ingestionspfad stehen im [RAG-Store-Kapitel](ingestion.md).
 
 Für ein skalierbares Zielbild dokumentieren wir folgende Anpassungen:
 

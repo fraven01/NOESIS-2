@@ -10,7 +10,7 @@ ai_core.graphs package.
 
 We keep graph imports lazy to avoid pulling heavy dependency chains during
 module import, while still preserving the legacy package-level aliases that
-callers rely on (e.g. ``from ai_core.graphs import info_intake``).
+callers rely on.
 """
 
 _LAZY_MODULES: dict[str, str] = {
@@ -18,7 +18,6 @@ _LAZY_MODULES: dict[str, str] = {
     "cost_tracking": "ai_core.graphs.technical.cost_tracking",
     "document_service": "ai_core.graphs.technical.document_service",
     "framework_analysis_graph": "ai_core.graphs.business.framework_analysis_graph",
-    "info_intake": "ai_core.graphs.info_intake",
     "retrieval_augmented_generation": "ai_core.graphs.technical.retrieval_augmented_generation",
     "transition_contracts": "ai_core.graphs.transition_contracts",
     "universal_ingestion_graph": "ai_core.graphs.technical.universal_ingestion_graph",
@@ -47,7 +46,6 @@ if TYPE_CHECKING:
         collection_search,  # noqa: F401
         cost_tracking,  # noqa: F401
         document_service,  # noqa: F401
-        info_intake,  # noqa: F401
         retrieval_augmented_generation,  # noqa: F401
         universal_ingestion_graph,  # noqa: F401
     )

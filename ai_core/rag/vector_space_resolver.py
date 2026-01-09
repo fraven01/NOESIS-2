@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from common.logging import get_log_context, get_logger
 
@@ -12,6 +13,7 @@ from .embedding_config import (
     EmbeddingConfiguration,
     EmbeddingProfileConfig,
     VectorSpaceConfig,
+    build_vector_space_id,
     get_embedding_configuration,
 )
 
@@ -44,6 +46,23 @@ class VectorSpaceResolution:
 
     profile: EmbeddingProfileConfig
     vector_space: VectorSpaceConfig
+
+
+def _derive_shadow_schema(base_schema: str, profile_id: str, model_version: str) -> str:
+    if not model_version or model_version == "v1":
+        return base_schema
+    slug = re.sub(r"[^a-z0-9_]+", "_", f"{profile_id}_{model_version}".lower()).strip(
+        "_"
+    )
+    if not slug:
+        return base_schema
+    max_len = 63
+    separator = "_"
+    available = max_len - len(separator) - len(slug)
+    if available <= 0:
+        return slug[:max_len]
+    base = base_schema[:available]
+    return f"{base}{separator}{slug}"
 
 
 def resolve_vector_space_full(profile_id: str) -> VectorSpaceResolution:
@@ -80,7 +99,18 @@ def resolve_vector_space_full(profile_id: str) -> VectorSpaceResolution:
             message,
         )
 
-    resolution = VectorSpaceResolution(profile=profile, vector_space=space)
+    vector_space_id = build_vector_space_id(profile.id, profile.model_version)
+    vector_space_schema = _derive_shadow_schema(
+        space.schema, profile.id, profile.model_version
+    )
+    resolved_space = VectorSpaceConfig(
+        id=vector_space_id,
+        backend=space.backend,
+        schema=vector_space_schema,
+        dimension=space.dimension,
+    )
+
+    resolution = VectorSpaceResolution(profile=profile, vector_space=resolved_space)
     _emit_vector_space_resolution(resolution)
     return resolution
 
@@ -104,9 +134,9 @@ def _emit_vector_space_resolution(resolution: VectorSpaceResolution) -> None:
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
+        metadata["trace_id"] = str(trace_id)
         record_span(
             "rag.vector_space.resolve",
-            trace_id=str(trace_id),
             attributes=metadata,
         )
 

@@ -8,11 +8,23 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from pydantic import ValidationError
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
+from ai_core.contracts.business import BusinessContext
 from ai_core.ids import (
     coerce_trace_id,
     normalize_request,
 )
-from ai_core.infra.resp import apply_std_headers
+from ai_core.infra.resp import apply_std_headers, build_tool_error_payload
+from common.constants import (
+    META_CASE_ID_KEY,
+    META_IDEMPOTENCY_KEY,
+    META_INGESTION_RUN_ID_KEY,
+    META_INVOCATION_ID_KEY,
+    META_KEY_ALIAS_KEY,
+    META_RUN_ID_KEY,
+    META_TENANT_ID_KEY,
+    META_TRACE_ID_KEY,
+    META_WORKFLOW_ID_KEY,
+)
 from customers.tenant_context import TenantRequiredError
 
 
@@ -20,16 +32,16 @@ class RequestContextMiddleware:
     """Bind request metadata to structlog context and response headers."""
 
     TRACEPARENT_HEADER = "HTTP_TRACEPARENT"
-    TRACE_ID_HEADER = "HTTP_X_TRACE_ID"
+    TRACE_ID_HEADER = META_TRACE_ID_KEY
 
-    CASE_ID_HEADER = "HTTP_X_CASE_ID"
-    TENANT_ID_HEADER = "HTTP_X_TENANT_ID"
-    KEY_ALIAS_HEADER = "HTTP_X_KEY_ALIAS"
-    IDEMPOTENCY_KEY_HEADER = "HTTP_IDEMPOTENCY_KEY"
-    INVOCATION_ID_HEADER = "HTTP_X_INVOCATION_ID"
-    RUN_ID_HEADER = "HTTP_X_RUN_ID"
-    INGESTION_RUN_ID_HEADER = "HTTP_X_INGESTION_RUN_ID"
-    WORKFLOW_ID_HEADER = "HTTP_X_WORKFLOW_ID"
+    CASE_ID_HEADER = META_CASE_ID_KEY
+    TENANT_ID_HEADER = META_TENANT_ID_KEY
+    KEY_ALIAS_HEADER = META_KEY_ALIAS_KEY
+    IDEMPOTENCY_KEY_HEADER = META_IDEMPOTENCY_KEY
+    INVOCATION_ID_HEADER = META_INVOCATION_ID_KEY
+    RUN_ID_HEADER = META_RUN_ID_KEY
+    INGESTION_RUN_ID_HEADER = META_INGESTION_RUN_ID_KEY
+    WORKFLOW_ID_HEADER = META_WORKFLOW_ID_KEY
     FORWARDED_FOR_HEADER = "HTTP_X_FORWARDED_FOR"
     REMOTE_ADDR_HEADER = "REMOTE_ADDR"
 
@@ -50,16 +62,24 @@ class RequestContextMiddleware:
                 if "Case header" in error_msg
                 else "invalid_request"
             )
-            return JsonResponse({"detail": error_msg, "code": error_code}, status=400)
+            payload = build_tool_error_payload(
+                message=error_msg,
+                status_code=400,
+                code=error_code,
+            )
+            return JsonResponse(payload, status=400)
         except ValidationError as exc:
             # Handle Pydantic validation errors from ScopeContext
             # We take the first error message for simplicity
             error_msg = str(exc)
             if exc.errors():
                 error_msg = exc.errors()[0]["msg"]
-            return JsonResponse(
-                {"detail": error_msg, "code": "invalid_request"}, status=400
+            payload = build_tool_error_payload(
+                message=error_msg,
+                status_code=400,
+                code="invalid_request",
             )
+            return JsonResponse(payload, status=400)
         else:
             bind_contextvars(**meta["log_context"])
 
@@ -120,13 +140,17 @@ class RequestContextMiddleware:
         if client_ip:
             log_context["client.ip"] = client_ip
 
+        business_context = BusinessContext(case_id=case_id)
+        tool_context = scope_context.to_tool_context(business=business_context)
         response_meta: dict[str, Any] = {
             "scope_context": scope_context.model_dump(mode="json"),
+            "business_context": business_context.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
             "key_alias": key_alias,
             "traceparent": traceparent,
         }
-        if case_id:
-            response_meta["business_context"] = {"case_id": case_id}
         if span_id:
             response_meta["span_id"] = span_id
 
@@ -134,7 +158,12 @@ class RequestContextMiddleware:
 
     @staticmethod
     def _tenant_required_response(exc: TenantRequiredError) -> HttpResponse:
-        return JsonResponse({"detail": str(exc)}, status=403)
+        payload = build_tool_error_payload(
+            message=str(exc),
+            status_code=403,
+            code="tenant_not_found",
+        )
+        return JsonResponse(payload, status=403)
 
     def _resolve_trace_and_span(self, request: HttpRequest) -> tuple[str, str | None]:
         """Resolve trace and span IDs from headers, query params, and body."""

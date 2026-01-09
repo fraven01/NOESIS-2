@@ -15,43 +15,35 @@ This audit identifies inconsistencies between implemented Pydantic contracts and
 
 ## Critical Findings
 
-### 1. Chunk Schema Non-Compliance ⚠️ DEFERRED
+### 1. Chunk Schema Compliance ✅ RESOLVED (2026-01-02)
 
 **Location**: [`ai_core/rag/schemas.py`](../../ai_core/rag/schemas.py:1-15)
 
-**Issue**: The `Chunk` schema uses Python `@dataclass` instead of Pydantic `BaseModel`.
+**Issue**: The `Chunk` schema previously used Python `@dataclass` instead of Pydantic `BaseModel`.
 
 **AGENTS.md Requirement**:
 > Tool-Hüllmodelle basieren auf Pydantic `BaseModel` mit `frozen=True` (immutable)
 
-**Current Implementation** (retained):
+**Current Implementation**:
 
 ```python
-@dataclass
-class Chunk:
+class Chunk(BaseModel):
     """A chunk of knowledge used for retrieval."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     content: str
-    meta: Dict[str, Any]
-    embedding: Optional[List[float]] = None
-    parents: Optional[Dict[str, Dict[str, Any]]] = None
+    meta: dict[str, Any]
+    embedding: list[float] | None = None
+    parents: dict[str, dict[str, Any]] | None = None
 ```
 
-**Migration Attempted & Reverted** (2025-12-15):
+**Migration Notes**:
 
-> [!CAUTION]
-> Pydantic migration was attempted but reverted due to breaking changes:
->
-> 1. **50+ call sites** use positional arguments: `Chunk("content", {"meta": ...})`
-> 2. **vector_client.py:529** assigns `chunk.meta = new_meta` (requires mutability)
-> 3. Pydantic `BaseModel` requires keyword arguments and `frozen=True` prevents mutation
+- Call sites migrated to keyword-only construction (Pydantic v2 requirement).
+- Chunk metadata updates reconstruct a new `Chunk` instead of mutating `Chunk.meta` in-place (see `ai_core/rag/vector_client.py`).
 
-**Recommendation for Future**:
-
-- Create a `ChunkV2` Pydantic model for new code paths
-- Gradually migrate callers during refactoring sprints
-- Keep `Chunk` dataclass until all callers are migrated
-
-**Status**: ⚠️ DEFERRED - Retained as `@dataclass` due to extensive codebase usage patterns
+**Status**: ✅ COMPLIANT (hard break applied; legacy dataclass removed)
 
 ---
 
@@ -72,7 +64,7 @@ class Chunk:
 
 ### 3. ~~Upload Ingestion Graph Documentation Gap~~ ✅ RESOLVED (2025-12-15)
 
-**Issue**: ~~[`ai_core/graphs/upload_ingestion_graph.py`](../../ai_core/graphs/upload_ingestion_graph.py) implements a complete LangGraph flow but is not documented.~~
+**Issue**: ~~[`ai_core/graphs/technical/universal_ingestion_graph.py`](../../ai_core/graphs/technical/universal_ingestion_graph.py) implements a complete LangGraph flow but is not documented.~~
 
 **Resolution**: Added comprehensive documentation in [`docs/rag/ingestion.md`](../../docs/rag/ingestion.md#upload-ingestion-graph) (Lines 33-133):
 
@@ -143,19 +135,16 @@ class Chunk:
 - `invocation_id` (Pflicht für Tools)
 - Genau eine Laufzeit-ID: `run_id` XOR `ingestion_run_id`
 
-### Upload Ingestion Graph
+### Universal Ingestion Graph (Current)
 
 **State Fields**:
 
 ```python
-trace_id: NotRequired[str]
-case_id: NotRequired[str]
+context: dict[str, Any]  # Serialized ToolContext from invocation
+tool_context: ToolContext | None
 ```
 
-**Issue**: `tenant_id` not in state (passed via runtime context)
-**Compliance**: ⚠️ PARTIAL - Context-based propagation, not explicit in state
-
-**Recommendation**: Document context injection pattern in graph docs
+**Compliance**: PASS - Context injected via ToolContext and stored in state
 
 ### External Knowledge Graph
 
@@ -166,6 +155,25 @@ context: dict[str, Any]  # Tenant ID, Trace ID, etc.
 ```
 
 **Compliance**: ✅ PASS - Context explicitly captures all IDs
+
+### Canonical Runtime Context Injection Pattern
+
+**Goal**: Ensure tenant/trace/run IDs are never implicit knowledge inside graphs.
+
+**Pattern**:
+
+1. Boundary builds meta via `ai_core/graph/schemas.py:normalize_meta`.
+2. Graph entry parses a single `ToolContext` via
+   `ai_core/tool_contracts/base.py:tool_context_from_meta`.
+3. The validated context is stored in state (e.g. `state["tool_context"]`).
+4. Nodes read IDs from `context.scope.*` and `context.business.*` only.
+
+**Pointers**:
+- `ai_core/graph/schemas.py:normalize_meta`
+- `ai_core/contracts/scope.py:ScopeContext`
+- `ai_core/contracts/business.py:BusinessContext`
+- `ai_core/tool_contracts/base.py:tool_context_from_meta`
+- `ai_core/graphs/README.md` (Context & Identity)
 
 ---
 
@@ -250,7 +258,7 @@ No obsolete files identified for deletion in this audit. All scanned docs/ files
 ### Low Priority
 
 7. ~~**[LOW]** Create `docs/development/rag-tools-workbench.md`~~ ✅ DONE
-8. **[LOW]** Add ID propagation pattern documentation for graphs
+8. ~~**[LOW]** Add ID propagation pattern documentation for graphs~~ DONE
 
 ---
 

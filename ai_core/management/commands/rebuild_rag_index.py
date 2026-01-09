@@ -243,6 +243,31 @@ class Command(BaseCommand):
         cur.execute(
             sql.SQL(
                 """
+                ALTER TABLE {chunks}
+                    ADD COLUMN IF NOT EXISTS text_norm TEXT
+                        GENERATED ALWAYS AS (lower(regexp_replace(text, '\\s+', ' ', 'g'))) STORED
+                """
+            ).format(chunks=chunks)
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {chunks}
+                    ADD COLUMN IF NOT EXISTS text_tsv tsvector
+                        GENERATED ALWAYS AS (
+                            to_tsvector(
+                                'simple',
+                                lower(regexp_replace(text, '\\s+', ' ', 'g'))
+                            )
+                        ) STORED
+                """
+            ).format(chunks=chunks)
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
                 CREATE TABLE IF NOT EXISTS {embeddings} (
                     id UUID PRIMARY KEY,
                     chunk_id UUID NOT NULL REFERENCES {chunks}(id) ON DELETE CASCADE,
@@ -250,6 +275,24 @@ class Command(BaseCommand):
                 )
                 """
             ).format(embeddings=embeddings, chunks=chunks)
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS chunks_text_norm_trgm_idx
+                    ON {chunks} USING GIN (text_norm gin_trgm_ops)
+                """
+            ).format(chunks=chunks)
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS chunks_text_tsv_idx
+                    ON {chunks} USING GIN (text_tsv)
+                """
+            ).format(chunks=chunks)
         )
 
         cur.execute(

@@ -1,8 +1,15 @@
 from unittest.mock import patch
 import pytest
+from django.conf import settings
 from rest_framework.test import APIClient
 from django.test import override_settings
 from types import SimpleNamespace
+
+REST_FRAMEWORK_OVERRIDES = {
+    **settings.REST_FRAMEWORK,
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_PERMISSION_CLASSES": [],
+}
 
 
 @pytest.fixture
@@ -26,12 +33,7 @@ def _score_results_payload() -> dict:
     }
 
 
-@override_settings(
-    REST_FRAMEWORK={
-        "DEFAULT_AUTHENTICATION_CLASSES": [],
-        "DEFAULT_PERMISSION_CLASSES": [],
-    }
-)
+@override_settings(REST_FRAMEWORK=REST_FRAMEWORK_OVERRIDES)
 @patch("llm_worker.views.TenantContext")
 def test_run_task_requires_tenant_header(mock_tenant_context, db, api_client):
     mock_tenant_context.from_request.return_value = None
@@ -43,12 +45,7 @@ def test_run_task_requires_tenant_header(mock_tenant_context, db, api_client):
     assert "X-Tenant-ID header is required" in response.json()["detail"]
 
 
-@override_settings(
-    REST_FRAMEWORK={
-        "DEFAULT_AUTHENTICATION_CLASSES": [],
-        "DEFAULT_PERMISSION_CLASSES": [],
-    }
-)
+@override_settings(REST_FRAMEWORK=REST_FRAMEWORK_OVERRIDES)
 @patch("llm_worker.views.TenantContext")
 @patch("llm_worker.views.submit_worker_task")
 def test_run_task_returns_success(mock_submit, mock_tenant_context, db, api_client):
@@ -73,12 +70,7 @@ def test_run_task_returns_success(mock_submit, mock_tenant_context, db, api_clie
     assert data["task_id"] == "task-1"
 
 
-@override_settings(
-    REST_FRAMEWORK={
-        "DEFAULT_AUTHENTICATION_CLASSES": [],
-        "DEFAULT_PERMISSION_CLASSES": [],
-    }
-)
+@override_settings(REST_FRAMEWORK=REST_FRAMEWORK_OVERRIDES)
 @patch("llm_worker.views.TenantContext")
 @patch(
     "llm_worker.views.submit_worker_task", return_value=({"task_id": "task-1"}, False)

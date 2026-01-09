@@ -5,29 +5,65 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Tuple, Literal
 
 
-from ai_core.contracts.audit_meta import audit_meta_from_scope
-from ai_core.contracts.scope import ScopeContext
+from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.graphs.transition_contracts import GraphTransition
 from ai_core.infra.observability import observe_span
 from ai_core.infra.prompts import load as load_prompt
 from ai_core.llm import client as llm_client
 from ai_core.nodes import retrieve
 from ai_core.tool_contracts import ToolContext
+from pydantic import BaseModel, ConfigDict, ValidationError
 from ai_core.tools.framework_contracts import (
+    ComponentLocation,
+    FrameworkAnalysisDraft,
+    FrameworkAnalysisDraftMetadata,
     FrameworkAnalysisInput,
-    FrameworkAnalysisMetadata,
-    FrameworkAnalysisOutput,
     FrameworkStructure,
 )
 from common.logging import get_logger
-from documents.services.framework_service import persist_profile
 
 logger = get_logger(__name__)
 
 StateMapping = Dict[str, Any]
+
+FRAMEWORK_ANALYSIS_SCHEMA_ID = "noesis.graphs.framework_analysis"
+FRAMEWORK_ANALYSIS_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
+FRAMEWORK_ANALYSIS_IO_VERSION_STRING = FRAMEWORK_ANALYSIS_IO_VERSION.as_string()
+
+
+class FrameworkAnalysisGraphInput(BaseModel):
+    """Boundary input model for the framework analysis graph."""
+
+    schema_id: Literal[FRAMEWORK_ANALYSIS_SCHEMA_ID] = FRAMEWORK_ANALYSIS_SCHEMA_ID
+    schema_version: Literal[FRAMEWORK_ANALYSIS_IO_VERSION_STRING] = (
+        FRAMEWORK_ANALYSIS_IO_VERSION_STRING
+    )
+    input: FrameworkAnalysisInput
+    tool_context: ToolContext
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class FrameworkAnalysisGraphOutput(FrameworkAnalysisDraft):
+    """Boundary output model for the framework analysis graph."""
+
+    schema_id: Literal[FRAMEWORK_ANALYSIS_SCHEMA_ID] = FRAMEWORK_ANALYSIS_SCHEMA_ID
+    schema_version: Literal[FRAMEWORK_ANALYSIS_IO_VERSION_STRING] = (
+        FRAMEWORK_ANALYSIS_IO_VERSION_STRING
+    )
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+FRAMEWORK_ANALYSIS_IO = GraphIOSpec(
+    schema_id=FRAMEWORK_ANALYSIS_SCHEMA_ID,
+    version=FRAMEWORK_ANALYSIS_IO_VERSION,
+    input_model=FrameworkAnalysisGraphInput,
+    output_model=FrameworkAnalysisGraphOutput,
+)
 
 
 @dataclass(frozen=True)
@@ -115,8 +151,10 @@ class FrameworkAnalysisGraph:
 
     Node sequence:
     detect_type_and_gremium → extract_toc → locate_components →
-    validate_components → assemble_profile → persist_profile → finish
+    validate_components → assemble_profile → finish
     """
+
+    io_spec: GraphIOSpec = FRAMEWORK_ANALYSIS_IO
 
     def __init__(self) -> None:
         """Initialize graph with default dependencies."""
@@ -130,7 +168,6 @@ class FrameworkAnalysisGraph:
             GraphNode("locate_components", self._locate_components),
             GraphNode("validate_components", self._validate_components),
             GraphNode("assemble_profile", self._assemble_profile),
-            GraphNode("persist_profile", self._persist_profile),
             GraphNode("finish", self._finish),
         ]
 
@@ -138,8 +175,10 @@ class FrameworkAnalysisGraph:
         self,
         context: ToolContext,
         input_params: FrameworkAnalysisInput,
-    ) -> FrameworkAnalysisOutput:
+    ) -> FrameworkAnalysisDraft:
         """Execute the framework analysis graph.
+
+        Returns a draft result only; persistence happens outside the graph.
 
         BREAKING CHANGE (Option A - Strict Separation):
         Signature changed to accept ToolContext instead of individual fields.
@@ -201,17 +240,29 @@ class FrameworkAnalysisGraph:
                 break
 
         # Build output from state
-        output = FrameworkAnalysisOutput(
-            profile_id=state["profile_id"],
-            version=state["version"],
+        analysis_metadata = FrameworkAnalysisDraftMetadata(
+            detected_type=state["agreement_type"],
+            type_confidence=state["type_confidence"],
+            gremium_name_raw=state["gremium_name_raw"],
             gremium_identifier=state["gremium_identifier"],
+            completeness_score=state["completeness_score"],
+            missing_components=state["missing_components"],
+        )
+
+        output = FrameworkAnalysisDraft(
+            gremium_identifier=state["gremium_identifier"],
+            gremium_name_raw=state["gremium_name_raw"],
+            agreement_type=state["agreement_type"],
+            document_collection_id=state["document_collection_id"],
+            document_id=state.get("document_id"),
             structure=FrameworkStructure(**state["assembled_structure"]),
             completeness_score=state["completeness_score"],
             missing_components=state["missing_components"],
             hitl_required=state["hitl_required"],
             hitl_reasons=state.get("hitl_reasons", []),
-            idempotent=True,
-            analysis_metadata=FrameworkAnalysisMetadata(**state["analysis_metadata"]),
+            analysis_metadata=analysis_metadata,
+            confidence_threshold=state["confidence_threshold"],
+            force_reanalysis=state["force_reanalysis"],
         )
 
         logger.info(
@@ -219,9 +270,7 @@ class FrameworkAnalysisGraph:
             extra={
                 "tenant_id": state["tenant_id"],
                 "trace_id": state["trace_id"],
-                "profile_id": str(output.profile_id),
                 "gremium_identifier": output.gremium_identifier,
-                "version": output.version,
                 "completeness_score": output.completeness_score,
                 "hitl_required": output.hitl_required,
                 "nodes_executed": len(state["transitions"]),
@@ -229,6 +278,24 @@ class FrameworkAnalysisGraph:
         )
 
         return output
+
+    def invoke(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        """Execute the graph via the versioned boundary contract."""
+        try:
+            graph_input = FrameworkAnalysisGraphInput.model_validate(state)
+        except ValidationError as exc:
+            msg = f"Invalid graph input: {exc.errors()}"
+            logger.error(msg)
+            return {"error": msg}
+
+        output = self.run(
+            context=graph_input.tool_context,
+            input_params=graph_input.input,
+        )
+        graph_output = FrameworkAnalysisGraphOutput.model_validate(
+            output.model_dump(mode="json")
+        )
+        return graph_output.model_dump(mode="json")
 
     @observe_span(name="framework.detect_type_and_gremium")
     def _detect_type_and_gremium(
@@ -451,27 +518,10 @@ class FrameworkAnalysisGraph:
         # Simplified validation based on confidence
         validations = {}
         for component, location in state.get("located_components", {}).items():
-            confidence = location.get("confidence", 0.0)
-            found = location.get("location") != "not_found"
-
-            if not found:
-                validations[component] = {
-                    "plausible": False,
-                    "confidence": 0.0,
-                    "reason": "Not found",
-                }
-            elif confidence >= 0.8:
-                validations[component] = {
-                    "plausible": True,
-                    "confidence": confidence,
-                    "reason": "High confidence",
-                }
-            else:
-                validations[component] = {
-                    "plausible": True,
-                    "confidence": confidence,
-                    "reason": "Moderate confidence",
-                }
+            resolved = ComponentLocation.from_partial(location)
+            validations[component] = resolved.validation_summary(
+                high_confidence_threshold=0.8
+            )
 
         state["validations"] = validations
 
@@ -507,45 +557,25 @@ class FrameworkAnalysisGraph:
             located = state["located_components"].get(component, {})
             validated = state["validations"].get(component, {})
 
-            if located.get("location") == "not_found":
+            resolved = ComponentLocation.from_partial(located)
+            assembled_location, validation_failed = resolved.to_assembled(
+                validation=validated
+            )
+
+            if not resolved.is_found():
                 missing.append(component)
-                assembled[component] = {
-                    "location": "not_found",
-                    "outline_path": None,
-                    "heading": None,
-                    "chunk_ids": [],
-                    "page_numbers": [],
-                    "confidence": 0.0,
-                    "validated": False,
-                    "validation_notes": "Not found",
-                }
+                assembled[component] = assembled_location.model_dump()
                 continue
 
-            merged = {
-                "location": located.get("location"),
-                "outline_path": located.get("outline_path"),
-                "heading": located.get("heading"),
-                "chunk_ids": located.get("chunk_ids", []),
-                "page_numbers": located.get("page_numbers", []),
-                "confidence": located.get("confidence", 0.0),
-                "annex_root": located.get("annex_root"),
-                "subannexes": located.get("subannexes", []),
-            }
-
-            if not validated.get("plausible", True):
+            if validation_failed:
                 hitl_required = True
                 hitl_reasons.append(f"{component}: Validation failed")
-                merged["validated"] = False
-                merged["validation_notes"] = validated.get("reason", "")
-            else:
-                merged["validated"] = True
-                merged["validation_notes"] = validated.get("reason", "Plausible")
 
-            if merged["confidence"] < CONFIDENCE_THRESHOLD:
+            if resolved.is_low_confidence(CONFIDENCE_THRESHOLD):
                 hitl_required = True
                 hitl_reasons.append(f"{component}: Low confidence")
 
-            assembled[component] = merged
+            assembled[component] = assembled_location.model_dump()
 
         completeness_score = (
             len([c for c in assembled.values() if c["location"] != "not_found"]) / 4.0
@@ -575,65 +605,6 @@ class FrameworkAnalysisGraph:
                 decision="profile_assembled",
                 reason=f"{completeness_score:.0%} complete",
                 severity="warning" if hitl_required else "info",
-            ),
-            True,
-        )
-
-    @observe_span(name="framework.persist_profile")
-    def _persist_profile(self, state: StateMapping) -> Tuple[GraphTransition, bool]:
-        """Persist FrameworkProfile to database."""
-        tenant_schema = state["tenant_schema"]
-        gremium_identifier = state["gremium_identifier"]
-        force_reanalysis = state["force_reanalysis"]
-
-        # Build audit_meta from scope (Pre-MVP ID Contract)
-        scope_context: Optional[ScopeContext] = state.get("scope_context")
-        audit_meta_dict: Optional[Dict[str, Any]] = None
-        if scope_context:
-            audit_meta = audit_meta_from_scope(
-                scope_context,
-                created_by_user_id=scope_context.user_id,
-            )
-            audit_meta_dict = audit_meta.model_dump(mode="json")
-
-        profile = persist_profile(
-            tenant_schema=tenant_schema,
-            gremium_identifier=gremium_identifier,
-            gremium_name_raw=state["gremium_name_raw"],
-            agreement_type=state["agreement_type"],
-            structure=state["assembled_structure"],
-            document_collection_id=state["document_collection_id"],
-            document_id=state.get("document_id"),
-            trace_id=state.get("trace_id"),
-            force_reanalysis=force_reanalysis,
-            audit_meta=audit_meta_dict,  # Pre-MVP ID Contract: traceability
-            analysis_metadata={
-                "detected_type": state["agreement_type"],
-                "type_confidence": state["type_confidence"],
-                "gremium_name_raw": state["gremium_name_raw"],
-                "gremium_identifier": gremium_identifier,
-                "completeness_score": state["completeness_score"],
-                "missing_components": state["missing_components"],
-                "model_version": "framework_analysis_v1",
-            },
-            metadata={
-                "confidence_threshold": state["confidence_threshold"],
-                "hitl_required": state["hitl_required"],
-                "hitl_reasons": state["hitl_reasons"],
-            },
-            completeness_score=state["completeness_score"],
-            missing_components=state["missing_components"],
-        )
-
-        # Update state with persisted data
-        state["profile_id"] = profile.id
-        state["version"] = profile.version
-        state["analysis_metadata"] = profile.analysis_metadata
-
-        return (
-            _transition(
-                decision="profile_persisted",
-                reason=f"Persisted {gremium_identifier} v{profile.version}",
             ),
             True,
         )

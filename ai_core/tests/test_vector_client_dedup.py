@@ -4,12 +4,11 @@ import hashlib
 
 import pytest
 
-from ai_core.rag.vector_client import (
-    build_dedup_signatures,
+from ai_core.rag.deduplication import (
     compute_near_duplicate_signature,
-    extract_primary_text_hash,
     match_near_duplicate,
 )
+from ai_core.rag.hashing import build_dedup_signatures, extract_primary_text_hash
 
 
 def _hash_text(value: str) -> str:

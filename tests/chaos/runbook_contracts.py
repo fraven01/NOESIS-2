@@ -18,7 +18,6 @@ from tests.chaos.redis_faults import _produce_agents_task
 from tests.chaos import redis_faults as redis_faults_module
 
 pytestmark = pytest.mark.chaos
-pytest_plugins = ["tests.chaos.fixtures"]
 
 RUNBOOK_PATH = Path("docs/runbooks/incidents.md")
 

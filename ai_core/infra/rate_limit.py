@@ -15,6 +15,8 @@ env = environ.Env()
 logger = get_logger(__name__)
 
 DEFAULT_QUOTA = 60
+DEFAULT_AGENTS_QUOTA = 100
+DEFAULT_INGESTION_QUOTA = 500
 
 _redis_client_cache: Optional[Redis] = None
 
@@ -22,6 +24,27 @@ _redis_client_cache: Optional[Redis] = None
 def get_quota() -> int:
     """Return the per-tenant quota from ``AI_CORE_RATE_LIMIT_QUOTA``."""
     return env.int("AI_CORE_RATE_LIMIT_QUOTA", default=DEFAULT_QUOTA)
+
+
+def get_agents_quota() -> int:
+    """Return the per-tenant quota for agents tasks."""
+    return env.int("AI_CORE_RATE_LIMIT_AGENTS_QUOTA", default=DEFAULT_AGENTS_QUOTA)
+
+
+def get_ingestion_quota() -> int:
+    """Return the per-tenant quota for ingestion tasks."""
+    return env.int(
+        "AI_CORE_RATE_LIMIT_INGESTION_QUOTA", default=DEFAULT_INGESTION_QUOTA
+    )
+
+
+def get_quota_for_scope(scope: str | None) -> int:
+    """Return the quota for a logical rate limit scope."""
+    if scope == "agents":
+        return get_agents_quota()
+    if scope == "ingestion":
+        return get_ingestion_quota()
+    return get_quota()
 
 
 @lru_cache(maxsize=1)
@@ -65,11 +88,27 @@ def reset_cache() -> None:
 def check(tenant: str, now: Optional[float] = None) -> bool:
     """Check whether the tenant has remaining requests in the current window."""
 
-    quota = get_quota()
+    return check_scoped(tenant, scope=None, now=now, quota=get_quota())
+
+
+def check_scoped(
+    tenant: str,
+    scope: str | None,
+    now: Optional[float] = None,
+    quota: Optional[int] = None,
+) -> bool:
+    """Check whether the tenant has remaining requests in a scoped window."""
+
+    if quota is None:
+        quota = get_quota_for_scope(scope)
+    if quota is None or quota <= 0:
+        return True
+
     ts = int(now if now is not None else time.time())
     window_start = ts - (ts % 60)
     ttl = 60 - (ts - window_start)
-    key = f"rl:{tenant}"
+    prefix = f"rl:{scope}" if scope else "rl"
+    key = f"{prefix}:{tenant}"
 
     try:
         client = _redis_client()
