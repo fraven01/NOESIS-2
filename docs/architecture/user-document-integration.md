@@ -229,6 +229,7 @@ class Document(models.Model):
 - `documents/upload_worker.py:UploadWorker.process` (preserve audit_meta, consistent workflow_id)
 - `ai_core/tasks.py` (carry audit_meta into ToolContext metadata)
 - `ai_core/adapters/db_documents_repository.py` (set created_by/updated_by from audit_meta)
+- `documents/models.py` / `documents/framework_models.py` (persist audit_meta on Document + FrameworkProfile)
 
 **Collection Membership Attribution (Phase 1):**
 - Replace `added_by` with `added_by_user` + `added_by_service_id` (nullable).

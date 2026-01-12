@@ -25,7 +25,7 @@ Primary locations:
 
 Business-heavy graph example (domain logic implemented in a graph module):
 
-- `ai_core/graphs/framework_analysis_graph.py` (writes `documents/framework_models.py:FrameworkProfile` / `FrameworkDocument`)
+- `ai_core/graphs/business/framework_analysis_graph.py` (writes `documents/framework_models.py:FrameworkProfile` / `FrameworkDocument`)
 
 ### Layer 3 — Technical orchestration (graphs + services)
 

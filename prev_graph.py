@@ -613,7 +613,12 @@ class CrawlerIngestionGraph:
             )
             return None
 
-        chunk_path = chunk_result.get("path")
+        chunk_payload = (
+            chunk_result.get("data", {}) if isinstance(chunk_result, Mapping) else {}
+        )
+        chunk_path = (
+            chunk_payload.get("path") if isinstance(chunk_payload, Mapping) else None
+        )
         if not chunk_path:
             artifacts = self._artifacts(state)
             artifacts.setdefault("chunk_errors", []).append(
@@ -722,11 +727,16 @@ class CrawlerIngestionGraph:
                 if vector_client is not None:
                     upsert_kwargs["vector_client"] = vector_client
                 vector_factory = embedding_state.get("client_factory")
-                if vector_factory is not None:
-                    upsert_kwargs["vector_client_factory"] = vector_factory
+            if vector_factory is not None:
+                upsert_kwargs["vector_client_factory"] = vector_factory
 
             embed_result = ingestion_tasks.embed(dispatch_meta, chunk_info.chunks_path)
-            embeddings_path = str(embed_result.get("path"))
+            embed_payload = (
+                embed_result.get("data", {})
+                if isinstance(embed_result, Mapping)
+                else {}
+            )
+            embeddings_path = str(embed_payload.get("path"))
             ingestion_tasks.upsert(dispatch_meta, embeddings_path, **upsert_kwargs)
 
         ingestion_result = ingest_document(

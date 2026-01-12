@@ -2,6 +2,7 @@ import pytest
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from theme.middleware import SimulatedUserMiddleware
+from ai_core.contracts.scope import ScopeContext
 
 
 @pytest.fixture
@@ -16,8 +17,15 @@ def test_simulated_user_middleware_switches_identity(client, settings, monkeypat
 
     # Patch tenant resolution to avoid needing full tenant setup
     monkeypatch.setattr(
-        "theme.views._tenant_context_from_request",
-        lambda r: ("dev-tenant", "dev-schema"),
+        "theme.views._scope_context_from_request",
+        lambda r: ScopeContext(
+            tenant_id="dev-tenant",
+            tenant_schema="dev-schema",
+            trace_id="trace",
+            invocation_id="invocation",
+            run_id="run",
+            service_id="test-worker",
+        ),
     )
 
     # Create users
@@ -62,8 +70,15 @@ def test_simulated_user_middleware_ignored_in_production(client, settings, monke
 
     # Patch tenant resolution to avoid needing full tenant setup
     monkeypatch.setattr(
-        "theme.views._tenant_context_from_request",
-        lambda r: ("dev-tenant", "dev-schema"),
+        "theme.views._scope_context_from_request",
+        lambda r: ScopeContext(
+            tenant_id="dev-tenant",
+            tenant_schema="dev-schema",
+            trace_id="trace",
+            invocation_id="invocation",
+            run_id="run",
+            service_id="test-worker",
+        ),
     )
 
     User = get_user_model()

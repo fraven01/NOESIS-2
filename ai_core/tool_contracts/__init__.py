@@ -8,6 +8,7 @@ re-exporting the canonical context model.
 from __future__ import annotations
 
 from .base import ToolContext
+from .validation import require_business_field, require_runtime_id
 
 
 class ToolError(Exception):
@@ -65,4 +66,6 @@ __all__ = [
     "TimeoutError",
     "UpstreamServiceError",
     "InternalToolError",
+    "require_business_field",
+    "require_runtime_id",
 ]

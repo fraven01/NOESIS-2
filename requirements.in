@@ -1,5 +1,8 @@
 celery
 django
+channels
+channels-redis
+daphne
 django-tenants
 django-environ
 djangorestframework

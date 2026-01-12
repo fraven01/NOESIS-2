@@ -161,7 +161,12 @@ class DbDocumentsRepository(DocumentsRepository):
                 )
                 metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                 document = self._update_document_instance(
-                    document, doc_copy, metadata, scope=scope, workflow_id=workflow
+                    document,
+                    doc_copy,
+                    metadata,
+                    scope=scope,
+                    workflow_id=workflow,
+                    audit_meta=audit_meta,
                 )
             else:
                 metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
@@ -175,20 +180,23 @@ class DbDocumentsRepository(DocumentsRepository):
                         # TODO: Accept BusinessContext parameter to extract case_id
                         ctx_case_id = None  # Was: scope.case_id if scope else None
 
-                        document = Document.objects.create(
-                            id=doc_copy.ref.document_id,  # Honor ID if creating new
-                            tenant=tenant,
-                            hash=doc_copy.checksum,
-                            source=doc_copy.source or "",
-                            metadata=metadata,
-                            workflow_id=ctx_workflow_id,
-                            trace_id=ctx_trace_id,
-                            case_id=ctx_case_id,
-                            lifecycle_state=doc_copy.lifecycle_state,
-                            lifecycle_updated_at=doc_copy.created_at,
-                            created_by=created_by_user,
-                            updated_by=created_by_user,
-                        )
+                        create_kwargs = {
+                            "id": doc_copy.ref.document_id,  # Honor ID if creating new
+                            "tenant": tenant,
+                            "hash": doc_copy.checksum,
+                            "source": doc_copy.source or "",
+                            "metadata": metadata,
+                            "workflow_id": ctx_workflow_id,
+                            "trace_id": ctx_trace_id,
+                            "case_id": ctx_case_id,
+                            "lifecycle_state": doc_copy.lifecycle_state,
+                            "lifecycle_updated_at": doc_copy.created_at,
+                            "created_by": created_by_user,
+                            "updated_by": created_by_user,
+                        }
+                        if audit_meta is not None:
+                            create_kwargs["audit_meta"] = dict(audit_meta)
+                        document = Document.objects.create(**create_kwargs)
                 except IntegrityError:
                     # Race condition or ID collision
                     # 1. Try finding by ID (if we forced one)
@@ -244,7 +252,12 @@ class DbDocumentsRepository(DocumentsRepository):
                     )
                     metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                     document = self._update_document_instance(
-                        document, doc_copy, metadata, scope=scope, workflow_id=workflow
+                        document,
+                        doc_copy,
+                        metadata,
+                        scope=scope,
+                        workflow_id=workflow,
+                        audit_meta=audit_meta,
                     )
 
             if document and created_by_user and not getattr(document, "created_by_id"):
@@ -331,7 +344,13 @@ class DbDocumentsRepository(DocumentsRepository):
         return doc  # FileBlob, ExternalBlob: no change needed
 
     def _update_document_instance(
-        self, document, doc_copy, metadata, scope=None, workflow_id=None
+        self,
+        document,
+        doc_copy,
+        metadata,
+        scope=None,
+        workflow_id=None,
+        audit_meta: Optional[Mapping[str, object]] = None,
     ):
         """Update document instance with metadata and context fields."""
         document.metadata = metadata
@@ -340,6 +359,9 @@ class DbDocumentsRepository(DocumentsRepository):
 
         # Update context fields if provided
         update_fields = ["metadata", "lifecycle_state", "lifecycle_updated_at"]
+        if audit_meta is not None:
+            document.audit_meta = dict(audit_meta)
+            update_fields.append("audit_meta")
         if workflow_id:
             document.workflow_id = workflow_id
             update_fields.append("workflow_id")

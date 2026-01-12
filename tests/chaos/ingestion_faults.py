@@ -93,11 +93,12 @@ def test_ingestion_upsert_hash_prevents_duplicates(tmp_path, monkeypatch):
 
     def _run_pipeline() -> int:
         raw = tasks.ingest_raw(meta, "doc.txt", b"User 123")
-        text = tasks.extract_text(meta, raw["path"])
-        masked = tasks.pii_mask(meta, text["path"])
-        chunks = tasks.chunk(meta, masked["path"])
-        embeds = tasks.embed(meta, chunks["path"])
-        return tasks.upsert(meta, embeds["path"])
+        text = tasks.extract_text(meta, raw["data"]["path"])
+        masked = tasks.pii_mask(meta, text["data"]["path"])
+        chunks = tasks.chunk(meta, masked["data"]["path"])
+        embeds = tasks.embed(meta, chunks["data"]["path"])
+        result = tasks.upsert(meta, embeds["data"]["path"])
+        return result["data"]["written"]
 
     first = _run_pipeline()
     second = _run_pipeline()

@@ -13,6 +13,7 @@ Alle Aufrufe erfordern HTTP/1.1 über TLS. Multi-Tenancy wird durch `django-tena
 | `X-Case-Id` | string | optional | Kontext-ID eines Workflows (z. B. CRM-Fall). Muss RFC3986-konforme Zeichen enthalten. |
 | `X-Trace-Id` | string | optional | Client-seitig nutzbarer Trace-Identifier. Wird gespiegelt; fehlt er, erzeugt der Service eine neue ID und sendet sie zurück. |
 | `X-Workflow-ID` | string | optional | Workflow type identifier (e.g., 'ingestion-2024'). Must match `[A-Za-z0-9._-]+`, max 128 chars. Case-sensitive. Defaults to 'ad-hoc' if not provided. |
+| `X-Thread-ID` | string | optional | Chat-Thread-Identifier für RAG-Konversationen (nicht für non-chat Workflows). |
 | `Idempotency-Key` | string | optional | Empfohlen für POST-Endpunkte. Wiederholte Requests mit gleichem Schlüssel liefern denselben Response-Body und Statuscode. |
 | `X-Key-Alias` | string | optional | Referenziert einen LiteLLM API-Key Alias. Wird für Rate-Limiting gebunden. |
 | `X-Case-Scope` | string | optional | Zusätzliche Zugriffsscope für Agenten-Workflows. |

@@ -25,13 +25,6 @@ from ai_core.tool_contracts import (
     ToolContext,
 )
 
-META = {
-    "tenant_id": "t1",
-    "case_id": "c1",
-    "trace_id": "tr",
-    "tenant_schema": "tenant-schema-1",
-}
-
 
 def _tool_context(
     *,
@@ -405,37 +398,48 @@ def test_compose_masks_and_sets_version(monkeypatch):
     expected_prompt = mask_prompt(
         f"{prompt['text']}\n\nQuestion: {state['question']}\nContext:\n{snippets_text}"
     )
-    new_state, result = compose.run(state, META.copy())
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    params = compose.ComposeInput(
+        question=state["question"],
+        snippets=state["snippets"],
+    )
+    result = compose.run(context, params)
     assert called["label"] == "synthesize"
     assert called["prompt"] == expected_prompt
     assert called["meta"]["prompt_version"] == "v1"
-    assert new_state["answer"] == "resp"
-    assert result["answer"] == "resp"
+    assert result.answer == "resp"
 
 
 def test_extract_classify_assess(monkeypatch):
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
-    state = {"text": "Fact 42"}
-    extract_prompt = mask_prompt(f"{load('extract/items')['text']}\n\n{state['text']}")
-    new_state, _ = extract.run(state, META.copy())
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    params = extract.ExtractInput(text="Fact 42")
+    extract_prompt = mask_prompt(f"{load('extract/items')['text']}\n\n{params.text}")
+    extract_result = extract.run(context, params)
     assert called["label"] == "extract"
     assert called["prompt"] == extract_prompt
-    assert new_state["items"] == "resp"
+    assert extract_result.items == "resp"
 
     classify_prompt = mask_prompt(
-        f"{load('classify/mitbestimmung')['text']}\n\n{state['text']}"
+        f"{load('classify/mitbestimmung')['text']}\n\n{params.text}"
     )
-    new_state, _ = classify.run(state, META.copy())
+    classify_result = classify.run(
+        context,
+        classify.ClassifyInput(text=params.text),
+    )
     assert called["label"] == "classify"
     assert called["prompt"] == classify_prompt
-    assert new_state["classification"] == "resp"
+    assert classify_result.classification == "resp"
 
-    assess_prompt = mask_prompt(f"{load('assess/risk')['text']}\n\n{state['text']}")
-    new_state, _ = assess.run(state, META.copy())
+    assess_prompt = mask_prompt(f"{load('assess/risk')['text']}\n\n{params.text}")
+    assess_result = assess.run(
+        context,
+        assess.AssessInput(text=params.text),
+    )
     assert called["label"] == "analyze"
     assert called["prompt"] == assess_prompt
-    assert new_state["risk"] == "resp"
+    assert assess_result.risk == "resp"
 
 
 def test_prompt_runner_default(monkeypatch):
@@ -459,24 +463,22 @@ def test_prompt_runner_default(monkeypatch):
     monkeypatch.setattr("ai_core.nodes._prompt_runner.mask_prompt", fake_mask)
     monkeypatch.setattr("ai_core.nodes._prompt_runner.client.call", fake_call)
 
-    state = {"text": "Sensitive"}
-    meta = META.copy()
-    new_state, node_meta = run_prompt_node(
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    result = run_prompt_node(
         trace_name="unit",
         prompt_alias="scope/test",
         llm_label="label",
-        state_key="result",
-        state=state,
-        meta=meta,
+        context=context,
+        text="Sensitive",
     )
 
     assert called["alias"] == "scope/test"
     assert called["label"] == "label"
     assert called["prompt"].endswith("\n\nSensitive")
     assert called["meta"]["prompt_version"] == "v42"
-    assert meta["prompt_version"] == "v42"
-    assert new_state["result"] == "resp"
-    assert node_meta == {"result": "resp", "prompt_version": "v42"}
+    assert result.value == "resp"
+    assert result.prompt_version == "v42"
+    assert result.metadata == {}
 
 
 def test_prompt_runner_with_result_shaper(monkeypatch):
@@ -494,20 +496,19 @@ def test_prompt_runner_with_result_shaper(monkeypatch):
 
     monkeypatch.setattr("ai_core.nodes._prompt_runner.client.call", fake_call)
 
-    shaped_state, shaped_meta = run_prompt_node(
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    result = run_prompt_node(
         trace_name="unit",
         prompt_alias="alias",
         llm_label="label",
-        state_key="value",
-        state={},
-        meta=META.copy(),
+        context=context,
+        text="",
         result_shaper=lambda result: (result["text"].upper(), {"raw": result["text"]}),
     )
 
-    assert shaped_state["value"] == "RESP"
-    assert shaped_meta["value"] == "RESP"
-    assert shaped_meta["raw"] == "resp"
-    assert shaped_meta["prompt_version"] == "v1"
+    assert result.value == "RESP"
+    assert result.metadata["raw"] == "resp"
+    assert result.prompt_version == "v1"
 
 
 def test_prompt_runner_guardrail_emits_event(monkeypatch, settings):
@@ -538,13 +539,13 @@ def test_prompt_runner_guardrail_emits_event(monkeypatch, settings):
     )
     monkeypatch.setattr("ai_core.nodes._prompt_runner.random.random", lambda: 0.1)
 
-    _, _ = run_prompt_node(
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    _ = run_prompt_node(
         trace_name="unit",
         prompt_alias="alias",
         llm_label="label",
-        state_key="value",
-        state={},
-        meta=META.copy(),
+        context=context,
+        text="",
         result_shaper=lambda result: (
             result["text"],
             {
@@ -600,20 +601,22 @@ def test_prompt_runner_guardrail_sampling_skips_event(monkeypatch, settings):
     )
     monkeypatch.setattr("ai_core.nodes._prompt_runner.random.random", lambda: 0.9)
 
-    meta = META.copy()
-    meta["guardrail"] = {
-        "rule_id": "rule-allow",
-        "outcome": "allow",
-        "tool_blocked": False,
+    metadata = {
+        "guardrail": {
+            "rule_id": "rule-allow",
+            "outcome": "allow",
+            "tool_blocked": False,
+        }
     }
 
-    _, _ = run_prompt_node(
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    _ = run_prompt_node(
         trace_name="unit",
         prompt_alias="alias",
         llm_label="label",
-        state_key="value",
-        state={},
-        meta=meta,
+        context=context,
+        text="",
+        metadata=metadata,
     )
 
     assert observations == [{"metadata": {"node.branch_taken": "allow"}}]
@@ -623,24 +626,23 @@ def test_prompt_runner_guardrail_sampling_skips_event(monkeypatch, settings):
 def test_draft_blocks(monkeypatch):
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
-    state = {}
-    new_state, result = draft_blocks.run(state, META.copy())
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    result = draft_blocks.run(context, draft_blocks.DraftBlocksInput())
     assert called["label"] == "draft"
     # all three prompt segments should be present
     assert "Systembeschreibung" in called["prompt"]
     assert "Funktionsliste" in called["prompt"]
     assert "Standard-Klauselvorschläge" in called["prompt"]
-    assert new_state["draft"] == "resp"
-    assert result["draft"] == "resp"
+    assert result.draft == "resp"
 
 
 def test_needs_mapping():
-    state = {"info_state": {"purpose": "Acme", "extra": "foo"}}
-    new_state, result = needs.run(state, META.copy())
-    assert result["filled"] == ["purpose"]
-    assert result["missing"] == ["deployment_model", "main_components"]
-    assert result["ignored"] == ["extra"]
-    assert new_state["needs"] == result
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    params = needs.NeedsInput(info_state={"purpose": "Acme", "extra": "foo"})
+    result = needs.run(context, params)
+    assert result.filled == ["purpose"]
+    assert result.missing == ["deployment_model", "main_components"]
+    assert result.ignored == ["extra"]
 
 
 def test_tracing_called(monkeypatch):
@@ -670,8 +672,9 @@ def test_tracing_called(monkeypatch):
     )
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
-    state = {"question": "Q?", "snippets": []}
-    compose.run(state, META.copy())
+    context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
+    params = compose.ComposeInput(question="Q?", snippets=[])
+    compose.run(context, params)
     assert spans[0] == "compose"
     assert spans[1] == "enter:compose"
     assert spans[-1] == "exit:compose"

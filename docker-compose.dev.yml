@@ -98,7 +98,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: noesis2_web
-    command: sh -c "opentelemetry-instrument python manage.py collectstatic --noinput && opentelemetry-instrument python manage.py runserver 0.0.0.0:8000"
+    command: sh -c "opentelemetry-instrument python manage.py collectstatic --noinput && opentelemetry-instrument daphne -b 0.0.0.0 -p 8000 noesis2.asgi:application"
     ports:
       - "8000:8000"
     volumes:

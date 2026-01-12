@@ -58,7 +58,7 @@ params = DocumentSpaceQueryParams.model_validate(request.GET)
 | `_normalise_quality_mode()` | removed | String validation | Pydantic `Literal` type |
 | `_normalise_max_candidates()` | removed | Int clamping | Pydantic field constraint |
 
-**Note**: Helpers that include IO or domain logic (tenant resolution, collection lookup, cache/LLM routing) are not pass-through. These should be refactored or relocated, not deleted (e.g. `_tenant_context_from_request`, `_resolve_manual_collection`, `_normalize_collection_id`, `_resolve_rerank_model_preset`).
+**Note**: Helpers that include IO or domain logic (tenant resolution, collection lookup, cache/LLM routing) are not pass-through. These should be refactored or relocated, not deleted (e.g. `_resolve_tenant_context`, `_resolve_manual_collection`, `_normalize_collection_id`, `_resolve_rerank_model_preset`).
 
 ### Impact
 

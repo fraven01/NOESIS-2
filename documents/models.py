@@ -90,6 +90,7 @@ class Document(models.Model):
     source = models.CharField(max_length=255)
     external_id = models.CharField(max_length=255, blank=True, null=True)
     metadata = models.JSONField(blank=True, default=dict)
+    audit_meta = models.JSONField(blank=True, default=dict)
 
     # Context fields for traceability and tenant-specific workflows
     workflow_id = models.CharField(

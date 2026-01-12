@@ -8,7 +8,7 @@ LLM entry point and code navigation: `AGENTS.md`.
 
 - Getting started / local workflow: `docs/development/onboarding.md` and `README.md`
 - Architecture lens + inventory: `docs/architecture/4-layer-firm-hierarchy.md`, `docs/architecture/architecture-reality.md`
-- AI Core graphs: `ai_core/graphs/README.md`
+- AI Core graphs: `ai_core/graph/README.md`
 - AI Core tool envelopes: `docs/agents/tool-contracts.md` (mirrors `ai_core/tool_contracts/base.py`)
 - ID normalization & headers: `docs/architecture/id-guide-for-agents.md` (points to `ai_core/ids/*` and `common/constants.py`)
 - RAG: `docs/rag/overview.md`, `docs/rag/ingestion.md`, `docs/rag/retrieval-contracts.md`

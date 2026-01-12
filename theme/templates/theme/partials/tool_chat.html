@@ -1,4 +1,4 @@
-<div class="h-[calc(100vh-12rem)] max-w-5xl mx-auto">
+<div class="h-[calc(100vh-12rem)] max-w-5xl mx-auto" data-rag-chat-root>
     <!-- Chat Area (Full Width) -->
     <div class="flex flex-col h-full">
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden">
@@ -19,9 +19,12 @@
 
             <!-- Input Area -->
             <div class="p-4 bg-white border-t border-slate-200">
-                <form hx-post="{% url 'chat-submit' %}" hx-target="#chat-history" hx-swap="beforeend" class="relative">
+                <form hx-post="{% url 'chat-submit' %}" hx-target="#chat-history" hx-swap="beforeend"
+                    class="relative" data-rag-chat-form>
                     {% csrf_token %}
                     <input type="hidden" name="case_id" value="{{ case_id }}">
+                    <input type="hidden" name="tenant_id" value="{{ tenant_id }}">
+                    <input type="hidden" name="tenant_schema" value="{{ tenant_schema }}">
 
                     <div class="relative rounded-md shadow-sm">
                         <textarea name="message" rows="1"
@@ -37,12 +40,31 @@
                             </svg>
                         </button>
                     </div>
-                    <div class="flex items-center justify-between mt-2 px-1">
-                        <div class="flex items-center">
-                            <input id="chat-global-search" name="global_search" type="checkbox"
-                                class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
-                            <label for="chat-global-search" class="ml-2 block text-xs text-slate-500">Global
-                                Search</label>
+                    <div class="mt-2 space-y-2 px-1">
+                        <div class="flex flex-wrap items-center gap-3">
+                            <div class="flex items-center gap-2">
+                                <label for="chat-thread" class="text-xs text-slate-500">Thread</label>
+                                <input id="chat-thread" name="thread_id" value="{{ thread_id }}"
+                                    class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500">
+                                <button type="button" id="chat-thread-reset"
+                                    class="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
+                                    New
+                                </button>
+                            </div>
+                            <label for="chat-collection" class="text-xs text-slate-500">Collection</label>
+                            <select id="chat-collection" name="collection_id"
+                                class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500">
+                                <option value="">All Collections</option>
+                                {% for collection in collection_options %}
+                                <option value="{{ collection.id }}">{{ collection.label }}</option>
+                                {% endfor %}
+                            </select>
+                            <div class="flex items-center">
+                                <input id="chat-global-search" name="global_search" type="checkbox"
+                                    class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+                                <label for="chat-global-search" class="ml-2 block text-xs text-slate-500">Global
+                                    Search</label>
+                            </div>
                         </div>
                         <p class="text-xs text-slate-400">Press Enter to send, Shift + Enter for new line</p>
                     </div>

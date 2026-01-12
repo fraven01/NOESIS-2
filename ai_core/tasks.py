@@ -64,6 +64,7 @@ from ai_core.ingestion_orchestration import (
 from ai_core.tools.errors import RateLimitedError
 from common.celery import RetryableTask, ScopedTask
 from common.logging import get_logger
+from common.task_result import TaskResult
 from django.conf import settings
 from django.utils import timezone
 from pydantic import ValidationError
@@ -327,6 +328,35 @@ def _task_context_payload(meta: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     if context.scope.ingestion_run_id:
         payload["ingestion_run_id"] = context.scope.ingestion_run_id
     return payload
+
+
+def _task_context_snapshot(meta: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(meta, MappingABC):
+        return {}
+    try:
+        context = tool_context_from_meta(meta)
+    except Exception:
+        return {}
+    return context.model_dump(mode="json", exclude_none=True)
+
+
+def _task_result(
+    *,
+    status: str,
+    data: Mapping[str, Any] | None = None,
+    meta: Optional[Mapping[str, Any]] = None,
+    task_name: str,
+    error: str | None = None,
+) -> Dict[str, Any]:
+    payload = TaskResult(
+        status=status,
+        data=dict(data or {}),
+        context_snapshot=_task_context_snapshot(meta),
+        task_name=task_name,
+        completed_at=timezone.now(),
+        error=error,
+    )
+    return payload.model_dump(mode="json")
 
 
 def _log_cache_hit(
@@ -674,7 +704,7 @@ def log_ingestion_run_end(
 
 
 @shared_task(base=ScopedTask, queue="ingestion")
-def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
+def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, Any]:
     """Persist raw document bytes."""
     external_id = meta.get("external_id")
     if not external_id:
@@ -684,21 +714,31 @@ def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     object_store.put_bytes(path, data)
     content_hash = hashlib.sha256(data).hexdigest()
     meta["content_hash"] = content_hash
-    return {"path": path, "content_hash": content_hash}
+    return _task_result(
+        status="success",
+        data={"path": path, "content_hash": content_hash},
+        meta=meta,
+        task_name=getattr(ingest_raw, "name", "ingest_raw"),
+    )
 
 
 @shared_task(base=ScopedTask, queue="ingestion")
-def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
+def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, Any]:
     """Decode bytes to text and store."""
     full = object_store.BASE_PATH / raw_path
     text = full.read_bytes().decode("utf-8")
     out_path = _build_path(meta, "text", f"{Path(raw_path).stem}.txt")
     object_store.put_bytes(out_path, text.encode("utf-8"))
-    return {"path": out_path}
+    return _task_result(
+        status="success",
+        data={"path": out_path},
+        meta=meta,
+        task_name=getattr(extract_text, "name", "extract_text"),
+    )
 
 
 @shared_task(base=ScopedTask, queue="ingestion")
-def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
+def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
     """Mask PII in text."""
     full = object_store.BASE_PATH / text_path
     text = full.read_text(encoding="utf-8")
@@ -712,11 +752,15 @@ def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             masked = re.sub(r"\d", "X", text)
     out_path = _build_path(meta, "text", f"{Path(text_path).stem}.masked.txt")
     object_store.put_bytes(out_path, masked.encode("utf-8"))
-    return {"path": out_path}
+    return _task_result(
+        status="success",
+        data={"path": out_path},
+        meta=meta,
+        task_name=getattr(pii_mask, "name", "pii_mask"),
+    )
 
 
-@shared_task(base=ScopedTask, queue="ingestion")
-def _split_sentences(text: str) -> List[str]:
+def _split_sentences_impl(text: str) -> List[str]:
     """Best-effort sentence segmentation that retains punctuation."""
 
     pattern = re.compile(r"[^.!?]+(?:[.!?]+|\Z)")
@@ -730,6 +774,16 @@ def _split_sentences(text: str) -> List[str]:
     # Fallback: use paragraphs or lines if no sentence boundary detected
     parts = [part.strip() for part in text.splitlines() if part.strip()]
     return parts or [text.strip()]
+
+
+@shared_task(base=ScopedTask, queue="ingestion")
+def _split_sentences(text: str) -> Dict[str, Any]:
+    sentences = _split_sentences_impl(text)
+    return _task_result(
+        status="success",
+        data={"sentences": sentences},
+        task_name=getattr(_split_sentences, "name", "_split_sentences"),
+    )
 
 
 if tiktoken:
@@ -1215,7 +1269,7 @@ def _build_processing_context(
     soft_time_limit=540,
 )
 @observe_span(name="ingestion.chunk")
-def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
+def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
     """Split text into overlapping chunks for embeddings and capture parents."""
 
     full = object_store.BASE_PATH / text_path
@@ -1255,7 +1309,12 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                         cached_path=cached_path,
                         meta=meta,
                     )
-                    return {"path": cached_path}
+                    return _task_result(
+                        status="success",
+                        data={"path": cached_path},
+                        meta=meta,
+                        task_name=getattr(chunk, "name", "chunk"),
+                    )
                 _cache_delete(cache_client, cache_key)
 
     target_tokens = int(getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450))
@@ -1433,7 +1492,12 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         object_store.write_json(out_path, payload)
         if cache_client is not None and cache_key:
             _cache_set(cache_client, cache_key, out_path, _CACHE_TTL_CHUNK_SECONDS)
-        return {"path": out_path}
+        return _task_result(
+            status="success",
+            data={"path": out_path},
+            meta=meta,
+            task_name=getattr(chunk, "name", "chunk"),
+        )
 
     fallback_segments: List[str] = []
     if not structured_blocks:
@@ -1658,7 +1722,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 return
 
             combined_text = "\n\n".join(part for part in pending_pieces if part.strip())
-            sentences = _split_sentences(combined_text)
+            sentences = _split_sentences_impl(combined_text)
             if not sentences:
                 sentences = [combined_text] if combined_text else []
 
@@ -1852,7 +1916,12 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     object_store.write_json(out_path, payload)
     if cache_client is not None and cache_key:
         _cache_set(cache_client, cache_key, out_path, _CACHE_TTL_CHUNK_SECONDS)
-    return {"path": out_path}
+    return _task_result(
+        status="success",
+        data={"path": out_path},
+        meta=meta,
+        task_name=getattr(chunk, "name", "chunk"),
+    )
 
 
 @shared_task(
@@ -1862,7 +1931,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     soft_time_limit=270,
 )
 @observe_span(name="ingestion.embed")
-def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
+def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, Any]:
     """Generate embedding vectors for chunks via LiteLLM."""
 
     cache_client = _redis_client()
@@ -1890,7 +1959,12 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                         cached_path=cached_path,
                         meta=meta,
                     )
-                    return {"path": cached_path}
+                    return _task_result(
+                        status="success",
+                        data={"path": cached_path},
+                        meta=meta,
+                        task_name=getattr(embed, "name", "embed"),
+                    )
                 _cache_delete(cache_client, cache_key)
             dedupe_key = _dedupe_key("embed", idempotency_key)
             status = _dedupe_status(_cache_get(cache_client, dedupe_key))
@@ -1937,7 +2011,12 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                             cached_path=cached_path,
                             meta=meta,
                         )
-                        return {"path": cached_path}
+                        return _task_result(
+                            status="success",
+                            data={"path": cached_path},
+                            meta=meta,
+                            task_name=getattr(embed, "name", "embed"),
+                        )
                 _log_dedupe_hit(
                     task_name="embed",
                     idempotency_key=idempotency_key,
@@ -2265,7 +2344,12 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
             _mark_dedupe_done(
                 cache_client, dedupe_key, _DEDUPE_TTL_SECONDS, dedupe_token
             )
-        return {"path": out_path}
+        return _task_result(
+            status="success",
+            data={"path": out_path},
+            meta=meta,
+            task_name=getattr(embed, "name", "embed"),
+        )
     except Exception:
         if cache_client is not None and dedupe_key and dedupe_token:
             _release_dedupe_lock(cache_client, dedupe_key, dedupe_token)
@@ -2294,7 +2378,7 @@ def upsert(
     *,
     vector_client: Optional[Any] = None,
     vector_client_factory: Optional[Callable[[], Any]] = None,
-) -> int:
+) -> Dict[str, Any]:
     """Upsert embedded chunks into the vector client."""
     raw_data = object_store.read_json(embeddings_path)
     parents: Dict[str, Dict[str, object]] | None = None
@@ -2333,7 +2417,12 @@ def upsert(
                     status=status,
                     meta=meta,
                 )
-                return 0
+                return _task_result(
+                    status="success",
+                    data={"written": 0},
+                    meta=meta,
+                    task_name=getattr(upsert, "name", "upsert"),
+                )
             if status == "inflight":
                 _log_dedupe_hit(
                     task_name="upsert",
@@ -2363,7 +2452,12 @@ def upsert(
                         status=status,
                         meta=meta,
                     )
-                    return 0
+                    return _task_result(
+                        status="success",
+                        data={"written": 0},
+                        meta=meta,
+                        task_name=getattr(upsert, "name", "upsert"),
+                    )
                 _log_dedupe_hit(
                     task_name="upsert",
                     idempotency_key=idempotency_key,
@@ -2534,7 +2628,12 @@ def upsert(
             _mark_dedupe_done(
                 cache_client, dedupe_key, _DEDUPE_TTL_SECONDS, dedupe_token
             )
-        return written
+        return _task_result(
+            status="success",
+            data={"written": written},
+            meta=meta,
+            task_name=getattr(upsert, "name", "upsert"),
+        )
     except Exception:
         if cache_client is not None and dedupe_key and dedupe_token:
             _release_dedupe_lock(cache_client, dedupe_key, dedupe_token)
@@ -2545,7 +2644,7 @@ def upsert(
 def ingestion_run(
     state: Mapping[str, Any],
     meta: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, object]:
+) -> Dict[str, Any]:
     """Placeholder ingestion dispatcher used by the ingestion run endpoint."""
 
     state_payload = dict(state or {})
@@ -2591,7 +2690,12 @@ def ingestion_run(
             "trace_id": trace_id,
         },
     )
-    return {"status": "queued", "queued_at": queued_at}
+    return _task_result(
+        status="success",
+        data={"status": "queued", "queued_at": queued_at},
+        meta=meta,
+        task_name=getattr(ingestion_run, "name", "ingestion_run"),
+    )
 
 
 def _is_redis_broker(url: str) -> bool:
@@ -2664,12 +2768,16 @@ def cleanup_dead_letter_queue(
     max_messages: int = 1000,
     ttl_ms: Optional[int] = None,
     queue_name: str = "dead_letter",
-) -> Dict[str, int | str]:
+) -> Dict[str, Any]:
     """Purge expired dead-letter tasks from a Redis-backed queue."""
 
     broker_url = str(getattr(settings, "CELERY_BROKER_URL", "") or "")
     if not _is_redis_broker(broker_url):
-        return {"status": "skipped", "reason": "non_redis_broker"}
+        return _task_result(
+            status="success",
+            data={"status": "skipped", "reason": "non_redis_broker"},
+            task_name=getattr(cleanup_dead_letter_queue, "name", "cleanup_dead_letter"),
+        )
 
     effective_ttl = ttl_ms
     if effective_ttl is None:
@@ -2679,7 +2787,11 @@ def cleanup_dead_letter_queue(
     except (TypeError, ValueError):
         ttl_value = 0
     if ttl_value <= 0:
-        return {"status": "skipped", "reason": "ttl_disabled"}
+        return _task_result(
+            status="success",
+            data={"status": "skipped", "reason": "ttl_disabled"},
+            task_name=getattr(cleanup_dead_letter_queue, "name", "cleanup_dead_letter"),
+        )
 
     cutoff_ts = time.time() - (ttl_value / 1000.0)
     queue_key = _resolve_dlq_queue_key(queue_name)
@@ -2717,12 +2829,16 @@ def cleanup_dead_letter_queue(
             "ttl_ms": ttl_value,
         },
     )
-    return {
-        "status": "ok",
-        "scanned": scanned,
-        "removed": removed,
-        "kept": kept,
-    }
+    return _task_result(
+        status="success",
+        data={
+            "status": "ok",
+            "scanned": scanned,
+            "removed": removed,
+            "kept": kept,
+        },
+        task_name=getattr(cleanup_dead_letter_queue, "name", "cleanup_dead_letter"),
+    )
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -2742,19 +2858,27 @@ def alert_dead_letter_queue(
     *,
     threshold: Optional[int] = None,
     queue_name: str = "dead_letter",
-) -> Dict[str, int | str | bool]:
+) -> Dict[str, Any]:
     """Emit a structured alert when the Redis DLQ exceeds the threshold."""
 
     broker_url = str(getattr(settings, "CELERY_BROKER_URL", "") or "")
     if not _is_redis_broker(broker_url):
-        return {"status": "skipped", "reason": "non_redis_broker"}
+        return _task_result(
+            status="success",
+            data={"status": "skipped", "reason": "non_redis_broker"},
+            task_name=getattr(alert_dead_letter_queue, "name", "alert_dead_letter"),
+        )
 
     threshold_value = threshold
     if threshold_value is None:
         threshold_value = getattr(settings, "CELERY_DLQ_ALERT_THRESHOLD", 10)
     threshold_value = _coerce_positive_int(threshold_value, 10)
     if threshold_value <= 0:
-        return {"status": "skipped", "reason": "threshold_disabled"}
+        return _task_result(
+            status="success",
+            data={"status": "skipped", "reason": "threshold_disabled"},
+            task_name=getattr(alert_dead_letter_queue, "name", "alert_dead_letter"),
+        )
 
     queue_key = _resolve_dlq_queue_key(queue_name)
     client = Redis.from_url(broker_url)
@@ -2765,7 +2889,12 @@ def alert_dead_letter_queue(
             "dlq.alert.redis_error",
             extra={"queue": queue_name, "error": str(exc)},
         )
-        return {"status": "error", "reason": "redis_error"}
+        return _task_result(
+            status="error",
+            data={"status": "error", "reason": "redis_error"},
+            task_name=getattr(alert_dead_letter_queue, "name", "alert_dead_letter"),
+            error=str(exc),
+        )
 
     payload = {
         "queue": queue_name,
@@ -2776,12 +2905,16 @@ def alert_dead_letter_queue(
         emit_event("dlq.threshold_exceeded", payload)
         logger.warning("dlq.threshold_exceeded", extra=payload)
 
-    return {
-        "status": "ok",
-        "queue_length": queue_length,
-        "threshold": threshold_value,
-        "alerted": queue_length > threshold_value,
-    }
+    return _task_result(
+        status="success",
+        data={
+            "status": "ok",
+            "queue_length": queue_length,
+            "threshold": threshold_value,
+            "alerted": queue_length > threshold_value,
+        },
+        task_name=getattr(alert_dead_letter_queue, "name", "alert_dead_letter"),
+    )
 
 
 def _load_drift_ground_truth(path: str) -> tuple[list[dict[str, object]], str] | None:
@@ -2909,7 +3042,7 @@ def embedding_drift_check(
     *,
     ground_truth_path: str | None = None,
     top_k: int = 10,
-) -> dict[str, object]:
+) -> Dict[str, Any]:
     """Evaluate retrieval drift using ground-truth queries."""
 
     path = ground_truth_path
@@ -2918,11 +3051,19 @@ def embedding_drift_check(
     if not path:
         path = getattr(settings, "RAG_DRIFT_GROUND_TRUTH_PATH", None)
     if not path:
-        return {"status": "skipped", "reason": "ground_truth_path_missing"}
+        return _task_result(
+            status="success",
+            data={"status": "skipped", "reason": "ground_truth_path_missing"},
+            task_name=getattr(embedding_drift_check, "name", "embedding_drift_check"),
+        )
 
     loaded = _load_drift_ground_truth(path)
     if not loaded:
-        return {"status": "skipped", "reason": "ground_truth_unavailable"}
+        return _task_result(
+            status="success",
+            data={"status": "skipped", "reason": "ground_truth_unavailable"},
+            task_name=getattr(embedding_drift_check, "name", "embedding_drift_check"),
+        )
 
     records, dataset_id = loaded
     metrics, skipped, total = _evaluate_drift_queries(records, default_top_k=top_k)
@@ -2973,7 +3114,11 @@ def embedding_drift_check(
             },
         )
 
-    return summary
+    return _task_result(
+        status="success",
+        data=summary,
+        task_name=getattr(embedding_drift_check, "name", "embedding_drift_check"),
+    )
 
 
 def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
@@ -3397,8 +3542,15 @@ def run_ingestion_graph(
         if not isinstance(serialized_result, dict):
             # Fallback if output structure is unexpected
             serialized_result = _jsonify_for_task(result)
+        if not isinstance(serialized_result, dict):
+            serialized_result = {"result": serialized_result}
 
-        return serialized_result
+        return _task_result(
+            status="success",
+            data=serialized_result,
+            meta=meta,
+            task_name=getattr(run_ingestion_graph, "name", "run_ingestion_graph"),
+        )
 
     finally:
         try:

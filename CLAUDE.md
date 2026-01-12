@@ -46,7 +46,7 @@ NOESIS 2 ist eine mandantenfähige Django-Plattform (Python 3.12+) mit folgenden
 - `tenant_id` (UUID)
 - `trace_id` (string)
 - `invocation_id` (UUID)
-- Genau **eine** Laufzeit-ID: `run_id` **XOR** `ingestion_run_id`
+- **Mindestens eine** Laufzeit-ID: `run_id` und/oder `ingestion_run_id` (beide können koexistieren, z.B. wenn Workflow Ingestion triggert)
 
 ### HTTP-Header (Pflicht)
 
@@ -155,7 +155,7 @@ meta = _build_chaos_meta(
     tenant_id="tenant-001",
     trace_id="trace-001",
     case_id="case-001",      # Optional business context
-    run_id="run-001",        # XOR ingestion_run_id
+    run_id="run-001",        # Und/oder ingestion_run_id (beide können koexistieren)
 )
 ```
 

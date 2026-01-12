@@ -180,6 +180,7 @@ class DocumentDomainService:
         metadata_payload = dict(metadata or {})
         if document_id is not None:
             metadata_payload.setdefault("document_id", str(document_id))
+        audit_meta_payload = dict(audit_meta or {}) if audit_meta is not None else None
 
         lifecycle_state = DocumentLifecycleState(initial_lifecycle_state)
         lifecycle_timestamp = timezone.now()
@@ -197,16 +198,19 @@ class DocumentDomainService:
                 )
 
         with transaction.atomic():
+            defaults = {
+                "metadata": metadata_payload,
+                "lifecycle_state": lifecycle_state.value,
+                "lifecycle_updated_at": lifecycle_timestamp,
+                **({"id": document_id} if document_id is not None else {}),
+            }
+            if audit_meta_payload is not None:
+                defaults["audit_meta"] = audit_meta_payload
             document, created = Document.objects.update_or_create(
                 tenant=tenant,
                 source=source,
                 hash=content_hash,
-                defaults={
-                    "metadata": metadata_payload,
-                    "lifecycle_state": lifecycle_state.value,
-                    "lifecycle_updated_at": lifecycle_timestamp,
-                    **({"id": document_id} if document_id is not None else {}),
-                },
+                defaults=defaults,
             )
             if created and created_by_user:
                 document.created_by = created_by_user

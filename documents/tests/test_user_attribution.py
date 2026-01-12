@@ -76,6 +76,8 @@ def test_ingest_document_sets_created_by_and_membership_actor(
         document = Document.objects.get(id=result.document.id)
         assert document.created_by_id == user.id
         assert document.updated_by_id == user.id
+        assert document.audit_meta["created_by_user_id"] == str(user.id)
+        assert document.audit_meta["last_hop_service_id"] == "upload-worker"
 
         membership = DocumentCollectionMembership.objects.get(
             document=document, collection=collection
@@ -94,6 +96,7 @@ def test_ingest_document_sets_created_by_and_membership_actor(
         document.refresh_from_db()
         assert document.created_by_id == user.id
         assert document.updated_by_id == other_user.id
+        assert document.audit_meta["created_by_user_id"] == str(other_user.id)
 
 
 def test_ingest_document_sets_membership_actor_from_service(
@@ -120,6 +123,7 @@ def test_ingest_document_sets_membership_actor_from_service(
         )
         assert membership.added_by_user_id is None
         assert membership.added_by_service_id == "crawler-worker"
+        assert result.document.audit_meta["last_hop_service_id"] == "crawler-worker"
 
 
 def test_db_repository_applies_audit_meta_created_by(test_tenant_schema_name):
@@ -143,6 +147,8 @@ def test_db_repository_applies_audit_meta_created_by(test_tenant_schema_name):
         stored = Document.objects.get(id=doc.ref.document_id)
         assert stored.created_by_id == owner.id
         assert stored.updated_by_id == owner.id
+        assert stored.audit_meta["created_by_user_id"] == str(owner.id)
+        assert stored.audit_meta["last_hop_service_id"] == "crawler-worker"
 
         repository.upsert(
             doc,
@@ -152,3 +158,4 @@ def test_db_repository_applies_audit_meta_created_by(test_tenant_schema_name):
         stored.refresh_from_db()
         assert stored.created_by_id == owner.id
         assert stored.updated_by_id == editor.id
+        assert stored.audit_meta["created_by_user_id"] == str(editor.id)

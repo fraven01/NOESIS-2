@@ -1,6 +1,6 @@
 # Walkthrough - ID Handling Simplification
 
-I have simplified the ID handling in tests by introducing a `GraphTestMixin` and refactoring `test_collection_search_graph.py` to use it. This reduces boilerplate and ensures consistent ID generation (including the XOR rule for `run_id` vs `ingestion_run_id`).
+I have simplified the ID handling in tests by introducing a `GraphTestMixin` and refactoring `test_collection_search_graph.py` to use it. This reduces boilerplate and ensures consistent ID generation (including the at-least-one rule for `run_id` and/or `ingestion_run_id`).
 
 ## Changes
 

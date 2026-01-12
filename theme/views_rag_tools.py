@@ -33,9 +33,11 @@ def rag_tools(request):
     if blocked is not None:
         return blocked
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError as exc:
         return views._tenant_required_response(exc)
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
 
     collection_options: list[str] = []
     resolver_profile_hint: str | None = None
@@ -206,9 +208,10 @@ def start_rerank_workflow(request):
             )
 
         try:
-            tenant_id, tenant_schema = views._tenant_context_from_request(request)
+            scope = views._scope_context_from_request(request)
         except TenantRequiredError as exc:
             return views._tenant_required_response(exc)
+        tenant_id = scope.tenant_id
         user = getattr(request, "user", None)
         user_id = (
             str(user.pk)
@@ -330,10 +333,13 @@ def workbench_index(request):
     if blocked is not None:
         return blocked
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError:
         # Fallback for dev/testing if no tenant context
         tenant_id, tenant_schema = "dev", "public"
+    else:
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
 
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
 
@@ -394,4 +400,60 @@ def tool_chat(request):
     if blocked is not None:
         return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
-    return render(request, "theme/partials/tool_chat.html", {"case_id": case_id})
+    thread_id = request.GET.get("thread_id")
+    if thread_id:
+        request.session["rag_chat_thread_id"] = thread_id
+    else:
+        thread_id = request.session.get("rag_chat_thread_id")
+    if not thread_id:
+        thread_id = uuid4().hex
+        request.session["rag_chat_thread_id"] = thread_id
+    try:
+        scope = views._scope_context_from_request(request)
+    except TenantRequiredError:
+        tenant_id, tenant_schema = None, None
+    else:
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
+
+    collection_options: list[dict[str, str]] = []
+    if tenant_schema:
+        try:
+            from django_tenants.utils import schema_context
+            from documents.models import DocumentCollection
+
+            with schema_context(tenant_schema):
+                collections = (
+                    DocumentCollection.objects.select_related("case")
+                    .order_by("name", "created_at")
+                    .all()
+                )
+                for collection in collections:
+                    label = (
+                        collection.name
+                        or collection.key
+                        or str(collection.collection_id)
+                    )
+                    case_obj = collection.case
+                    if case_obj and getattr(case_obj, "external_id", None):
+                        label = f"{label} (case {case_obj.external_id})"
+                    collection_options.append(
+                        {
+                            "id": str(collection.collection_id),
+                            "label": label,
+                        }
+                    )
+        except Exception:
+            logger.exception("tool_chat.collection_options_failed")
+
+    return render(
+        request,
+        "theme/partials/tool_chat.html",
+        {
+            "case_id": case_id,
+            "thread_id": thread_id,
+            "tenant_id": tenant_id,
+            "tenant_schema": tenant_schema,
+            "collection_options": collection_options,
+        },
+    )

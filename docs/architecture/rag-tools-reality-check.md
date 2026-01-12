@@ -54,11 +54,11 @@ HTMX POST to /web-search
     ↓
 web_search_and_ingest() view
     ├─ If search_type == "external_knowledge":
-    │  └─ Calls ExternalKnowledgeGraph
+    │  └─ Calls web_acquisition_graph (search acquisition)
     │     └─ Returns search results with "Ingest Selected" button
     │
     └─ If search_type == "collection_search":
-       └─ Calls CollectionSearchGraph
+       └─ Calls collection_search (business orchestration)
           └─ Returns search results with optional auto-ingest
 ```
 

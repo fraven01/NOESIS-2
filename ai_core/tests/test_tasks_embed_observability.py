@@ -103,7 +103,7 @@ def test_embed_emits_span_metadata(monkeypatch):
 
     monkeypatch.setattr("ai_core.infra.observability.tracing_enabled", lambda: False)
 
-    result = tasks.embed(meta, "chunks.json")
+    result = tasks.embed(meta, "chunks.json")["data"]
 
     assert "vectors-" in result["path"] and result["path"].endswith(".json")
     assert written["payload"]["chunks"]

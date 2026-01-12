@@ -24,7 +24,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: noesis2_web
-    command: opentelemetry-instrument gunicorn noesis2.wsgi:application --bind 0.0.0.0:8000
+    command: opentelemetry-instrument daphne -b 0.0.0.0 -p 8000 noesis2.asgi:application
     ports:
       - "8000:8000"
     volumes:

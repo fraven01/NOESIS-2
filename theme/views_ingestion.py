@@ -104,7 +104,9 @@ def crawler_submit(request):
 
                 payload["origins"] = unique_origins
 
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
         case_id = str(data.get("case_id") or "").strip() or None
         trace_id = str(uuid4())
         user = getattr(request, "user", None)
@@ -189,7 +191,9 @@ def ingestion_submit(request):
             )
 
         uploaded_file = request.FILES["file"]
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
         case_id = request.POST.get("case_id") or request.headers.get("X-Case-ID")
         workflow_id = str(request.POST.get("workflow_id") or "").strip()
         if not workflow_id:

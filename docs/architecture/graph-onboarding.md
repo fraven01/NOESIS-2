@@ -17,20 +17,19 @@ Preferred build pattern for LangGraph-based graphs: expose factory functions tha
 Examples of factory functions in the repo:
 
 - `ai_core/graphs/technical/universal_ingestion_graph.py:build_universal_ingestion_graph`
-- `ai_core/graphs/collection_search.py:build_compiled_graph`
-- `ai_core/graphs/framework_analysis_graph.py:build_graph`
-
-Example of a module-level singleton (candidate to migrate to factory-only):
-
-- `ai_core/graphs/retrieval_augmented_generation.py` (defines `GRAPH = RetrievalAugmentedGenerationGraph()`)
+- `ai_core/graphs/technical/collection_search.py:build_compiled_graph`
+- `ai_core/graphs/business/framework_analysis_graph.py:build_graph`
+- `ai_core/graphs/technical/retrieval_augmented_generation.py:build_graph`
 
 ## Existing graphs as examples
 
 Graph implementations live in `ai_core/graphs/`. Repository examples include:
 
-- `ai_core/graphs/collection_search.py`
-- `ai_core/graphs/retrieval_augmented_generation.py`
-- `ai_core/graphs/framework_analysis_graph.py`
+- `ai_core/graphs/technical/collection_search.py`
+- `ai_core/graphs/technical/retrieval_augmented_generation.py`
+- `ai_core/graphs/technical/universal_ingestion_graph.py`
+- `ai_core/graphs/business/framework_analysis_graph.py`
+- `ai_core/graphs/web_acquisition_graph.py`
 
 ## Observability hooks used in code
 

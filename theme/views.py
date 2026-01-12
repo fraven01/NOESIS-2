@@ -12,6 +12,7 @@ from django.urls import reverse
 from structlog.stdlib import get_logger
 
 from ai_core.contracts import ScopeContext, BusinessContext
+from ai_core.ids import normalize_request
 from ai_core.infra.resp import build_tool_error_payload
 from ai_core.services.crawler_runner import run_crawler_runner
 from ai_core.services import _get_documents_repository as _core_get_documents_repository
@@ -58,21 +59,12 @@ def home(request):
     return render(request, "theme/home.html")
 
 
-def _tenant_context_from_request(request) -> tuple[str, str]:
-    """Return the tenant identifier and schema for the current request."""
-
-    tenant_obj = TenantContext.from_request(request, allow_headers=False, require=True)
-    tenant_schema = getattr(tenant_obj, "schema_name", None)
-    if tenant_schema is None:
-        tenant_schema = getattr(tenant_obj, "tenant_id", None)
-
-    # Strict Policy: The ID is the Schema Name
-    tenant_id = tenant_schema
-
-    if tenant_schema is None or tenant_id is None:
-        raise TenantRequiredError("Tenant could not be resolved from request")
-
-    return str(tenant_id), str(tenant_schema)
+def _scope_context_from_request(request) -> ScopeContext:
+    """Return ScopeContext from request or via the canonical normalizer."""
+    scope = getattr(request, "scope_context", None)
+    if isinstance(scope, ScopeContext):
+        return scope
+    return normalize_request(request)
 
 
 def _tenant_required_response(exc: TenantRequiredError) -> JsonResponse:

@@ -178,6 +178,7 @@ def tool_context_from_meta(meta: Mapping[str, Any]) -> ToolContext:
         "case_id",
         "collection_id",
         "workflow_id",
+        "thread_id",
         "document_id",
         "document_version_id",
     }
@@ -211,6 +212,9 @@ def tool_context_from_meta(meta: Mapping[str, Any]) -> ToolContext:
     initiated_by_user_id = meta.get("initiated_by_user_id")
     if initiated_by_user_id is not None:
         metadata_payload.setdefault("initiated_by_user_id", initiated_by_user_id)
+    key_alias = meta.get("key_alias")
+    if key_alias is not None:
+        metadata_payload.setdefault("key_alias", key_alias)
 
     if not metadata_payload:
         return tool_context_from_scope(scope, business)

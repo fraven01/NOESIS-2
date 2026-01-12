@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
 
 from ai_core.contracts.business import BusinessContext
 from ai_core.contracts.scope import ScopeContext
-from ai_core.tool_contracts.base import tool_context_from_scope
+from ai_core.tool_contracts.base import tool_context_from_meta, tool_context_from_scope
 
 
 def test_tool_context_from_scope_preserves_runtime_ids_and_defaults():
@@ -70,3 +71,67 @@ def test_tool_context_from_scope_allows_both_run_ids():
 
     assert tool_context.scope.run_id == "run-1"
     assert tool_context.scope.ingestion_run_id == "ingest-1"
+
+
+def test_tool_context_from_meta_prefers_tool_context() -> None:
+    scope = ScopeContext(
+        tenant_id=str(uuid4()),
+        trace_id="trace-111",
+        invocation_id=str(uuid4()),
+        run_id="run-111",
+    )
+    business = BusinessContext(case_id="case-111")
+    direct = tool_context_from_scope(
+        scope, business=business, metadata={"graph_name": "graph-111"}
+    )
+
+    context = tool_context_from_meta({"tool_context": direct})
+
+    assert context.scope == direct.scope
+    assert context.business == direct.business
+    assert context.metadata == {"graph_name": "graph-111"}
+
+
+def test_tool_context_from_meta_requires_scope_context() -> None:
+    with pytest.raises(ValueError, match="tool_context or scope_context"):
+        tool_context_from_meta({})
+
+
+def test_tool_context_from_meta_reads_business_from_scope_context() -> None:
+    tenant_id = str(uuid4())
+    scope_context = {
+        "tenant_id": tenant_id,
+        "trace_id": "trace-222",
+        "invocation_id": str(uuid4()),
+        "run_id": "run-222",
+        "case_id": "case-222",
+    }
+
+    context = tool_context_from_meta({"scope_context": scope_context})
+
+    assert str(context.scope.tenant_id) == tenant_id
+    assert context.business.case_id == "case-222"
+
+
+def test_tool_context_from_meta_includes_key_alias_and_initiated_by() -> None:
+    scope = ScopeContext(
+        tenant_id=str(uuid4()),
+        trace_id="trace-333",
+        invocation_id=str(uuid4()),
+        run_id="run-333",
+    )
+    business = BusinessContext(case_id="case-333")
+    initiated_by = str(uuid4())
+    meta = {
+        "scope_context": scope.model_dump(exclude_none=True),
+        "business_context": business.model_dump(exclude_none=True),
+        "context_metadata": {"graph_name": "graph-333"},
+        "key_alias": "alias-333",
+        "initiated_by_user_id": initiated_by,
+    }
+
+    context = tool_context_from_meta(meta)
+
+    assert context.metadata["graph_name"] == "graph-333"
+    assert context.metadata["key_alias"] == "alias-333"
+    assert context.metadata["initiated_by_user_id"] == initiated_by

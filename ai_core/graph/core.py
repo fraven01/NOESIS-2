@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from pydantic import ValidationError
+
 from ai_core.infra.object_store import read_json, sanitize_identifier, write_json
+from ai_core.graph.state import PersistedGraphState
 
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only imports
@@ -60,6 +64,10 @@ class GraphContext:
         )
 
     @property
+    def thread_id(self) -> str | None:
+        return self.tool_context.business.thread_id
+
+    @property
     def run_id(self) -> str | None:
         return (
             self.tool_context.scope.run_id or self.tool_context.scope.ingestion_run_id
@@ -93,13 +101,43 @@ class FileCheckpointer(Checkpointer):
             )
             write_json(path, {})
             return {}
-        if not isinstance(data, dict):  # pragma: no cover - defensive branch
-            raise TypeError("checkpoint data must be a dictionary")
-        return data
+        try:
+            persisted = PersistedGraphState.model_validate(data)
+        except ValidationError:
+            logger.warning(
+                "graph.checkpoint.invalid",
+                extra={
+                    "graph": ctx.graph_name,
+                    "tenant_id": ctx.tenant_id,
+                    "case_id": ctx.case_id,
+                },
+            )
+            write_json(path, {})
+            return {}
+        return persisted.state
 
     def save(self, ctx: GraphContext, state: dict) -> None:
         """Persist the provided state for later retrieval."""
 
         if not isinstance(state, dict):  # pragma: no cover - defensive branch
             raise TypeError("state must be a dictionary")
-        write_json(self._path(ctx), state)
+        persisted = PersistedGraphState(
+            tool_context=ctx.tool_context,
+            state=state,
+            graph_name=ctx.graph_name,
+            graph_version=ctx.graph_version,
+            checkpoint_at=datetime.now(timezone.utc),
+        )
+        write_json(self._path(ctx), persisted.model_dump(mode="json"))
+
+
+class ThreadAwareCheckpointer(FileCheckpointer):
+    """Checkpoint implementation that prefers chat thread IDs when available."""
+
+    def _path(self, ctx: GraphContext) -> str:
+        safe_tenant = sanitize_identifier(ctx.tenant_id)
+        thread_id = ctx.thread_id
+        if thread_id:
+            safe_thread = sanitize_identifier(thread_id)
+            return f"{safe_tenant}/threads/{safe_thread}/state.json"
+        return super()._path(ctx)

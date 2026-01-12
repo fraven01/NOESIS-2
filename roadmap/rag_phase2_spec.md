@@ -55,9 +55,9 @@ Cons:
 
 ## Proposed Recommendation (Short-Term)
 
-Start with Option A (reuse) to validate impact. Keep any adapters local to the
-RAG graph to avoid new public contracts. If reuse stabilizes, extract in a
-later refactor.
+Start with Option B (extract) to keep RAG-specific logic isolated. Implement
+query transformation and reranking inside `ai_core/rag/` with local prompts and
+heuristic fallbacks, avoiding new public contracts or IDs.
 
 ## Target Flow (Phase 2)
 
@@ -73,18 +73,15 @@ later refactor.
 5) Compose
    - Pass top-ranked snippets to compose as today.
 
-## Implementation Sketch (Option A)
+## Implementation Sketch (Option B)
 
 - Add a `transform_query` step in `retrieval_augmented_generation`:
-  - Local adapter wraps `collection_search` strategy generator.
-  - Produces 3-5 query variants.
+  - Use `ai_core/rag/strategy.py` to generate 3-5 query variants (LLM optional).
 - Add a `rerank` step:
-  - Map retrieved chunks to `SearchCandidate` payload for scoring.
-  - Use `llm_worker.graphs.hybrid_search_and_score` adapter as in
-    `collection_search` for consistent scoring behavior.
+  - Use `ai_core/rag/rerank.py` to reorder chunks (heuristic by default; LLM optional).
 - Add a `confidence` step:
-  - Heuristic based on top score delta, average score, or total hits.
-  - If below threshold, widen retrieval (lower min_sim or increase top_k).
+  - Heuristic based on top score + score delta.
+  - If below threshold, broaden queries and relax retrieval params, then retry once.
 
 ## Risks / Open Questions
 

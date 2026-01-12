@@ -14,6 +14,8 @@ from django.views.decorators.http import require_http_methods
 from django_tenants.utils import schema_context
 from structlog.stdlib import get_logger
 
+from ai_core.contracts.scope import ScopeContext
+from ai_core.ids import normalize_request
 from ai_core.services import _get_documents_repository
 from customers.tenant_context import TenantContext, TenantRequiredError
 from documents.activity_service import ActivityTracker
@@ -44,26 +46,29 @@ RECENT_ACTIVITY_TYPES = (
 )
 
 
-def _tenant_context_from_request(request) -> tuple[str, str]:
-    """Extract tenant context via canonical TenantContext helper."""
+def _resolve_tenant_context(request) -> tuple[str, str]:
+    """Resolve tenant identifiers from scope context or request metadata."""
+    scope = getattr(request, "scope_context", None)
+    if isinstance(scope, ScopeContext):
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
+        if tenant_id and tenant_schema:
+            return str(tenant_id), str(tenant_schema)
 
     tenant_obj = getattr(request, "tenant", None)
-    if tenant_obj is None or (
-        getattr(tenant_obj, "tenant_id", None) is None
-        and getattr(tenant_obj, "schema_name", None) is None
-    ):
-        tenant_obj = TenantContext.from_request(
-            request, allow_headers=True, require=False
-        )
+    if tenant_obj is not None:
+        tenant_schema = getattr(tenant_obj, "schema_name", None)
+        if tenant_schema is None:
+            tenant_schema = getattr(tenant_obj, "tenant_id", None)
+        tenant_id = getattr(tenant_obj, "tenant_id", None) or tenant_schema
+        if tenant_schema and tenant_id:
+            return str(tenant_id), str(tenant_schema)
 
-    tenant_schema = getattr(tenant_obj, "schema_name", None)
-    if tenant_schema is None:
-        tenant_schema = getattr(tenant_obj, "tenant_id", None)
-    tenant_id = getattr(tenant_obj, "tenant_id", None) or tenant_schema
-
-    if tenant_schema is None or tenant_id is None:
+    scope = normalize_request(request)
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
+    if tenant_id is None or tenant_schema is None:
         raise TenantRequiredError("Tenant could not be resolved from request")
-
     return str(tenant_id), str(tenant_schema)
 
 
@@ -141,7 +146,7 @@ def document_download(request, document_id: str):
 
     start_time = time.time()
     try:
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        tenant_id, tenant_schema = _resolve_tenant_context(request)
     except TenantRequiredError as exc:
         return error(403, "TenantRequired", str(exc))
 
@@ -348,7 +353,7 @@ def asset_serve(request, document_id: str, asset_id: str):
         return error(400, "InvalidId", "Invalid document or asset ID format")
 
     try:
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        tenant_id, tenant_schema = _resolve_tenant_context(request)
     except TenantRequiredError as exc:
         return error(403, "TenantRequired", str(exc))
 
@@ -488,7 +493,7 @@ def recent_documents(request):
         )
 
     try:
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        tenant_id, tenant_schema = _resolve_tenant_context(request)
     except TenantRequiredError as exc:
         return error(403, "TenantRequired", str(exc))
 
@@ -536,7 +541,7 @@ def share_document(request, document_id: str):
         return auth_error
 
     try:
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        tenant_id, tenant_schema = _resolve_tenant_context(request)
     except TenantRequiredError as exc:
         return error(403, "TenantRequired", str(exc))
 

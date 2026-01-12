@@ -31,9 +31,10 @@ def test_cleanup_skips_non_redis_broker(monkeypatch) -> None:
     )
 
     result = cleanup_dead_letter_queue()
+    payload = result["data"]
 
-    assert result["status"] == "skipped"
-    assert result["reason"] == "non_redis_broker"
+    assert payload["status"] == "skipped"
+    assert payload["reason"] == "non_redis_broker"
 
 
 def test_cleanup_skips_when_ttl_disabled(monkeypatch) -> None:
@@ -45,9 +46,10 @@ def test_cleanup_skips_when_ttl_disabled(monkeypatch) -> None:
     )
 
     result = cleanup_dead_letter_queue()
+    payload = result["data"]
 
-    assert result["status"] == "skipped"
-    assert result["reason"] == "ttl_disabled"
+    assert payload["status"] == "skipped"
+    assert payload["reason"] == "ttl_disabled"
 
 
 def test_cleanup_removes_expired_messages(monkeypatch) -> None:
@@ -67,9 +69,10 @@ def test_cleanup_removes_expired_messages(monkeypatch) -> None:
     monkeypatch.setattr("ai_core.tasks.time.time", lambda: now)
 
     result = cleanup_dead_letter_queue(max_messages=10, ttl_ms=1000)
+    payload = result["data"]
 
-    assert result["removed"] == 1
-    assert result["kept"] == 2
+    assert payload["removed"] == 1
+    assert payload["kept"] == 2
     assert expired not in fake_redis.items
 
 
@@ -88,8 +91,9 @@ def test_alert_emits_event_when_threshold_exceeded(monkeypatch) -> None:
     )
 
     result = alert_dead_letter_queue(threshold=2)
+    payload = result["data"]
 
-    assert result["alerted"] is True
-    assert result["queue_length"] == 3
+    assert payload["alerted"] is True
+    assert payload["queue_length"] == 3
     assert events
     assert events[0][0] == "dlq.threshold_exceeded"

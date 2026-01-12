@@ -183,7 +183,7 @@ npm run win:test:py:unit -- ai_core/tests/test_rag_ingestion_run.py -v
 - [ ] Audit Meta section with field descriptions
 - [ ] Identity hop type table
 
-### ai_core/graphs/README.md
+### ai_core/graph/README.md
 
 - [ ] Context & Identity section present
 - [ ] `audit_meta_from_scope()` usage example

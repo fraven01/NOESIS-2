@@ -7,7 +7,7 @@ Verbindliche Prüfliste für neue Graphen, Tools und Worker.
 - [ ] `trace_id` gesetzt (bei Bedarf generieren) und unverändert weitergereicht
 - [ ] `case_id` gesetzt oder bewusst als System-Task dokumentiert
 - [ ] `workflow_id` gesetzt vom Dispatcher (nicht im Graph generieren)
-- [ ] Laufzeit-ID gewählt: `run_id` **oder** `ingestion_run_id` (XOR)
+- [ ] Laufzeit-ID gewählt: `run_id` und/oder `ingestion_run_id` (mindestens eine; beide moeglich)
 
 ## Input-Modelle
 - [ ] Pydantic `BaseModel` mit `frozen=True`, `extra="forbid"`

@@ -253,7 +253,7 @@ def document_download(request, document_id: str):
 
     # 2. Tenant extraction (enforced by tenant middleware)
     try:
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        tenant_id, tenant_schema = _resolve_tenant_context(request)
     except TenantRequiredError as exc:
         return error(403, "TenantRequired", str(exc))
 

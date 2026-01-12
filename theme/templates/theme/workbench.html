@@ -262,4 +262,281 @@
     </main>
 
 </div>
+<script>
+    (() => {
+        const initRagChat = (root) => {
+            const container = (root || document).querySelector("[data-rag-chat-root]");
+            if (!container) return;
+            if (container.dataset.ragChatInit === "true") return;
+            container.dataset.ragChatInit = "true";
+
+            const form = container.querySelector("[data-rag-chat-form]");
+            if (!form) return;
+            const chatHistory = container.querySelector("#chat-history");
+            const messageInput = form.querySelector("textarea[name='message']");
+            const caseInput = form.querySelector("input[name='case_id']");
+            const threadInput = form.querySelector("input[name='thread_id']");
+            const tenantInput = form.querySelector("input[name='tenant_id']");
+            const tenantSchemaInput = form.querySelector("input[name='tenant_schema']");
+            const collectionSelect = form.querySelector("select[name='collection_id']");
+            const globalSearchInput = form.querySelector("input[name='global_search']");
+            const submitButton = form.querySelector("button[type='submit']");
+            const threadReset = container.querySelector("#chat-thread-reset");
+
+            const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+            const tenantHint = (tenantSchemaInput && tenantSchemaInput.value)
+                ? tenantSchemaInput.value
+                : (tenantInput ? tenantInput.value : "");
+            const tenantQuery = tenantHint
+                ? `?tenant_schema=${encodeURIComponent(tenantHint)}`
+                : "";
+            const wsUrl = `${scheme}://${window.location.host}/ws/rag-tools/chat/${tenantQuery}`;
+
+            if (window.__ragChatSocket) {
+                try {
+                    window.__ragChatSocket.close();
+                } catch (err) {
+                    // ignore
+                }
+            }
+            const setHtmxDisabled = (disabled) => {
+                if (!form) return;
+                if (disabled) {
+                    form.setAttribute("hx-disable", "true");
+                } else {
+                    form.removeAttribute("hx-disable");
+                }
+            };
+
+            const socket = new WebSocket(wsUrl);
+            window.__ragChatSocket = socket;
+
+            let activeAssistant = null;
+
+            const scrollToBottom = () => {
+                if (!chatHistory) return;
+                chatHistory.scrollTop = chatHistory.scrollHeight;
+            };
+
+            const setPending = (pending) => {
+                if (!submitButton || !messageInput) return;
+                submitButton.disabled = pending;
+                messageInput.disabled = pending;
+            };
+
+            const appendUserMessage = (text) => {
+                const wrapper = document.createElement("div");
+                wrapper.className = "flex items-start gap-4 justify-end";
+                wrapper.innerHTML = `
+                    <div class="bg-indigo-600 p-4 rounded-2xl rounded-tr-none shadow-sm text-sm text-white max-w-[80%]">
+                        <p></p>
+                    </div>
+                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold text-xs">You</div>
+                `;
+                const textNode = wrapper.querySelector("p");
+                if (textNode) textNode.textContent = text;
+                chatHistory.appendChild(wrapper);
+                scrollToBottom();
+            };
+
+            const appendAssistantMessage = () => {
+                const wrapper = document.createElement("div");
+                wrapper.className = "flex items-start gap-4";
+                wrapper.innerHTML = `
+                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">AI</div>
+                    <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100 text-sm text-slate-700 max-w-[80%] space-y-2">
+                        <div class="prose prose-sm max-w-none text-slate-700">
+                            <span class="rag-answer"></span>
+                        </div>
+                        <div class="rag-snippets hidden mt-2 pt-2 border-t border-slate-100">
+                            <p class="text-xs font-semibold text-slate-500 mb-1">Sources:</p>
+                            <ul class="space-y-1"></ul>
+                        </div>
+                    </div>
+                `;
+                chatHistory.appendChild(wrapper);
+                scrollToBottom();
+                return {
+                    wrapper,
+                    answer: wrapper.querySelector(".rag-answer"),
+                    snippets: wrapper.querySelector(".rag-snippets"),
+                };
+            };
+
+            const appendErrorMessage = (text) => {
+                const wrapper = document.createElement("div");
+                wrapper.className = "flex items-start gap-4";
+                wrapper.innerHTML = `
+                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-red-100 flex items-center justify-center text-red-700 font-bold text-xs">ERR</div>
+                    <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-red-100 text-sm text-red-600 max-w-[80%]">
+                        <p></p>
+                    </div>
+                `;
+                const textNode = wrapper.querySelector("p");
+                if (textNode) textNode.textContent = text;
+                chatHistory.appendChild(wrapper);
+                scrollToBottom();
+            };
+
+            const resetChatHistory = () => {
+                if (!chatHistory) return;
+                chatHistory.innerHTML = "";
+                const welcome = document.createElement("div");
+                welcome.className = "flex items-start gap-4";
+                welcome.innerHTML = `
+                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">AI</div>
+                    <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100 text-sm text-slate-700 max-w-[80%]">
+                        <p>Hello! I'm your RAG assistant. How can I help you analyze your documents today?</p>
+                    </div>
+                `;
+                chatHistory.appendChild(welcome);
+                scrollToBottom();
+            };
+
+            const newThreadId = () => {
+                if (crypto?.randomUUID) {
+                    return crypto.randomUUID();
+                }
+                const random = Math.random().toString(16).slice(2);
+                return `thread-${Date.now().toString(16)}-${random}`;
+            };
+
+            if (threadReset) {
+                threadReset.addEventListener("click", () => {
+                    if (threadInput) {
+                        threadInput.value = newThreadId();
+                    }
+                    resetChatHistory();
+                });
+            }
+
+            const renderSnippets = (snippetsContainer, snippets) => {
+                if (!snippetsContainer) return;
+                const list = snippetsContainer.querySelector("ul");
+                if (!list) return;
+                list.innerHTML = "";
+                if (!Array.isArray(snippets) || snippets.length === 0) {
+                    snippetsContainer.classList.add("hidden");
+                    return;
+                }
+                snippetsContainer.classList.remove("hidden");
+                snippets.forEach((snippet) => {
+                    const item = document.createElement("li");
+                    item.className = "text-xs text-slate-400 truncate";
+                    const source = snippet.source || "Unknown";
+                    const score = snippet.score_percent ?? 0;
+                    item.title = snippet.title || source;
+                    if (snippet.download_url) {
+                        const link = document.createElement("a");
+                        link.className = "hover:text-indigo-600 underline";
+                        link.href = snippet.download_url;
+                        link.target = "_blank";
+                        link.textContent = source;
+                        item.textContent = "- ";
+                        item.appendChild(link);
+                        item.appendChild(
+                            document.createTextNode(` (${score}%)`)
+                        );
+                    } else {
+                        item.textContent = `- ${source} (${score}%)`;
+                    }
+                    list.appendChild(item);
+                });
+            };
+
+            socket.addEventListener("open", () => {
+                setHtmxDisabled(true);
+            });
+
+            socket.addEventListener("close", () => {
+                setHtmxDisabled(false);
+            });
+
+            socket.addEventListener("error", () => {
+                setHtmxDisabled(false);
+            });
+
+            socket.addEventListener("message", (event) => {
+                let payload = null;
+                try {
+                    payload = JSON.parse(event.data);
+                } catch (err) {
+                    return;
+                }
+                if (!payload || !payload.event) return;
+
+                if (payload.event === "delta") {
+                    if (!activeAssistant) {
+                        activeAssistant = appendAssistantMessage();
+                    }
+                    if (activeAssistant.answer) {
+                        activeAssistant.answer.textContent += payload.text || "";
+                    }
+                    scrollToBottom();
+                    return;
+                }
+
+                if (payload.event === "final") {
+                    if (!activeAssistant) {
+                        activeAssistant = appendAssistantMessage();
+                    }
+                    if (activeAssistant.answer) {
+                        activeAssistant.answer.textContent = payload.answer || "";
+                    }
+                    renderSnippets(activeAssistant.snippets, payload.snippets);
+                    if (threadInput && payload.thread_id) {
+                        threadInput.value = payload.thread_id;
+                    }
+                    activeAssistant = null;
+                    setPending(false);
+                    scrollToBottom();
+                    return;
+                }
+
+                if (payload.event === "error") {
+                    appendErrorMessage(payload.error || "Streaming error.");
+                    activeAssistant = null;
+                    setPending(false);
+                }
+            });
+
+            form.addEventListener("submit", (event) => {
+                if (socket.readyState !== WebSocket.OPEN) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                const text = messageInput?.value?.trim();
+                if (!text) {
+                    appendErrorMessage("Message is required.");
+                    return;
+                }
+
+                appendUserMessage(text);
+                activeAssistant = appendAssistantMessage();
+                setPending(true);
+
+                socket.send(JSON.stringify({
+                    message: text,
+                    case_id: caseInput ? caseInput.value : null,
+                    collection_id: collectionSelect ? collectionSelect.value : null,
+                    global_search: globalSearchInput ? globalSearchInput.checked : false,
+                    thread_id: threadInput ? threadInput.value : null,
+                    tenant_id: tenantInput ? tenantInput.value : null,
+                    tenant_schema: tenantSchemaInput ? tenantSchemaInput.value : null,
+                }));
+
+                if (messageInput) {
+                    messageInput.value = "";
+                }
+            });
+        };
+
+        window.initRagChat = initRagChat;
+        document.addEventListener("DOMContentLoaded", () => initRagChat(document));
+        document.addEventListener("htmx:afterSwap", (event) => {
+            initRagChat(event.target);
+        });
+    })();
+</script>
 {% endblock %}

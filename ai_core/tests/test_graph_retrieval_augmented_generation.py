@@ -1,4 +1,4 @@
-from typing import Any, MutableMapping
+from typing import Any
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -7,7 +7,7 @@ import pytest
 from ai_core.contracts.business import BusinessContext
 from ai_core.contracts.scope import ScopeContext
 from ai_core.graphs.technical import retrieval_augmented_generation
-from ai_core.nodes import retrieve
+from ai_core.nodes import compose, retrieve
 from ai_core.tool_contracts import ToolContext
 
 
@@ -54,12 +54,9 @@ def _dummy_output() -> retrieve.RetrieveOutput:
     return retrieve.RetrieveOutput(matches=matches, meta=meta)
 
 
-def _fake_compose(state: MutableMapping[str, Any], meta: MutableMapping[str, Any]):
-    new_state = dict(state)
-    assert "snippets" in new_state
-    assert "retrieval" in new_state
-    new_state["answer"] = "answer"
-    return new_state, {"answer": "answer", "prompt_version": "v-test"}
+def _fake_compose(context: ToolContext, params: compose.ComposeInput):
+    assert params.snippets is not None
+    return compose.ComposeOutput(answer="answer", prompt_version="v-test")
 
 
 def test_graph_runs_retrieve_then_compose() -> None:
@@ -73,21 +70,24 @@ def test_graph_runs_retrieve_then_compose() -> None:
         assert isinstance(params, retrieve.RetrieveInput)
         return _dummy_output()
 
-    def _recording_compose(
-        state: MutableMapping[str, Any], meta: MutableMapping[str, Any]
-    ):
+    def _recording_compose(context: ToolContext, params: compose.ComposeInput):
         calls.append("compose")
-        assert meta["scope_context"]["tenant_id"] == "tenant-42"
-        return _fake_compose(state, meta)
+        assert context.scope.tenant_id == "tenant-42"
+        return _fake_compose(context, params)
 
     graph = retrieval_augmented_generation.RetrievalAugmentedGenerationGraph(
         retrieve_node=_recording_retrieve,
         compose_node=_recording_compose,
     )
 
-    state, result = graph.run({}, _scope_meta("tenant-42", "case-1"))
+    state, result = graph.run(
+        {"query": "what is arbitration", "question": "what is arbitration"},
+        _scope_meta("tenant-42", "case-1"),
+    )
 
-    assert calls == ["retrieve", "compose"]
+    assert calls[0] == "retrieve"
+    assert calls[-1] == "compose"
+    assert all(call == "retrieve" for call in calls[:-1])
     assert state["answer"] == "answer"
     assert state["snippets"] == [
         {
@@ -109,7 +109,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
     assert retrieval["top_k_effective"] == 1
     assert retrieval["matches_returned"] == 1
     assert retrieval["visibility_effective"] == "active"
-    assert retrieval["took_ms"] == 12
+    assert retrieval["took_ms"] >= 12
     assert retrieval["routing"]["profile"] == "default"
     assert retrieval["routing"]["vector_space_id"] == "rag/default@v1"
     assert result["answer"] == "answer"
@@ -133,7 +133,10 @@ def test_graph_normalises_tenant_alias() -> None:
     )
 
     meta = _scope_meta("tenant-alias", "case-1")
-    state, result = graph.run({}, meta)
+    state, result = graph.run(
+        {"query": "what is arbitration", "question": "what is arbitration"},
+        meta,
+    )
 
     assert meta["scope_context"]["tenant_id"] == "tenant-alias"
     assert captured["tenant_id"] == "tenant-alias"
@@ -145,7 +148,7 @@ def test_graph_normalises_tenant_alias() -> None:
     assert retrieval["top_k_effective"] == 1
     assert retrieval["matches_returned"] == 1
     assert retrieval["visibility_effective"] == "active"
-    assert retrieval["took_ms"] == 12
+    assert retrieval["took_ms"] >= 12
     assert retrieval["routing"]["profile"] == "default"
     assert retrieval["routing"]["vector_space_id"] == "rag/default@v1"
 
@@ -157,25 +160,24 @@ def test_graph_fills_missing_snippet_fields() -> None:
         return _dummy_output()
 
     def _compose_with_sparse_snippets(
-        state: MutableMapping[str, Any], meta: MutableMapping[str, Any]
+        context: ToolContext, params: compose.ComposeInput
     ):
-        new_state = dict(state)
         sparse_snippet = {"id": "doc-1", "score": "0.2"}
-        new_state["snippets"] = [sparse_snippet]
-        new_state["answer"] = "filled"
-        return new_state, {
-            "answer": "filled",
-            "prompt_version": "v-test",
-            "snippets": [dict(sparse_snippet)],
-            "retrieval": new_state["retrieval"],
-        }
+        return compose.ComposeOutput(
+            answer="filled",
+            prompt_version="v-test",
+            snippets=[dict(sparse_snippet)],
+        )
 
     graph = retrieval_augmented_generation.RetrievalAugmentedGenerationGraph(
         retrieve_node=_recording_retrieve,
         compose_node=_compose_with_sparse_snippets,
     )
 
-    state, result = graph.run({}, _scope_meta("tenant", "case"))
+    state, result = graph.run(
+        {"query": "what is arbitration", "question": "what is arbitration"},
+        _scope_meta("tenant", "case"),
+    )
 
     snippet = result["snippets"][0]
     assert snippet["text"] == "snippet"

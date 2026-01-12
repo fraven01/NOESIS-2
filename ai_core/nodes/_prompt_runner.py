@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import random
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from django.conf import settings
 
@@ -12,6 +13,7 @@ from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.prompts import load
 from ai_core.infra.observability import emit_event, observe_span, update_observation
 from ai_core.llm import client
+from ai_core.tool_contracts import ToolContext
 
 
 ResultShaper = Callable[[Dict[str, Any]], Tuple[Any, Dict[str, Any]]]
@@ -103,31 +105,67 @@ def _should_emit_guardrail_event(guardrail: Dict[str, Any]) -> bool:
         return False
 
 
+@dataclass(frozen=True)
+class PromptRunResult:
+    value: Any
+    prompt_version: str | None
+    metadata: dict[str, Any]
+
+
+def _build_llm_metadata(
+    context: ToolContext,
+    *,
+    prompt_version: str | None,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "tenant_id": context.scope.tenant_id,
+        "case_id": context.business.case_id,
+        "trace_id": context.scope.trace_id,
+        "user_id": context.scope.user_id,
+        "prompt_version": prompt_version,
+    }
+    runtime_meta = context.metadata
+    key_alias = runtime_meta.get("key_alias")
+    if key_alias:
+        payload["key_alias"] = key_alias
+    ledger_logger = runtime_meta.get("ledger_logger")
+    if ledger_logger:
+        payload["ledger_logger"] = ledger_logger
+    if metadata:
+        for key in ("key_alias", "ledger_logger"):
+            if key in metadata and metadata[key] is not None and key not in payload:
+                payload[key] = metadata[key]
+    return payload
+
+
 def run_prompt_node(
     *,
     trace_name: str,
     prompt_alias: str,
     llm_label: str,
-    state_key: str,
-    state: Dict[str, Any],
-    meta: Dict[str, str],
+    context: ToolContext,
+    text: str,
+    metadata: Mapping[str, Any] | None = None,
     result_shaper: Optional[ResultShaper] = None,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+) -> PromptRunResult:
     """Execute a prompt-driven node with shared boilerplate logic."""
 
     prompt = load(prompt_alias)
-    meta["prompt_version"] = prompt["version"]
-    meta_with_version = dict(meta)
+    prompt_version = prompt.get("version")
+    llm_metadata = _build_llm_metadata(
+        context,
+        prompt_version=prompt_version,
+        metadata=metadata,
+    )
 
     @observe_span(name=trace_name)
-    def _execute(
-        current_state: Dict[str, Any], *, meta: Dict[str, str]
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        base = current_state.get("text", "")
+    def _execute() -> PromptRunResult:
+        base = text or ""
         full_prompt = f"{prompt['text']}\n\n{base}"
         pii_config = get_pii_config()
         masked = mask_prompt(full_prompt, config=pii_config)
-        result = client.call(llm_label, masked, meta)
+        result = client.call(llm_label, masked, llm_metadata)
 
         if result_shaper is not None:
             value, metadata_extra = result_shaper(result)
@@ -136,9 +174,17 @@ def run_prompt_node(
 
         metadata_extra = dict(metadata_extra or {})
 
-        value = mask_response(value, config=pii_config)
+        if isinstance(value, str):
+            value_text = value
+        elif value is None:
+            value_text = ""
+        else:
+            value_text = str(value)
+        value = mask_response(value_text, config=pii_config)
 
-        guardrail_payload = _normalise_guardrail_payload(meta, metadata_extra)
+        guardrail_payload = _normalise_guardrail_payload(
+            dict(metadata or {}), metadata_extra
+        )
 
         if guardrail_payload:
             branch = _determine_branch(guardrail_payload)
@@ -162,15 +208,10 @@ def run_prompt_node(
                     emit_event(event_payload)
                 except Exception:
                     pass
+        return PromptRunResult(
+            value=value,
+            prompt_version=prompt_version,
+            metadata=metadata_extra,
+        )
 
-        new_state = dict(current_state)
-        new_state[state_key] = value
-
-        node_meta = {
-            state_key: value,
-            **metadata_extra,
-            "prompt_version": prompt["version"],
-        }
-        return new_state, node_meta
-
-    return _execute(state, meta=meta_with_version)
+    return _execute()

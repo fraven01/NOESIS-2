@@ -65,9 +65,11 @@ def web_search(request):
         )
 
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError as exc:
         return views._tenant_required_response(exc)
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
     case_id = str(data.get("case_id") or "").strip() or None
     user = getattr(request, "user", None)
     user_id = (
@@ -391,9 +393,11 @@ def web_search_ingest_selected(request):
             )
 
         try:
-            tenant_id, tenant_schema = views._tenant_context_from_request(request)
+            scope = views._scope_context_from_request(request)
         except TenantRequiredError as exc:
             return views._tenant_required_response(exc)
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
         manual_collection_id, collection_id = views._resolve_manual_collection(
             tenant_id, data.get("collection_id"), ensure=True
         )

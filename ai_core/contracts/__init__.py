@@ -21,6 +21,7 @@ from ai_core.contracts.business import (
     CollectionId,
     DocumentId,
     DocumentVersionId,
+    ThreadId,
     WorkflowId,
 )
 from ai_core.contracts.scope import (
@@ -56,6 +57,7 @@ __all__ = [
     "CollectionId",
     "DocumentId",
     "DocumentVersionId",
+    "ThreadId",
     "WorkflowId",
     # Audit
     "AuditMeta",

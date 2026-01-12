@@ -20,7 +20,7 @@ This document is a “what exists in code” snapshot. It lists the concrete cod
 
 The repository currently contains at least one graph that implements domain/business logic (beyond technical orchestration) while still living under `ai_core/graphs/`:
 
-- Framework analysis (agreement structure, versioning, persistence into domain models): `ai_core/graphs/framework_analysis_graph.py` (persists `documents/framework_models.py:FrameworkProfile` / `FrameworkDocument`)
+- Framework analysis (agreement structure, versioning, persistence into domain models): `ai_core/graphs/business/framework_analysis_graph.py` (persists `documents/framework_models.py:FrameworkProfile` / `FrameworkDocument`)
 
 ## Layer 3 — Orchestration (Graphs / Domain services)
 
@@ -36,13 +36,10 @@ The repository uses “build_*” factory functions for many graph modules. Pref
 
 Factory examples:
 
-- `ai_core/graphs/upload_ingestion_graph.py:build_upload_graph`
-- `ai_core/graphs/external_knowledge_graph.py:build_external_knowledge_graph`
-- `ai_core/graphs/collection_search.py:build_compiled_graph`
-
-Singleton example (candidate to migrate):
-
-- `ai_core/graphs/retrieval_augmented_generation.py` (module-level `GRAPH = ...`)
+- `ai_core/graphs/technical/universal_ingestion_graph.py:build_universal_ingestion_graph`
+- `ai_core/graphs/web_acquisition_graph.py:build_web_acquisition_graph`
+- `ai_core/graphs/technical/collection_search.py:build_compiled_graph`
+- `ai_core/graphs/technical/retrieval_augmented_generation.py:build_graph`
 
 ### Graph implementations present in the repo
 
@@ -54,10 +51,14 @@ Singleton example (candidate to migrate):
 
 - `collection_search.py` (includes HITL decision structures)
 - `retrieval_augmented_generation.py`
-- `external_knowledge_graph.py`
-- `crawler_ingestion_graph.py`
-- `upload_ingestion_graph.py`
+- `universal_ingestion_graph.py`
+- `document_service.py`
+- `cost_tracking.py`
 - `info_intake.py`
+
+Additional technical graph modules in `ai_core/graphs/`:
+
+- `web_acquisition_graph.py`
 
 ### Document orchestration boundary
 
@@ -84,8 +85,8 @@ Singleton example (candidate to migrate):
 
 ## HITL (Human-in-the-loop) code locations
 
-- HITL node + decision payloads: `ai_core/graphs/collection_search.py`
-- HITL references in graph documentation: `ai_core/graphs/README.md` and `ai_core/graphs/collection_search_README.md`
+- HITL node + decision payloads: `ai_core/graphs/technical/collection_search.py`
+- HITL references in graph documentation: `ai_core/graph/README.md` and `ai_core/graphs/technical/collection_search_README.md`
 - UI references mentioning HITL queue: `theme/views.py` (search for “HITL”)
 
 ## Roadmap pointer (non-code planning)
