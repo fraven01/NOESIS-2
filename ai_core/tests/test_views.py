@@ -95,7 +95,7 @@ def test_ping_view_applies_rate_limit(
     monkeypatch.setattr(rate_limit, "_get_redis", lambda: DummyRedis())
 
     resp1 = authenticated_client.get(
-        "/ai/ping/",
+        "/v1/ai/ping/",
         **{META_TENANT_ID_KEY: tenant_schema},
     )
     assert resp1.status_code == 200
@@ -104,7 +104,7 @@ def test_ping_view_applies_rate_limit(
     assert resp1[X_TENANT_ID_HEADER] == tenant_schema
     assert X_KEY_ALIAS_HEADER not in resp1
     resp2 = authenticated_client.get(
-        "/ai/ping/",
+        "/v1/ai/ping/",
         **{META_TENANT_ID_KEY: tenant_schema},
     )
     assert resp2.status_code == 429
@@ -119,7 +119,7 @@ def test_v1_ping_does_not_require_authorization(
     authenticated_client, test_tenant_schema_name
 ):
     response = authenticated_client.get(
-        "/v1/ai/ping/",
+        "/v1/v1/ai/ping/",
         **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
 
@@ -133,7 +133,7 @@ def test_missing_case_header_defaults_case_id(
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     resp = authenticated_client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data={},
         content_type="application/json",
         **{META_TENANT_ID_KEY: test_tenant_schema_name},
@@ -180,7 +180,7 @@ def test_rag_upload_allows_unauthenticated_client_in_tests(
 @pytest.mark.django_db
 def test_invalid_case_header_returns_400(authenticated_client, test_tenant_schema_name):
     resp = authenticated_client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data={},
         content_type="application/json",
         **{
@@ -201,7 +201,7 @@ def test_tenant_schema_header_mismatch_returns_400(
     authenticated_client, test_tenant_schema_name
 ):
     resp = authenticated_client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data={},
         content_type="application/json",
         **{
@@ -233,7 +233,7 @@ def test_tenant_schema_header_match_allows_request(
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
     resp = authenticated_client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data={},
         content_type="application/json",
         **{
@@ -252,7 +252,7 @@ def test_tenant_schema_header_match_allows_request(
 def test_assert_case_active_rejects_connection_fallback(
     monkeypatch, test_tenant_schema_name
 ):
-    request = RequestFactory().post("/ai/intake/")
+    request = RequestFactory().post("/v1/ai/intake/")
     monkeypatch.setattr(
         connection, "schema_name", test_tenant_schema_name, raising=False
     )
@@ -267,7 +267,7 @@ def test_assert_case_active_rejects_connection_fallback(
 @pytest.mark.django_db
 def test_assert_case_active_rejects_mismatched_token_tenant(test_tenant_schema_name):
     request = RequestFactory().post(
-        "/ai/intake/", HTTP_X_TENANT_ID=test_tenant_schema_name
+        "/v1/ai/intake/", HTTP_X_TENANT_ID=test_tenant_schema_name
     )
     request.auth = {"tenant_id": "other-tenant"}
 
@@ -283,7 +283,7 @@ def test_missing_tenant_resolution_returns_400(authenticated_client, monkeypatch
     monkeypatch.setattr("ai_core.views._resolve_tenant_id", lambda request: None)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
     resp = authenticated_client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data={},
         content_type="application/json",
         **{META_CASE_ID_KEY: "c"},
@@ -303,7 +303,7 @@ def test_non_json_payload_returns_415(
 ):
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
     resp = authenticated_client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data="raw body",
         content_type="text/plain",
         **{
@@ -321,7 +321,7 @@ def test_non_json_payload_returns_415(
     assert error_body["error"]["code"] == "unsupported_media_type"
 
     v1_response = authenticated_client.post(
-        "/v1/ai/intake/",
+        "/v1/v1/ai/intake/",
         data="raw body",
         content_type="text/plain",
         **{
@@ -346,7 +346,7 @@ def test_intake_rejects_invalid_metadata_type(
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
     response = authenticated_client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data=json.dumps({"metadata": ["not", "an", "object"]}),
         content_type="application/json",
         **{
@@ -371,7 +371,7 @@ def test_intake_persists_state_and_headers(
 
     tenant_header = test_tenant_schema_name
     resp = authenticated_client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data={},
         content_type="application/json",
         **{

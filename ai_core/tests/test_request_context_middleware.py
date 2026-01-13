@@ -43,7 +43,7 @@ def test_middleware_binds_headers_and_sets_response_metadata():
     request = _build_request(
         factory,
         "get",
-        "/ai/ping/",
+        "/v1/ai/ping/",
         HTTP_TRACEPARENT=traceparent,
         HTTP_X_TRACE_ID="trace-ignore",
         HTTP_X_CASE_ID="case-456",
@@ -102,7 +102,7 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     request = _build_request(
         factory,
         "post",
-        "/ai/intake/",
+        "/v1/ai/intake/",
         HTTP_X_CASE_ID="case-auto",
     )
     request.tenant = Tenant(schema_name="trace-tenant", name="Trace Tenant")
@@ -132,7 +132,7 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     assert re.fullmatch(r"[0-9a-f]{16}", captured["span.id"])
     assert captured["tenant.id"] == "trace-tenant"
     assert captured["http.method"] == "POST"
-    assert captured["http.route"] == "/ai/intake/"
+    assert captured["http.route"] == "/v1/ai/intake/"
     assert captured["client.ip"] == "127.0.0.1"
     assert captured["case.id"] == "case-auto"
     assert "key.alias" not in captured
@@ -159,7 +159,7 @@ def test_middleware_rejects_missing_tenant(monkeypatch):
     request = _build_request(
         factory,
         "get",
-        "/ai/ping/",
+        "/v1/ai/ping/",
         HTTP_X_TENANT_ID="spoof-only",
     )
 
@@ -189,7 +189,7 @@ def test_middleware_rejects_header_only_when_headers_disallowed(monkeypatch):
     request = _build_request(
         factory,
         "get",
-        "/ai/ping/",
+        "/v1/ai/ping/",
         HTTP_X_TENANT_ID="header-only",
     )
 
@@ -215,7 +215,7 @@ def test_middleware_uses_resolved_tenant_over_header():
     request = _build_request(
         factory,
         "get",
-        "/ai/ping/",
+        "/v1/ai/ping/",
         HTTP_X_TENANT_ID="spoofed-tenant",
         HTTP_X_CASE_ID="case-tenant",
     )
@@ -240,7 +240,7 @@ def test_middleware_builds_scope_context_from_ingestion_headers():
     request = _build_request(
         factory,
         "post",
-        "/ai/intake/",
+        "/v1/ai/intake/",
         HTTP_X_TENANT_ID="tenant-scope",
         HTTP_X_CASE_ID="case-scope",
         HTTP_X_TRACE_ID="trace-scope",
@@ -274,7 +274,7 @@ def test_middleware_accepts_both_run_ids():
     request = _build_request(
         factory,
         "get",
-        "/ai/ping/",
+        "/v1/ai/ping/",
         HTTP_X_TENANT_ID="tenant-both",
         HTTP_X_TRACE_ID="trace-both",
         HTTP_X_CASE_ID="case-both",
@@ -305,7 +305,7 @@ def test_middleware_allows_value_error_from_view_to_propagate():
     request = _build_request(
         factory,
         "get",
-        "/ai/ping/",
+        "/v1/ai/ping/",
         HTTP_X_TENANT_ID="tenant-error",
         HTTP_X_CASE_ID="case-error",
     )

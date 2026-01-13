@@ -135,7 +135,7 @@ def test_structlog_logger_respects_string_opt_in(settings):
 def test_request_log_context_middleware_binds_and_clears():
     factory = RequestFactory()
     request = factory.get(
-        "/ai/ping/",
+        "/v1/ai/ping/",
         **{
             META_TRACE_ID_KEY: "trace-123",
             META_CASE_ID_KEY: "case-456",

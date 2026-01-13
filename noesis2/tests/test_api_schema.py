@@ -262,7 +262,7 @@ def test_ai_core_endpoints_expose_serializers():
         ]
     )
 
-    ping_operation = schema["paths"]["/v1/ai/ping/"]["get"]
+    ping_operation = schema["paths"]["/v1/v1/ai/ping/"]["get"]
     ping_ref = ping_operation["responses"]["200"]["content"]["application/json"][
         "schema"
     ]["$ref"]
@@ -279,11 +279,11 @@ def test_ai_core_endpoints_expose_serializers():
     assert any(
         example.get("value", {}).get("ok") is True for example in ping_examples.values()
     )
-    legacy_ping_operation = schema["paths"]["/ai/ping/"]["get"]
+    legacy_ping_operation = schema["paths"]["/v1/ai/ping/"]["get"]
     assert legacy_ping_operation.get("deprecated") is True
     assert not ping_operation.get("deprecated")
 
-    intake_operation = schema["paths"]["/v1/ai/intake/"]["post"]
+    intake_operation = schema["paths"]["/v1/v1/ai/intake/"]["post"]
     intake_request_ref = intake_operation["requestBody"]["content"]["application/json"][
         "schema"
     ]["$ref"]
@@ -320,7 +320,7 @@ def test_ai_core_endpoints_expose_serializers():
         for sample in intake_operation.get("x-codeSamples", [])
     )
 
-    legacy_intake_operation = schema["paths"]["/ai/intake/"]["post"]
+    legacy_intake_operation = schema["paths"]["/v1/ai/intake/"]["post"]
     assert legacy_intake_operation.get("deprecated") is True
 
     intake_responses = intake_operation["responses"]
