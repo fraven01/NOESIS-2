@@ -118,11 +118,15 @@ def test_run_graph_routes_score_results(monkeypatch):
         assert meta["task_type"] == "score_results"
         return sentinel
 
-    def unexpected_runner(_graph_name):
-        raise AssertionError("graph runner should not be called for score_results")
-
     monkeypatch.setattr(tasks, "run_score_results", fake_run_score)
-    monkeypatch.setattr(tasks, "get_graph_runner", unexpected_runner)
+
+    class UnexpectedExecutor:
+        def __init__(self):
+            raise AssertionError(
+                "graph executor should not be created for score_results"
+            )
+
+    monkeypatch.setattr(tasks, "LocalGraphExecutor", UnexpectedExecutor)
 
     payload = tasks.run_graph.run(
         graph_name="dummy",

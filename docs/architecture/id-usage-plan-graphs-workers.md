@@ -18,7 +18,7 @@ Each service/worker should use a consistent `service_id`:
 
 | Service | service_id | Queue | Entry Point |
 |---------|------------|-------|-------------|
-| Ingestion Worker | `celery-ingestion-worker` | `ingestion` | `ai_core/tasks.py:run_ingestion_graph` |
+| Ingestion Worker | `celery-ingestion-worker` | `ingestion` | `ai_core/tasks/graph_tasks.py:run_ingestion_graph` |
 | Agents Worker | `celery-agents-worker` | `agents-high` (default), `agents-low` (background) | `llm_worker/tasks.py:run_graph` |
 | Crawler Worker | `crawler-worker` | `ingestion` | `crawler/worker.py` |
 | Document Processing | `document-processor` | `ingestion` | (embedded in graphs) |
@@ -52,7 +52,7 @@ def graph_view(request):
 ### 2. Celery Task → Graph (S2S Hop)
 
 ```python
-# In ai_core/tasks.py
+# In ai_core/tasks/graph_tasks.py
 from ai_core.ids.http_scope import normalize_task_context
 from ai_core.contracts.audit_meta import audit_meta_from_scope
 from ai_core.tool_contracts.base import tool_context_from_meta
@@ -164,7 +164,7 @@ def trigger_ingestion_node(state: dict) -> tuple[GraphTransition, bool]:
 ### Ingestion Worker
 
 ```python
-# ai_core/tasks.py
+# ai_core/tasks/graph_tasks.py
 from ai_core.tool_contracts.base import tool_context_from_meta
 
 @shared_task(queue="ingestion", name="ai_core.tasks.run_ingestion_graph")
@@ -224,7 +224,7 @@ def process_crawl_job(job: CrawlJob):
 
 ### Phase 2: Task Entry Points
 
-For each Celery task in `ai_core/tasks.py`:
+For each Celery task in `ai_core/tasks/`:
 
 - [ ] Use `normalize_task_context()` with explicit `service_id`
 - [ ] Capture `initiated_by_user_id` via `audit_meta_from_scope()` (not ScopeContext)

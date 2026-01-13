@@ -9,7 +9,7 @@ import pytest
 from celery.exceptions import Retry
 
 import ai_core.infra.observability as observability
-from ai_core import tasks
+from ai_core.tasks import ingestion_tasks as tasks
 from ai_core.llm import client as llm_client
 from ai_core.rag import vector_client
 from tests.chaos.conftest import _build_chaos_meta

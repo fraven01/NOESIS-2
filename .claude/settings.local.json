@@ -61,7 +61,9 @@
       "Bash(for file in \"docs/cloud/gcp-staging.md\" \"docs/cloud/gcp-prod.md\" \"docs/environments/matrix.md\" \"docs/docker/conventions.md\")",
       "Bash(do test -f \"f:\\\\NOESIS-2\\\\NOESIS-2$file\")",
       "Bash(echo:*)",
-      "Bash(for file in \"docs/agents/tool-contracts.md\" \"docs/agents/reranking-contracts.md\" \"docs/agents/web-search-tool.md\")"
+      "Bash(for file in \"docs/agents/tool-contracts.md\" \"docs/agents/reranking-contracts.md\" \"docs/agents/web-search-tool.md\")",
+      "Bash(git stash:*)",
+      "Bash(wc:*)"
     ],
     "deny": [],
     "ask": []

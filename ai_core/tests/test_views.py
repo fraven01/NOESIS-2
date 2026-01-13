@@ -11,6 +11,7 @@ from django.test import RequestFactory
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from ai_core import services, views
+import ai_core.graph.registry as graph_registry
 from ai_core.contracts.crawler_runner import CrawlerRunContext
 from ai_core.contracts.payloads import CompletionPayload, DeltaPayload, GuardrailPayload
 from ai_core.contracts.business import BusinessContext
@@ -591,7 +592,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
         }
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     response = authenticated_client.post(
         "/v1/ai/rag/query/",
@@ -684,7 +685,7 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
         return state, {"answer": "incomplete", "prompt_version": "v1"}
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     response = authenticated_client.post(
         "/v1/ai/rag/query/",
@@ -764,7 +765,7 @@ def test_rag_query_endpoint_allows_blank_answer(
         return new_state, payload
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     response = authenticated_client.post(
         "/v1/ai/rag/query/",
@@ -844,7 +845,7 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
         }
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     response = authenticated_client.post(
         "/v1/ai/rag/query/",
@@ -924,7 +925,7 @@ def test_rag_query_endpoint_normalises_numeric_types(
         }
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     response = authenticated_client.post(
         "/v1/ai/rag/query/",
@@ -1029,7 +1030,7 @@ def test_rag_query_endpoint_applies_top_k_override(
     monkeypatch.setattr(retrieve, "_ROUTER", None)
     monkeypatch.setattr(retrieve, "_get_router", lambda: router)
 
-    def _run_graph(request_obj, _graph):
+    def _run_graph(request_obj):
         body = request_obj.body
         if isinstance(body, bytes):
             body = body.decode("utf-8")
@@ -1060,11 +1061,6 @@ def test_rag_query_endpoint_applies_top_k_override(
         return Response(payload)
 
     monkeypatch.setattr(views, "_run_graph", _run_graph)
-    monkeypatch.setattr(
-        views,
-        "get_graph_runner",
-        lambda name: router if name == "rag.default" else None,
-    )
 
     payload = {
         "question": "Welche Richtlinien gelten?",
@@ -1153,7 +1149,7 @@ def test_rag_query_endpoint_surfaces_diagnostics(
         }
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     response = authenticated_client.post(
         "/v1/ai/rag/query/",
@@ -1318,7 +1314,7 @@ def test_rag_query_endpoint_populates_query_from_question(
         }
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     question_text = "Was ist RAG?"
     hybrid_config = {"alpha": 0.5}
@@ -1388,7 +1384,7 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
         raise NotFoundError("No matching documents were found for the query.")
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     response = authenticated_client.post(
         "/v1/ai/rag/query/",
@@ -1436,7 +1432,7 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
         raise InconsistentMetadataError("reindex required")
 
     graph_runner = SimpleNamespace(run=_run)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+    monkeypatch.setitem(graph_registry._REGISTRY, "rag.default", graph_runner)
 
     response = authenticated_client.post(
         "/v1/ai/rag/query/",

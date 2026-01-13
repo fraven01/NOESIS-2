@@ -1108,7 +1108,11 @@ DEFAULT_LIFECYCLE_STORE = PersistentDocumentLifecycleStore()
 
 
 class DocumentsRepository:
-    """Abstract persistence interface for normalized documents."""
+    """Abstract persistence interface for normalized documents.
+
+    Planned refactor: CRUD persistence will move into a LangGraph-based
+    technical document graph; this interface should remain as a thin adapter.
+    """
 
     def upsert(
         self,
@@ -1117,7 +1121,11 @@ class DocumentsRepository:
         scope: Optional["ScopeContext"] = None,
         audit_meta: Optional[Mapping[str, object]] = None,
     ) -> NormalizedDocument:
-        """Create or replace a document instance."""
+        """Create or replace a document instance.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this method remains an adapter boundary.
+        """
 
         raise NotImplementedError
 
@@ -1186,12 +1194,20 @@ class DocumentsRepository:
         workflow_id: Optional[str] = None,
         hard: bool = False,
     ) -> bool:
-        """Soft or hard delete a document across all versions."""
+        """Soft or hard delete a document across all versions.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this method remains an adapter boundary.
+        """
 
         raise NotImplementedError
 
     def add_asset(self, asset: Asset, workflow_id: Optional[str] = None) -> Asset:
-        """Persist an asset for a previously stored document."""
+        """Persist an asset for a previously stored document.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this method remains an adapter boundary.
+        """
 
         raise NotImplementedError
 
@@ -1232,7 +1248,11 @@ class DocumentsRepository:
         workflow_id: Optional[str] = None,
         hard: bool = False,
     ) -> bool:
-        """Soft or hard delete an asset."""
+        """Soft or hard delete an asset.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this method remains an adapter boundary.
+        """
 
         raise NotImplementedError
 
@@ -1283,6 +1303,11 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         ] = None,  # scope unused in-memory but kept for parity
         audit_meta: Optional[Mapping[str, object]] = None,
     ) -> NormalizedDocument:
+        """Persist a normalized document in-memory.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this implementation remains a local adapter.
+        """
         doc_copy = doc.model_copy(deep=True)
         doc_copy = self._materialize_document(doc_copy)
         ref = doc_copy.ref
@@ -1490,6 +1515,11 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str] = None,
         hard: bool = False,
     ) -> bool:
+        """Delete a document in-memory.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this implementation remains a local adapter.
+        """
         with log_context(tenant=tenant_id, workflow_id=workflow_id):
             log_extra_entry(
                 tenant_id=tenant_id,
@@ -1533,6 +1563,11 @@ class InMemoryDocumentsRepository(DocumentsRepository):
 
     @log_call("assets.add")
     def add_asset(self, asset: Asset, workflow_id: Optional[str] = None) -> Asset:
+        """Persist an asset in-memory.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this implementation remains a local adapter.
+        """
         asset_copy = self._materialize_asset(asset.model_copy(deep=True))
         tenant_id = asset_copy.ref.tenant_id
         document_id = asset_copy.ref.document_id
@@ -1629,6 +1664,11 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str] = None,
         hard: bool = False,
     ) -> bool:
+        """Delete an asset in-memory.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this implementation remains a local adapter.
+        """
         with log_context(tenant=tenant_id, workflow_id=workflow_id):
             log_extra_entry(
                 tenant_id=tenant_id,

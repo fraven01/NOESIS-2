@@ -50,3 +50,11 @@ def bootstrap() -> None:
         return collection_search.build_graph()
 
     register("collection_search", LazyGraphFactory(_make_collection_search))
+
+    # 5. Framework Analysis (Business)
+    def _make_framework_analysis():
+        from ai_core.graphs.business import framework_analysis_graph
+
+        return module_runner(framework_analysis_graph)
+
+    register("framework_analysis", LazyGraphFactory(_make_framework_analysis))

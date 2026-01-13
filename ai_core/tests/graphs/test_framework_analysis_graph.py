@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -295,19 +294,14 @@ class TestAssembleProfileNode:
 class TestGraphEndToEnd:
     """End-to-end tests for the complete graph."""
 
-    @patch("ai_core.graphs.business.framework_analysis_graph.llm_client")
+    @patch("ai_core.graphs.business.framework_analysis_graph.call_llm_json_prompt")
     @patch("ai_core.graphs.business.framework_analysis_graph.retrieve")
-    @patch("ai_core.graphs.business.framework_analysis_graph.load_prompt")
     def test_graph_executes_all_nodes(
         self,
-        mock_load_prompt: MagicMock,
         mock_retrieve: MagicMock,
-        mock_llm: MagicMock,
+        mock_call_llm: MagicMock,
     ) -> None:
         """Test that graph executes all nodes successfully."""
-        # Mock prompt
-        mock_load_prompt.return_value = {"text": "Prompt text", "version": "v1"}
-
         # Mock retrieve responses
         mock_retrieve_output = MagicMock()
         mock_retrieve_output.matches = [
@@ -330,42 +324,34 @@ class TestGraphEndToEnd:
 
         # Mock LLM responses
         type_detection_response = {
-            "text": json.dumps(
-                {
-                    "agreement_type": "kbv",
-                    "type_confidence": 0.95,
-                    "gremium_name_raw": "Konzernbetriebsrat",
-                    "gremium_identifier_suggestion": "KBR",
-                    "evidence": [],
-                    "scope_indicators": {},
-                }
-            )
+            "agreement_type": "kbv",
+            "type_confidence": 0.95,
+            "gremium_name_raw": "Konzernbetriebsrat",
+            "gremium_identifier_suggestion": "KBR",
+            "evidence": [],
+            "scope_indicators": {},
         }
 
         location_response = {
-            "text": json.dumps(
-                {
-                    "systembeschreibung": {
-                        "location": "main",
-                        "confidence": 0.9,
-                    },
-                    "funktionsbeschreibung": {
-                        "location": "annex",
-                        "confidence": 0.85,
-                    },
-                    "auswertungen": {
-                        "location": "annex_group",
-                        "confidence": 0.8,
-                    },
-                    "zugriffsrechte": {
-                        "location": "not_found",
-                        "confidence": 0.0,
-                    },
-                }
-            )
+            "systembeschreibung": {
+                "location": "main",
+                "confidence": 0.9,
+            },
+            "funktionsbeschreibung": {
+                "location": "annex",
+                "confidence": 0.85,
+            },
+            "auswertungen": {
+                "location": "annex_group",
+                "confidence": 0.8,
+            },
+            "zugriffsrechte": {
+                "location": "not_found",
+                "confidence": 0.0,
+            },
         }
 
-        mock_llm.call.side_effect = [type_detection_response, location_response]
+        mock_call_llm.side_effect = [type_detection_response, location_response]
 
         # Execute graph
         graph = build_graph()
@@ -392,11 +378,8 @@ class TestGraphEndToEnd:
         assert "zugriffsrechte" in output.missing_components
         assert output.analysis_metadata.model_version == "framework_analysis_v1"
 
-    @patch("ai_core.graphs.business.framework_analysis_graph.llm_client")
     @patch("ai_core.graphs.business.framework_analysis_graph.retrieve")
-    def test_graph_stops_on_error(
-        self, mock_retrieve: MagicMock, mock_llm: MagicMock
-    ) -> None:
+    def test_graph_stops_on_error(self, mock_retrieve: MagicMock) -> None:
         """Test that graph stops execution on error."""
         # Make retrieve raise an error
         mock_retrieve.run.side_effect = Exception("Retrieve failed")

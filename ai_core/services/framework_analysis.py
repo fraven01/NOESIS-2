@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from ai_core.contracts.audit_meta import audit_meta_from_scope
+from typing import Any
+
+from ai_core.graph.execution import GraphExecutor, LocalGraphExecutor
 from ai_core.tool_contracts import ToolContext
 from ai_core.tools.framework_contracts import (
     FrameworkAnalysisDraft,
@@ -10,18 +13,39 @@ from ai_core.tools.framework_contracts import (
     FrameworkAnalysisMetadata,
     FrameworkAnalysisOutput,
 )
-from ai_core.graphs.business.framework_analysis_graph import build_graph
+from ai_core.graphs.business.framework_analysis_graph import (
+    FrameworkAnalysisGraphInput,
+    FrameworkAnalysisGraphOutput,
+)
 from documents.services.framework_service import persist_profile
 
 
+def _build_graph_meta(context: ToolContext) -> dict[str, Any]:
+    return {
+        "tool_context": context.model_dump(mode="json", exclude_none=True),
+        "scope_context": context.scope.model_dump(mode="json", exclude_none=True),
+        "business_context": context.business.model_dump(mode="json", exclude_none=True),
+    }
+
+
 def run_framework_analysis(
-    *, context: ToolContext, input_params: FrameworkAnalysisInput
+    *,
+    context: ToolContext,
+    input_params: FrameworkAnalysisInput,
+    executor: GraphExecutor | None = None,
 ) -> FrameworkAnalysisOutput:
     """Execute analysis and persist results via the framework service boundary."""
-    graph = build_graph()
-    draft = graph.run(context=context, input_params=input_params)
-    if not isinstance(draft, FrameworkAnalysisDraft):
-        raise TypeError("framework analysis graph returned unexpected output type")
+    graph_request = FrameworkAnalysisGraphInput(
+        input=input_params,
+        tool_context=context,
+    )
+    state = graph_request.model_dump(mode="json")
+    meta = _build_graph_meta(context)
+
+    graph_executor = executor or LocalGraphExecutor()
+    _, result = graph_executor.run("framework_analysis", state, meta)
+    graph_output = FrameworkAnalysisGraphOutput.model_validate(result)
+    draft: FrameworkAnalysisDraft = graph_output
 
     scope = context.scope
     initiated_by_user_id = context.metadata.get("initiated_by_user_id")

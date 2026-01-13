@@ -24,6 +24,9 @@ from documents.contracts import NormalizedDocument
 from documents.pipeline import DocumentProcessingContext, DocumentPipelineConfig
 from documents.processing_graph import build_document_processing_graph
 from ai_core.services import _get_documents_repository
+from ai_core.services.document_processing_factory import (
+    build_document_processing_bundle,
+)
 from ai_core.tool_contracts import ToolContext
 
 # --------------------------------------------------------------------- I/O Contracts
@@ -308,28 +311,18 @@ def process_node(
         pipeline_config = DocumentPipelineConfig(**filtered_conf)
 
         # 3. Resolve Dependencies
-        from documents.storage import ObjectStoreStorage
-        from documents.captioning import DeterministicCaptioner
-        from documents.parsers import create_default_parser_dispatcher
-        from ai_core.rag.chunking import RoutingAwareChunker
         from ai_core.api import trigger_embedding
 
-        storage = ObjectStoreStorage()
-        captioner = DeterministicCaptioner()
         repository = _get_documents_repository()
-        parser = create_default_parser_dispatcher()
-        chunker = RoutingAwareChunker()
 
         # 4. Invoke Processing Graph
         # Inject all required dependencies into the factory
-        processing_workflow = build_document_processing_graph(
-            parser=parser,
+        processing_workflow, dependencies = build_document_processing_bundle(
             repository=repository,
-            storage=storage,
-            captioner=captioner,
-            chunker=chunker,
-            embedder=trigger_embedding,  # ✅ Fixed: Pass embedder for RAG indexing
+            embedder=trigger_embedding,  # Fixed: Pass embedder for RAG indexing
+            build_graph=build_document_processing_graph,
         )
+        storage = dependencies.storage
 
         sub_input = {
             "document": norm_doc,

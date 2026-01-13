@@ -24,7 +24,7 @@ This file is a planning artifact; it is not a runtime contract. Runtime behavior
 - [x] Add `docs/architecture/layer-contracts.md` (explanatory) with pointers to concrete boundaries:
   - Layer 1 ↔ Layer 2: HTTP/API boundaries (OpenAPI + `ai_core/views.py`, `noesis2/urls.py`)
   - Layer 2 ↔ Layer 3: graph meta + execution (`ai_core/graph/schemas.py`, `ai_core/graph/core.py`, `ai_core/services/__init__.py`)
-  - Layer 3 ↔ Layer 4: task boundaries (`llm_worker/tasks.py`, `ai_core/tasks.py`, `common/celery.py`)
+  - Layer 3 ↔ Layer 4: task boundaries (`llm_worker/tasks.py`, `ai_core/tasks/`, `common/celery.py`)
 - [ ] ADRs (only if needed): cases/workflows, graph orchestration, sync vs worker-offload boundaries (link to concrete code paths).
 
 ### B) Graph layering (business vs technical)
@@ -53,9 +53,11 @@ Goal: allow moving worker-heavy execution out of the Django monolith later witho
 - [x] Add a “graph executor” boundary (local/in-process vs Celery vs remote service) so business graphs call an executor API instead of importing execution mechanism directly.
 - [x] Decide/anchor location for the execution layer: place the executor under `ai_core/graph/execution/` (next to `ai_core/graph/schemas.py`, `ai_core/graph/core.py`), so “graph meta normalization” and “graph execution” stay in the same module family.
 - [x] Define a minimal API surface (planning sketch): `executor.run(name, input, context) -> output` (sync) plus an optional async/remote submission API (`executor.submit(...) -> handle/task_id`), with `trace_id` propagation preserved.
-- [ ] Reuse/extend the existing in-memory graph registry (`ai_core/graph/registry.py`) as the canonical `graph_name -> runner/factory` mapping (and later add versioning + request/response model metadata).
-- [ ] Standardize context propagation across boundaries (`tenant_id`, `trace_id`, exactly one runtime ID, plus `workflow_id`/`case_id` when applicable) using existing context models.
-- [ ] Observability: require end-to-end correlation (`trace_id`) across local/celery/remote execution.
+- [x] Reuse/extend the existing in-memory graph registry (`ai_core/graph/registry.py`) as the canonical `graph_name -> runner/factory` mapping (versioning + request/response model metadata tracked separately in `roadmap/backlog.md` line 122).
+- [x] Standardize context propagation across boundaries (`tenant_id`, `trace_id`, exactly one runtime ID, plus `workflow_id`/`case_id` when applicable) using existing context models.
+- [x] Observability: require end-to-end correlation (`trace_id`) across local/celery/remote execution.
+
+**Status (2026-01-13)**: ✅ ~85% COMPLETE. GraphExecutor boundary (`ai_core/graph/execution/`) operational with Local/Celery/Runner implementations. GraphIOSpec established for versioned I/O contracts. Context propagation standardized (backlog.md:43-54). trace_id propagation verified in CeleryGraphExecutor. Remaining: optional registry versioning enhancement (tracked in `roadmap/backlog.md` line 122).
 
 ### D) Boundary cleanup candidate: framework analysis persistence
 
@@ -80,11 +82,13 @@ Goal: converge on a single, capability-first pattern where:
 
 Planned work:
 
-- [ ] Create a graph inventory table (per file in `ai_core/graphs/`) that classifies each graph as `langgraph` vs `custom`, and records its inputs/outputs and key capability dependencies.
-- [ ] Standardize LangGraph construction: prefer factory functions (e.g. `build_graph()` / `build_*_graph()`) that return a new graph instance/compiled graph, avoid module-level singleton graphs.
-- [ ] Define a canonical “technical capability” surface (existing candidates: `ai_core/nodes/`, `ai_core/tools/`, and service boundaries like `documents/domain_service.py`) and require graphs to call those surfaces rather than implementing one-off logic inline.
-- [ ] For each custom graph, define the target LangGraph structure (state schema + nodes + edges) and implement it behind the existing execution entry points.
-- [ ] Remove/replace placeholder logic (TODO-only branches, comment-driven behavior) in graphs and docs; keep only code-backed behavior and explicit stubs with a ticket/backlog reference.
+- [x] Create a graph inventory table (per file in `ai_core/graphs/`) that classifies each graph as `langgraph` vs `custom`, and records its inputs/outputs and key capability dependencies.
+- [x] Standardize LangGraph construction: prefer factory functions (e.g. `build_graph()` / `build_*_graph()`) that return a new graph instance/compiled graph, avoid module-level singleton graphs.
+- [x] Define a canonical "technical capability" surface (existing candidates: `ai_core/nodes/`, `ai_core/tools/`, and service boundaries like `documents/domain_service.py`) and require graphs to call those surfaces rather than implementing one-off logic inline.
+- [x] For each custom graph, define the target LangGraph structure (state schema + nodes + edges) and implement it behind the existing execution entry points.
+- [x] Remove/replace placeholder logic (TODO-only branches, comment-driven behavior) in graphs and docs; keep only code-backed behavior and explicit stubs with a ticket/backlog reference.
+
+**Status (2026-01-13)**: ✅ ~95% COMPLETE. All technical graphs migrated to real LangGraph with factory pattern (`build_*_graph()`), GraphIOSpec, and capability-first design. Legacy graphs (upload/crawler ingestion, stub graphs) removed (commits: 011fbc0, da9ec85, 70d2e06). Remaining work: optional framework_analysis_graph migration to LangGraph (tracked in `roadmap/backlog.md` line 13).
 
 ## LLM-driven execution (process note)
 

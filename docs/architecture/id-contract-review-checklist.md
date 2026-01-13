@@ -110,7 +110,7 @@ npm run win:test:py:unit -- ai_core/tests/graphs/ -v
 
 ## 5. Celery Tasks
 
-### Task Implementations (`ai_core/tasks.py`)
+### Task Implementations (`ai_core/tasks/`)
 
 For each Celery task that creates entities:
 

@@ -8,8 +8,6 @@ import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from pathlib import Path
-from types import ModuleType
-from importlib import import_module
 from django.conf import settings
 from uuid import uuid4
 
@@ -76,14 +74,7 @@ from rest_framework.views import APIView
 
 from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.contracts.scope import ScopeContext
-from ai_core.graph.adapters import module_runner
-from ai_core.graph.core import GraphRunner
 from ai_core.tool_contracts.base import tool_context_from_meta
-from ai_core.graph.registry import get as get_graph_runner, register as register_graph
-
-from ai_core.graphs.technical import (
-    info_intake,
-)  # noqa: F401
 from ai_core.contracts.crawler_runner import CrawlerRunError
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import (
@@ -114,16 +105,6 @@ from cases.services import CaseNotFoundError, ensure_case, resolve_case
 
 
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
-
-# Import graphs so they are available via module globals for Legacy views.
-# This enables tests to monkeypatch e.g. `views.info_intake` directly and
-# allows _GraphView.get_graph to resolve from globals() without importing.
-try:  # pragma: no cover - exercised indirectly via tests
-    info_intake = import_module("ai_core.graphs.technical.info_intake")
-except Exception:  # defensive: don't break module import if graphs change
-    # Fallback to lazy import via _GraphView.get_graph when not present.
-    pass
-
 
 # Optional hooks for tests to provide lifecycle stores without
 # importing heavy dependencies at module import time.
@@ -1455,41 +1436,6 @@ class LegacyPingView(_PingBase):
 class _GraphView(_BaseAgentView):
     graph_name: str | None = None
 
-    def get_graph(self) -> GraphRunner:  # pragma: no cover - trivial indirection
-        if not self.graph_name:
-            raise NotImplementedError("graph_name must be configured on subclasses")
-        candidate = globals().get(self.graph_name)
-
-        try:
-            registered = get_graph_runner(self.graph_name)
-        except KeyError:
-            registered = None
-
-        if candidate is not None:
-            runner: GraphRunner | None = None
-            if isinstance(candidate, ModuleType):
-                if registered is None:
-                    runner = module_runner(candidate)
-            elif hasattr(candidate, "run"):
-                if registered is None or registered is not candidate:
-                    runner = candidate
-
-            if runner is not None:
-                logger.info(
-                    "graph_runner_lazy_registered",
-                    extra={
-                        "graph": self.graph_name,
-                        "source": getattr(candidate, "__name__", repr(candidate)),
-                    },
-                )
-                register_graph(self.graph_name, runner)
-                registered = runner
-
-        if registered is None:
-            raise KeyError(f"graph runner '{self.graph_name}' is not registered")
-
-        return registered
-
     def post(self, request: Request) -> Response:
         if not (
             settings.DEBUG
@@ -1501,19 +1447,20 @@ class _GraphView(_BaseAgentView):
                 "graph_endpoint_disabled",
                 status.HTTP_404_NOT_FOUND,
             )
+        if not self.graph_name:
+            raise NotImplementedError("graph_name must be configured on subclasses")
         meta, error = _prepare_request(request)
         if error:
             return error
 
-        graph_runner = self.get_graph()
         request.graph_name = self.graph_name
-        response = _run_graph(request, graph_runner)
+        response = _run_graph(request)
         return apply_std_headers(response, meta)
 
 
-def _run_graph(request: Request, graph_runner) -> Response:  # type: ignore[no-untyped-def]
+def _run_graph(request: Request) -> Response:  # type: ignore[no-untyped-def]
     """Compatibility wrapper used by tests to monkeypatch graph execution."""
-    return services.execute_graph(request, graph_runner)
+    return services.execute_graph(request)
 
 
 class IntakeViewV1(_GraphView):

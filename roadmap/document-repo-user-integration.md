@@ -164,7 +164,7 @@ def process(..., user_id: str | None = None, workflow_id: str | None = None, ...
 #### 1.4 Ingestion Graph Updates
 
 **Files**:
-- [`ai_core/tasks.py`](../ai_core/tasks.py)
+- [`ai_core/tasks/graph_tasks.py`](../ai_core/tasks/graph_tasks.py)
 - [`ai_core/adapters/db_documents_repository.py`](../ai_core/adapters/db_documents_repository.py)
 
 Ensure `audit_meta` flows through `ToolContext.metadata` and into `upsert()`:
@@ -269,7 +269,7 @@ class DocumentCollectionMembership(models.Model):
 - `documents/domain_service.py` - Accept `audit_meta` parameter (~5 lines)
 - `documents/upload_worker.py` - Preserve audit_meta + workflow_id (~8 lines)
 - `documents/tasks.py` - Pass `user_id` + `workflow_id` into upload worker (~6 lines)
-- `ai_core/tasks.py` - Carry audit_meta into ToolContext metadata (~6 lines)
+- `ai_core/tasks/graph_tasks.py` - Carry audit_meta into ToolContext metadata (~6 lines)
 - `ai_core/adapters/db_documents_repository.py` - Use audit_meta in upsert (~10 lines)
 - `documents/models.py` - Add membership actor fields (~6 lines)
 

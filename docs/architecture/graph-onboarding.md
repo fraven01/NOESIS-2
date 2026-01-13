@@ -7,7 +7,7 @@ This note collects pointers to the existing graph execution surfaces and the ID/
 - Graph runner protocol + checkpointing: `ai_core/graph/core.py`
 - Graph meta normalization (builds `scope_context` + `tool_context`): `ai_core/graph/schemas.py`
 - AI Core graph execution orchestration: `ai_core/services/__init__.py:execute_graph`
-- Ingestion task entrypoint (Celery): `ai_core/tasks.py:run_ingestion_graph`
+- Ingestion task entrypoint (Celery): `ai_core/tasks/graph_tasks.py:run_ingestion_graph`
 - ID normalization helpers: `ai_core/ids/` and `common/constants.py`
 
 ## Graph construction pattern (LangGraph)

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import math
 import time
 from collections.abc import Mapping, MutableMapping, Sequence
 from datetime import datetime, timezone
@@ -13,21 +11,24 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from common.validators import normalise_str_sequence, optional_str, require_trimmed_str
+from common.validators import normalise_str_sequence, optional_str
+from ai_core.services.collection_search.auto_ingest import select_auto_ingest_urls
+from ai_core.services.collection_search.hitl import build_hitl_payload
+from ai_core.services.collection_search.scoring import (
+    calculate_generic_heuristics,
+    cosine_similarity,
+)
+from ai_core.services.collection_search.strategy import (
+    SearchStrategy,
+    SearchStrategyRequest,
+    fallback_strategy,
+    llm_strategy_generator,
+)
 
-try:
-    from langgraph.graph import StateGraph, END
-    from langgraph.config import RunnableConfig
-except ImportError:
-    # Fallback for environments where langgraph isn't installed yet
-    StateGraph = Any
-    END = "params"
-    RunnableConfig = Any
+from langgraph.graph import StateGraph, END
 
 from ai_core.graph.io import GraphIOSpec, GraphIOVersion
-from ai_core.infra.observability import emit_event, observe_span, update_observation
-from ai_core.llm import client as llm_client
-from ai_core.llm.client import LlmClientError, RateLimitError
+from ai_core.infra.observability import emit_event, observe_span
 from ai_core.rag.embeddings import EmbeddingClient
 from ai_core.tool_contracts import ToolContext
 from ai_core.tool_contracts.base import tool_context_from_meta
@@ -54,65 +55,6 @@ class InvalidGraphInput(ValueError):
 # -----------------------------------------------------------------------------
 # Models (Preserved from legacy implementation)
 # -----------------------------------------------------------------------------
-
-
-class SearchStrategyRequest(BaseModel):
-    """Normalised request payload for search strategy generation."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    tenant_id: str
-    query: str
-    quality_mode: str
-    purpose: str
-
-    @field_validator("tenant_id", "query", "quality_mode", "purpose", mode="before")
-    @classmethod
-    def _trimmed(cls, value: Any) -> str:
-        return require_trimmed_str(value)
-
-
-class SearchStrategy(BaseModel):
-    """Structured search strategy containing query expansions and policy hints."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    queries: list[str] = Field(min_length=1, max_length=7)
-    policies_applied: tuple[str, ...] = Field(default_factory=tuple)
-    preferred_sources: tuple[str, ...] = Field(default_factory=tuple)
-    disallowed_sources: tuple[str, ...] = Field(default_factory=tuple)
-    notes: str | None = None
-
-    @field_validator("queries", mode="before")
-    @classmethod
-    def _normalise_queries(cls, value: Any) -> list[str]:
-        if not isinstance(value, (list, tuple)):
-            raise ValueError("queries must be a sequence")
-        cleaned: list[str] = []
-        for item in value:
-            if not isinstance(item, str):
-                raise ValueError("query expansions must be strings")
-            candidate = item.strip()
-            if not candidate:
-                continue
-            cleaned.append(candidate)
-        if not cleaned:
-            raise ValueError("at least one query expansion must be provided")
-        if len(cleaned) > 7:
-            raise ValueError("no more than seven query expansions are allowed")
-        return cleaned
-
-    @field_validator(
-        "policies_applied", "preferred_sources", "disallowed_sources", mode="before"
-    )
-    @classmethod
-    def _normalise_sequences(cls, value: Any) -> tuple[str, ...]:
-        return normalise_str_sequence(value)
-
-    @field_validator("notes", mode="before")
-    @classmethod
-    def _normalise_notes(cls, value: Any) -> str | None:
-        return optional_str(value, field_name="notes")
 
 
 class GraphInput(BaseModel):
@@ -147,12 +89,14 @@ COLLECTION_SEARCH_IO_VERSION_STRING = COLLECTION_SEARCH_IO_VERSION.as_string()
 
 
 class CollectionSearchGraphRequest(BaseModel):
-    """Boundary input model for the collection search graph."""
+    """Boundary input model for the collection search graph.
 
-    schema_id: Literal[COLLECTION_SEARCH_SCHEMA_ID] = COLLECTION_SEARCH_SCHEMA_ID
-    schema_version: Literal[COLLECTION_SEARCH_IO_VERSION_STRING] = (
-        COLLECTION_SEARCH_IO_VERSION_STRING
-    )
+    BREAKING CHANGE: schema_id and schema_version are required fields (no defaults).
+    All callers must explicitly provide these values.
+    """
+
+    schema_id: Literal[COLLECTION_SEARCH_SCHEMA_ID]
+    schema_version: Literal[COLLECTION_SEARCH_IO_VERSION_STRING]
     input: GraphInput
     tool_context: ToolContext | None = None
     runtime: dict[str, Any] | None = None
@@ -351,62 +295,6 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
-
-
-def _cosine_similarity(vec_a: Sequence[float], vec_b: Sequence[float]) -> float:
-    """Calculate cosine similarity between two vectors."""
-    if not vec_a or not vec_b or len(vec_a) != len(vec_b):
-        return 0.0
-
-    dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
-    norm_a = math.sqrt(sum(a * a for a in vec_a))
-    norm_b = math.sqrt(sum(b * b for b in vec_b))
-
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-
-    return dot_product / (norm_a * norm_b)
-
-
-def _calculate_generic_heuristics(
-    result: Mapping[str, Any],
-    query: str,
-) -> float:
-    """Calculate generic quality heuristics for a search result (0-100 score)."""
-    score = 0.0
-
-    title = str(result.get("title") or "").lower()
-    snippet = str(result.get("snippet") or "").lower()
-    url = str(result.get("url") or "").lower()
-    query_lower = query.lower()
-
-    # 1. Title relevance (0-30 points)
-    if query_lower in title:
-        score += 30.0
-    elif any(word in title for word in query_lower.split() if len(word) > 3):
-        score += 15.0
-
-    # 2. Snippet quality (0-25 points)
-    snippet_words = len(snippet.split())
-    score += min(snippet_words / 20.0, 25.0)  # More context = better
-
-    # 3. Query coverage in snippet (0-20 points)
-    query_mentions = snippet.count(query_lower)
-    score += min(query_mentions * 10.0, 20.0)
-
-    # 4. URL quality penalties (0 to -20 points)
-    if any(
-        x in url
-        for x in ["login", "signup", "register", "cookie-policy", "privacy-policy"]
-    ):
-        score -= 20.0
-
-    # 5. Source position boost (small bonus for early results)
-    position = result.get("position", 0)
-    if position < 3:
-        score += 5.0
-
-    return max(0.0, min(score, 100.0))
 
 
 def _record_transition(
@@ -633,9 +521,9 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
         vec = vectors[idx + 1] if len(vectors) > idx + 1 else []
         emb_score = 0.0
         if query_vec and vec:
-            emb_score = _cosine_similarity(query_vec, vec) * 100.0
+            emb_score = cosine_similarity(query_vec, vec) * 100.0
 
-        heu_score = _calculate_generic_heuristics(result, query)
+        heu_score = calculate_generic_heuristics(result, query)
         hybrid_score = (0.6 * emb_score) + (0.4 * heu_score)
 
         scored = dict(result)
@@ -789,12 +677,11 @@ def hitl_node(state: CollectionSearchState) -> dict[str, Any]:
     # Here we mimic the legacy "gateway" pattern.
 
     ids = _get_ids(tool_context, state["input"]["collection_scope"])
-    payload = {
-        "tenant_id": ids["tenant_id"],
-        "question": state["input"]["question"],
-        "top_k": result_data.get("top_k", []),
-        # ... other fields
-    }
+    payload = build_hitl_payload(
+        ids=ids,
+        input_data=state["input"],
+        result_data=result_data,
+    )
 
     decision = gateway.present(payload)
 
@@ -852,15 +739,11 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
     elif graph_input.auto_ingest:
         # Auto-ingest logic (simplified)
         results = hybrid.get("result", {}).get("ranked", [])
-        for item in results:
-            if len(selected_urls) >= graph_input.auto_ingest_top_k:
-                break
-
-            if item.get("score", 0.0) < graph_input.auto_ingest_min_score:
-                continue
-
-            if item.get("url"):
-                selected_urls.append(item["url"])
+        selected_urls = select_auto_ingest_urls(
+            results,
+            top_k=graph_input.auto_ingest_top_k,
+            min_score=graph_input.auto_ingest_min_score,
+        )
         reason = "auto_ingest"
 
     # Plan ID
@@ -876,7 +759,7 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
             strategy=(
                 SearchStrategy.model_validate(strategy)
                 if strategy
-                else _fallback_strategy(
+                else fallback_strategy(
                     SearchStrategyRequest(
                         tenant_id=ids["tenant_id"],
                         query=graph_input.question,
@@ -1033,45 +916,38 @@ class CollectionSearchAdapter:
     def run(
         self, state: Mapping[str, Any] | None, meta: Mapping[str, Any] | None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Legacy run signature."""
+        """Run the collection search graph with strict GraphIOSpec enforcement.
 
-        # 1. Prepare State
+        BREAKING CHANGE: schema_id and schema_version are now mandatory.
+        All callers must provide a valid CollectionSearchGraphRequest.
+        """
+
+        # 1. Validate Boundary (Hard Enforcement)
         raw_state = dict(state or {})
-        tool_context: ToolContext | None = None
+
+        try:
+            boundary = CollectionSearchGraphRequest.model_validate(raw_state)
+        except ValidationError as exc:
+            raise InvalidGraphInput(
+                f"Invalid CollectionSearchGraphRequest: {exc}. "
+                f"schema_id and schema_version are mandatory."
+            ) from exc
+
+        # 2. Extract validated components
+        input_state = boundary.input.model_dump(mode="json")
+        tool_context = boundary.tool_context
         runtime: dict[str, Any] = dict(self.dependencies)
 
-        if "schema_id" in raw_state or "schema_version" in raw_state:
-            try:
-                boundary = CollectionSearchGraphRequest.model_validate(raw_state)
-            except ValidationError as exc:
-                raise InvalidGraphInput(str(exc)) from exc
-            input_state = boundary.input.model_dump(mode="json")
-            if boundary.tool_context:
-                tool_context = boundary.tool_context
-            if boundary.runtime:
-                runtime.update(boundary.runtime)
-        else:
-            # Extract input payload (mirroring legacy logic)
-            if "input" in raw_state and isinstance(raw_state["input"], Mapping):
-                input_state = dict(raw_state["input"])
-            else:
-                input_state = raw_state
+        if boundary.runtime:
+            runtime.update(boundary.runtime)
 
-        if tool_context is None:
-            candidate = raw_state.get("tool_context")
-            if isinstance(candidate, ToolContext):
-                tool_context = candidate
-            elif isinstance(candidate, Mapping):
-                tool_context = ToolContext.model_validate(candidate)
-
+        # 3. Resolve ToolContext (from boundary or meta fallback)
         if tool_context is None:
             if not meta:
-                raise InvalidGraphInput("tool_context required in meta")
+                raise InvalidGraphInput(
+                    "tool_context is required either in state or meta"
+                )
             tool_context = tool_context_from_meta(meta)
-
-        runtime_override = raw_state.get("runtime")
-        if isinstance(runtime_override, Mapping):
-            runtime.update(runtime_override)
 
         _validate_tenant_context(tool_context)
 
@@ -1126,191 +1002,6 @@ class CollectionSearchAdapter:
         return final_state, result_payload
 
 
-def _fallback_strategy(request: SearchStrategyRequest) -> SearchStrategy:
-    """Return a deterministic baseline strategy when LLM generation fails."""
-
-    base_query = request.query
-    purpose_hint = request.purpose.replace("_", " ")
-    candidates = [
-        base_query,
-        f"{base_query} {purpose_hint}",
-        f"{base_query} overview",
-        f"{base_query} information",
-        f"{base_query} guide",
-    ]
-    seen: set[str] = set()
-    queries: list[str] = []
-    for item in candidates:
-        normalised = item.strip()
-        if not normalised:
-            continue
-        if normalised.lower() in seen:
-            continue
-        seen.add(normalised.lower())
-        queries.append(normalised)
-        if len(queries) == 3:
-            break
-    return SearchStrategy(
-        queries=queries,
-        policies_applied=("default",),
-        preferred_sources=(),
-        disallowed_sources=(),
-    )
-
-
-def _fallback_with_reason(
-    request: SearchStrategyRequest, message: str, error: Exception | None = None
-) -> SearchStrategy:
-    if error is not None:
-        LOGGER.warning(message, exc_info=error)
-    else:
-        LOGGER.warning(message)
-    return _fallback_strategy(request)
-
-
-def _coerce_query_list(value: Any) -> list[str]:
-    if not isinstance(value, Sequence):
-        raise ValueError("queries must be a sequence")
-    queries: list[str] = []
-    seen: set[str] = set()
-    for item in value:
-        if item in (None, ""):
-            continue
-        candidate = str(item).strip()
-        if not candidate:
-            continue
-        key = candidate.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        queries.append(candidate)
-        if len(queries) == 5:
-            break
-    if len(queries) < 3:
-        raise ValueError("at least three queries required")
-    return queries
-
-
-def _extract_strategy_payload(text: str) -> Mapping[str, Any]:
-    cleaned = (text or "").strip()
-    if not cleaned:
-        raise ValueError("empty strategy payload")
-    if cleaned.startswith("```") and cleaned.endswith("```"):
-        lines = cleaned.splitlines()
-        if len(lines) >= 3:
-            cleaned = "\n".join(lines[1:-1])
-            cleaned = cleaned.strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("payload does not contain a JSON object")
-    fragment = cleaned[start : end + 1]
-    try:
-        data = json.loads(fragment)
-    except json.JSONDecodeError as exc:
-        raise ValueError("invalid JSON payload") from exc
-    if not isinstance(data, Mapping):
-        raise ValueError("strategy payload must be an object")
-    return data
-
-
-def _llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
-    """Generate a search strategy via the production LLM client."""
-
-    prompt = (
-        "You are an expert research strategist tasked with "
-        "designing focused web search strategies.\n"
-        "Analyse the user's intent and produce between 3 and 5 focused web "
-        "search queries that maximise authoritative and relevant sources.\n"
-        "Consider document types, versioning, source quality, and "
-        "content relevance to the task.\n"
-        "Respond with a JSON object containing the keys 'queries', "
-        "'policies_applied', 'preferred_sources', 'disallowed_sources', and "
-        "an optional 'notes'.\n"
-        "- 'queries' must be an array of 3-5 strings.\n"
-        "- Optional arrays may be empty if not applicable.\n"
-        "Do not include any additional text outside the JSON object.\n"
-        "\n"
-        "Context:\n"
-        f"- Tenant: {request.tenant_id}\n"
-        f"- Purpose: {request.purpose}\n"
-        f"- Quality mode: {request.quality_mode}\n"
-        f"- Original query: {request.query}"
-    )
-    query_hash = str(uuid4())[:12]  # Simplified hash logic
-    metadata = {
-        "tenant_id": request.tenant_id,
-        "case_id": f"collection-search:{request.purpose}:{query_hash}",
-        "trace_id": None,
-        "prompt_version": "collection_search_strategy_v1",
-    }
-    try:
-        llm_start = time.time()
-        response = llm_client.call("analyze", prompt, metadata)
-        llm_latency = time.time() - llm_start
-
-        # Track LLM metrics (simplified for brevity)
-        update_observation(
-            metadata={
-                "llm.latency_ms": int(llm_latency * 1000),
-                "llm.label": "analyze",
-            }
-        )
-    except (LlmClientError, RateLimitError) as exc:
-        return _fallback_with_reason(
-            request,
-            "llm strategy generation failed; using fallback strategy",
-            exc,
-        )
-    except Exception as exc:
-        return _fallback_with_reason(
-            request,
-            "llm strategy generation failed; using fallback strategy",
-            exc,
-        )
-
-    text = (response.get("text") or "").strip()
-    try:
-        payload = _extract_strategy_payload(text)
-    except ValueError as exc:
-        return _fallback_with_reason(
-            request,
-            "unable to parse LLM strategy payload; using fallback strategy",
-            exc,
-        )
-
-    try:
-        queries = _coerce_query_list(payload.get("queries"))
-    except Exception as exc:
-        return _fallback_with_reason(
-            request,
-            "invalid queries in LLM strategy payload; using fallback strategy",
-            exc,
-        )
-
-    policies = payload.get("policies_applied") or ()
-    preferred_sources = payload.get("preferred_sources") or ()
-    disallowed_sources = payload.get("disallowed_sources") or ()
-    notes = payload.get("notes") if isinstance(payload.get("notes"), str) else None
-    if isinstance(notes, str):
-        notes = notes.strip() or None
-
-    try:
-        return SearchStrategy(
-            queries=queries,
-            policies_applied=policies,
-            preferred_sources=preferred_sources,
-            disallowed_sources=disallowed_sources,
-            notes=notes,
-        )
-    except ValidationError as exc:
-        return _fallback_with_reason(
-            request,
-            "structured strategy validation failed; using fallback strategy",
-            exc,
-        )
-
-
 class _ProductionHitlGateway:
     def present(self, payload: Mapping[str, Any]) -> HitlDecision | None:
         return None  # No-op
@@ -1337,7 +1028,7 @@ def build_graph() -> CollectionSearchAdapter:
     search_worker = get_web_search_worker()
 
     dependencies = {
-        "runtime_strategy_generator": _llm_strategy_generator,
+        "runtime_strategy_generator": llm_strategy_generator,
         "runtime_search_worker": search_worker,
         "runtime_hybrid_executor": _HybridExecutorAdapter(),
         "runtime_hitl_gateway": _ProductionHitlGateway(),

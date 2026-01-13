@@ -13,6 +13,8 @@ Comprehensive architectural analysis identified **critical "vibe coding" pattern
 
 **Impact**: Estimated **20-30% code reduction possible** without functionality loss.
 
+**Update 2026-01-13**: The `ai_core/tasks.py` monolith has been split into the `ai_core/tasks/` package (ingestion/graph/monitoring + helpers); the legacy file was removed.
+
 ### Key Metrics
 
 | Metric | Count | Critical Files |

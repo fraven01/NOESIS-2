@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-from ai_core.graphs.business.framework_analysis_graph import (
+from ai_core.services.framework_analysis_capabilities import (
     extract_toc_from_chunks,
     normalize_gremium_identifier,
 )

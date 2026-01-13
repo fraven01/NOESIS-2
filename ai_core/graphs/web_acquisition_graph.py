@@ -22,6 +22,7 @@ from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import observe_span
 from ai_core.tools.shared_workers import get_web_search_worker
 from ai_core.tool_contracts import ToolContext
+from ai_core.services.web_acquisition_selection import select_search_candidates
 from ai_core.tools.web_search import (
     SearchProviderError,
     WebSearchResponse,
@@ -181,20 +182,6 @@ def _check_search_rate_limit(tenant_id: str, query: str) -> bool:
     return True
 
 
-def _blocked_domain(url: str, blocked_domains: list[str]) -> bool:
-    from urllib.parse import urlsplit
-
-    parsed = urlsplit(url)
-    hostname = (parsed.hostname or "").lower()
-    if not hostname or not blocked_domains:
-        return False
-    for domain in blocked_domains:
-        blocked = domain.lower()
-        if hostname == blocked or hostname.endswith(f".{blocked}"):
-            return True
-    return False
-
-
 # --------------------------------------------------------------------- Nodes
 
 
@@ -317,51 +304,11 @@ def select_node(state: WebAcquisitionState) -> dict[str, Any]:
 
     results = state.get("search_results", [])
     inp = state.get("input", {})
-    config = inp.get("search_config") or {}
-
-    min_len = config.get("min_snippet_length", 40)
-    blocked = config.get("blocked_domains", [])
-    top_n = config.get("top_n", 5)
-    prefer_pdf = config.get("prefer_pdf", True)
-
-    # Bypass snippet checks for preselected URLs
-    preselected_urls = {
-        item["url"]
-        for item in (inp.get("preselected_results") or [])
-        if item.get("url")
-    }
-
-    validated = []
-    for raw in results:
-        url = raw.get("url")
-        snippet = raw.get("snippet", "")
-
-        if not url:
-            continue
-
-        if url not in preselected_urls and len(snippet) < min_len:
-            continue
-
-        if _blocked_domain(url, blocked):
-            continue
-
-        lowered = snippet.lower()
-        if "noindex" in lowered and "robot" in lowered:
-            continue
-
-        validated.append(raw)
-
-    shortlisted = validated[:top_n]
-    selected = None
-
-    if shortlisted:
-        if prefer_pdf:
-            for cand in shortlisted:
-                if cand.get("is_pdf"):
-                    selected = cand
-                    break
-        if not selected:
-            selected = shortlisted[0]
+    shortlisted, selected = select_search_candidates(
+        results=results,
+        preselected_results=inp.get("preselected_results"),
+        search_config=inp.get("search_config"),
+    )
 
     return {"selected_result": selected, "search_results": shortlisted}
 

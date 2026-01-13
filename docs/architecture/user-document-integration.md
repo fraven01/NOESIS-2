@@ -227,7 +227,7 @@ class Document(models.Model):
 **Integration Points:**
 - `documents/domain_service.py:DocumentDomainService.ingest_document` (write-once created_by)
 - `documents/upload_worker.py:UploadWorker.process` (preserve audit_meta, consistent workflow_id)
-- `ai_core/tasks.py` (carry audit_meta into ToolContext metadata)
+- `ai_core/tasks/graph_tasks.py` (carry audit_meta into ToolContext metadata)
 - `ai_core/adapters/db_documents_repository.py` (set created_by/updated_by from audit_meta)
 - `documents/models.py` / `documents/framework_models.py` (persist audit_meta on Document + FrameworkProfile)
 
@@ -612,7 +612,7 @@ class DocumentNotification(models.Model):
 - `documents/domain_service.py:DocumentDomainService.ingest_document` - Set created_by via audit/actor fields
 - `documents/upload_worker.py:UploadWorker.process` - Preserve audit_meta and workflow_id
 - `documents/tasks.py:upload_document_task` - Pass audit_meta inputs through to worker
-- `ai_core/tasks.py:run_ingestion_graph` - Carry audit_meta into ToolContext metadata
+- `ai_core/tasks/graph_tasks.py:run_ingestion_graph` - Carry audit_meta into ToolContext metadata
 - `ai_core/adapters/db_documents_repository.py:DbDocumentsRepository.upsert` - Apply audit_meta to created_by/updated_by
 - `documents/collection_service.py` - Update membership attribution
 

@@ -17,6 +17,11 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from ai_core.graph.core import GraphContext, GraphRunner
+from ai_core.graph.execution import (
+    GraphExecutor,
+    LocalGraphExecutor,
+    RunnerGraphExecutor,
+)
 from ai_core.graph.schemas import merge_state
 from ai_core.graphs.technical.cost_tracking import track_ledger_costs
 from ai_core.infra.observability import (
@@ -87,7 +92,8 @@ class GraphExecutionCommand:
         self,
         request: Request,
         *,
-        graph_runner_factory: GraphRunnerFactory,
+        graph_runner_factory: GraphRunnerFactory | None = None,
+        graph_executor: GraphExecutor | None = None,
     ) -> Response:
         """
         Orchestrates the execution of a graph, handling context, state, and errors.
@@ -342,11 +348,17 @@ class GraphExecutionCommand:
                             status=status.HTTP_202_ACCEPTED,
                         )
                 else:
-                    runner = graph_runner_factory()
+                    if graph_executor is None:
+                        if graph_runner_factory is not None:
+                            graph_executor = RunnerGraphExecutor(graph_runner_factory())
+                        else:
+                            graph_executor = LocalGraphExecutor()
                     with track_ledger_costs(initial_cost_total) as tracker:
                         runner_meta["ledger_logger"] = tracker.record_ledger_meta
                         try:
-                            new_state, result = runner.run(merged_state, runner_meta)
+                            new_state, result = graph_executor.run(
+                                context.graph_name, merged_state, runner_meta
+                            )
                         finally:
                             runner_meta.pop("ledger_logger", None)
                     cost_summary = tracker.summary(ledger_identifier)

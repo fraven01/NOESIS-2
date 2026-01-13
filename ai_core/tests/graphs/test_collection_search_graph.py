@@ -84,13 +84,31 @@ class TestCollectionSearchGraph:
     """Tests for CollectionSearch using isolated module."""
 
     def _initial_state(self) -> dict[str, Any]:
+        """Build GraphIOSpec-compliant boundary request."""
+        from ai_core.contracts import BusinessContext, ScopeContext
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(
+            workflow_id="wf-1",
+            case_id="case-1",
+        )
+        tool_context = scope.to_tool_context(business=business)
+
         return {
+            "schema_id": "noesis.graphs.collection_search",
+            "schema_version": "1.0.0",
             "input": {
                 "question": "How do I configure telemetry?",
                 "collection_scope": "software_docs",
                 "quality_mode": "software_docs_strict",
                 "purpose": "docs-gap-analysis",
             },
+            "tool_context": tool_context,
         }
 
     def _tool_context_meta(self) -> dict[str, Any]:
@@ -510,3 +528,125 @@ class TestCollectionSearchGraph:
         assert "https://docs.acme.test/admin" in result["plan"]["selected_urls"]
 
         assert result["ingestion"]["status"] == "ingested"
+
+    def test_boundary_validation_rejects_missing_schema_id(self, cs_module) -> None:
+        """Test that missing schema_id raises InvalidGraphInput."""
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        InvalidGraphInput = cs_module.InvalidGraphInput
+
+        dependencies = {
+            "runtime_strategy_generator": MagicMock(),
+            "runtime_search_worker": MagicMock(),
+            "runtime_hybrid_executor": MagicMock(),
+            "runtime_hitl_gateway": MagicMock(),
+            "runtime_coverage_verifier": MagicMock(),
+        }
+
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        # Legacy state without schema_id/schema_version
+        legacy_state = {
+            "input": {
+                "question": "test",
+                "collection_scope": "docs",
+                "purpose": "test",
+            },
+        }
+
+        meta = self._tool_context_meta()
+
+        with pytest.raises(InvalidGraphInput) as exc_info:
+            graph_adapter.run(legacy_state, meta=meta)
+
+        assert "schema_id" in str(exc_info.value).lower()
+        assert "mandatory" in str(exc_info.value).lower()
+
+    def test_boundary_validation_rejects_invalid_schema_version(
+        self, cs_module
+    ) -> None:
+        """Test that invalid schema_version raises InvalidGraphInput."""
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        InvalidGraphInput = cs_module.InvalidGraphInput
+
+        dependencies = {
+            "runtime_strategy_generator": MagicMock(),
+            "runtime_search_worker": MagicMock(),
+            "runtime_hybrid_executor": MagicMock(),
+            "runtime_hitl_gateway": MagicMock(),
+            "runtime_coverage_verifier": MagicMock(),
+        }
+
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        invalid_state = self._initial_state()
+        invalid_state["schema_version"] = "99.99.99"  # Wrong version
+
+        meta = self._tool_context_meta()
+
+        with pytest.raises(InvalidGraphInput) as exc_info:
+            graph_adapter.run(invalid_state, meta=meta)
+
+        assert "schema_version" in str(exc_info.value).lower()
+
+    def test_boundary_validation_with_tool_context_in_meta(self, cs_module) -> None:
+        """Test that tool_context can be provided via meta fallback."""
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+        )
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request):
+                return cs_module.SearchStrategy(
+                    queries=["q"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class StubWebSearchWorker:
+            def run(self, *, query, context):
+                return WebSearchResponse(
+                    results=[],
+                    outcome=ToolOutcome(decision="ok", rationale="none", meta={}),
+                )
+
+        class MockObj:
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                m = MagicMock()
+                m.model_dump.return_value = {}
+                return m
+
+            def verify(self, **k):
+                return {}
+
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": StubWebSearchWorker(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        # State without tool_context (should fallback to meta)
+        state = {
+            "schema_id": "noesis.graphs.collection_search",
+            "schema_version": "1.0.0",
+            "input": {
+                "question": "test",
+                "collection_scope": "docs",
+                "purpose": "test",
+            },
+            # tool_context is missing here
+        }
+
+        meta = self._tool_context_meta()
+        _, result = graph_adapter.run(state, meta=meta)
+
+        assert result["outcome"] == "completed"

@@ -21,10 +21,10 @@ Beide Patterns unterstützen `extra={}` für strukturiertes Logging, aber struct
 
 ## Problem
 
-In `ai_core/tasks.py` (und möglicherweise anderen Modulen) wird ein **manueller Pattern** verwendet, bei dem ein `extra`-Dictionary für jeden Log-Call gebaut wird:
+In `ai_core/tasks/ingestion_tasks.py` (und möglicherweise anderen Modulen) wird ein **manueller Pattern** verwendet, bei dem ein `extra`-Dictionary für jeden Log-Call gebaut wird:
 
 ```python
-# ai_core/tasks.py:260-284 (aktuell)
+# ai_core/tasks/ingestion_tasks.py (aktuell)
 extra = {
     "tenant_id": tenant_id,
     "document_id": str(document_id),
@@ -60,7 +60,7 @@ logger.info("ingestion.start", extra=extra)
 ### Pattern: Context Binding am Task-Start
 
 ```python
-# ai_core/tasks.py (refactored)
+# ai_core/tasks/graph_tasks.py (refactored)
 from structlog import contextvars
 from ai_core.tool_contracts.base import tool_context_from_meta
 
@@ -132,7 +132,7 @@ Gesamtzahl: **~40 Vorkommen** über 14 Dateien (Stand: 2025-12-29)
 
 ### High-Impact Kandidaten (>3 Calls)
 
-#### 1. **ai_core/tasks.py** (3 Calls)
+#### 1. **ai_core/tasks/ingestion_tasks.py** (3 Calls)
 - **Aktuell**: Manueller `extra={...}` Dict-Bau mit 10+ Feldern
 - **Impact**: ~200 LOC Boilerplate
 - **Priority**: 🔴 **Critical** (bereits dokumentiert oben)
@@ -215,7 +215,7 @@ logger.info("documents.collection.delete_dispatched", extra=extra)
 ### Priorisierung (nach ROI)
 
 **Phase 1 (Wochen 1-2):**
-1. ✅ ai_core/tasks.py (~200 LOC gespart)
+1. ✅ ai_core/tasks/ingestion_tasks.py (~200 LOC gespart)
 2. ai_core/llm/client.py (~50 LOC gespart)
 3. ai_core/rag/vector_client.py (~40 LOC gespart)
 
@@ -280,7 +280,7 @@ logger.info("documents.collection.delete_dispatched", extra=extra)
 
 ### Phase 2: Refactor Tasks (0.5 Tag)
 
-1. **ai_core/tasks.py**:
+1. **ai_core/tasks/ingestion_tasks.py**:
    - Ersetze `extra`-Dict-Aufbau durch `bind_task_context()` am Task-Start
    - Entferne `extra=extra` aus allen `logger.*()` Calls
    - **Dateien**: `run_ingestion_graph()`, `embed_chunks()`, `chunk_document()`
@@ -319,7 +319,7 @@ logger.info("documents.collection.delete_dispatched", extra=extra)
 
 ### Codequalität
 
-- **50% weniger Logging-Code** (~100-150 LOC eingespart in `ai_core/tasks.py`)
+- **50% weniger Logging-Code** (~100-150 LOC eingespart in `ai_core/tasks/ingestion_tasks.py`)
 - **100% konsistente Kontext-Felder** (garantiert durch contextvars)
 - **Einfachere Wartung**: Neue Pflichtfelder einmal in `bind_task_context()` ergänzen
 
@@ -370,7 +370,7 @@ logger.info("documents.collection.delete_dispatched", extra=extra)
 
 ## Acceptance Criteria
 
-- [ ] `ai_core/tasks.py` nutzt `bind_task_context()` statt `extra={...}`
+- [ ] `ai_core/tasks/` nutzt `bind_task_context()` statt `extra={...}`
 - [ ] Alle `logger.*()` Calls ohne `extra=` Parameter
 - [ ] Tests laufen ohne Regression
 - [ ] Log-Output enthält **alle** Scope-Context-Felder (`tenant_id`, `trace_id`, `invocation_id`)
@@ -391,4 +391,4 @@ logger.info("documents.collection.delete_dispatched", extra=extra)
 
 - [structlog contextvars Docs](https://www.structlog.org/en/stable/contextvars.html)
 - [Python contextvars (PEP 567)](https://peps.python.org/pep-0567/)
-- Beispiel: [ai_core/tasks.py:260-284](../../ai_core/tasks.py#L260-L284) (aktueller Pattern)
+- Beispiel: [ai_core/tasks/ingestion_tasks.py](../../ai_core/tasks/ingestion_tasks.py) (aktueller Pattern)

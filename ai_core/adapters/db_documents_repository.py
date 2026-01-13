@@ -74,6 +74,11 @@ class DbDocumentsRepository(DocumentsRepository):
         scope: Optional[ScopeContext] = None,
         audit_meta: Optional[Mapping[str, object]] = None,
     ) -> NormalizedDocument:
+        """Persist a normalized document to the database.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this adapter remains the DB-backed sink.
+        """
         # 1. Handle Frozen Models & Materialization safely
         # We cannot mutate 'doc' if it is frozen. We create a modified copy.
         doc_copy = self._materialize_document_safe(doc)
@@ -672,6 +677,11 @@ class DbDocumentsRepository(DocumentsRepository):
         return _encode_cursor(parts)
 
     def add_asset(self, asset: Asset, workflow_id: Optional[str] = None) -> Asset:
+        """Persist an asset to the database.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this adapter remains the DB-backed sink.
+        """
         DocumentAsset = apps.get_model("documents", "DocumentAsset")
         Document = apps.get_model("documents", "Document")
 
@@ -775,6 +785,11 @@ class DbDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str] = None,
         hard: bool = False,
     ) -> bool:
+        """Delete an asset from the database.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this adapter remains the DB-backed sink.
+        """
         DocumentAsset = apps.get_model("documents", "DocumentAsset")
         tenant = self._resolve_tenant(tenant_id)
         with self._schema_ctx(None, tenant):
@@ -812,6 +827,11 @@ class DbDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str] = None,
         hard: bool = False,
     ) -> bool:
+        """Delete a document in the database.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this adapter remains the DB-backed sink.
+        """
         Document = apps.get_model("documents", "Document")
         tenant = self._resolve_tenant(tenant_id)
 

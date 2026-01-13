@@ -26,7 +26,7 @@ class _FakeRedis:
 
 def test_cleanup_skips_non_redis_broker(monkeypatch) -> None:
     monkeypatch.setattr(
-        "ai_core.tasks.settings",
+        "ai_core.tasks.monitoring_tasks.settings",
         SimpleNamespace(CELERY_BROKER_URL="amqp://guest@localhost//"),
     )
 
@@ -39,7 +39,7 @@ def test_cleanup_skips_non_redis_broker(monkeypatch) -> None:
 
 def test_cleanup_skips_when_ttl_disabled(monkeypatch) -> None:
     monkeypatch.setattr(
-        "ai_core.tasks.settings",
+        "ai_core.tasks.monitoring_tasks.settings",
         SimpleNamespace(
             CELERY_BROKER_URL="redis://localhost:6379/0", CELERY_DLQ_TTL_MS=0
         ),
@@ -60,13 +60,15 @@ def test_cleanup_removes_expired_messages(monkeypatch) -> None:
     fake_redis = _FakeRedis([expired, invalid, fresh])
 
     monkeypatch.setattr(
-        "ai_core.tasks.settings",
+        "ai_core.tasks.monitoring_tasks.settings",
         SimpleNamespace(
             CELERY_BROKER_URL="redis://localhost:6379/0", CELERY_DLQ_TTL_MS=1000
         ),
     )
-    monkeypatch.setattr("ai_core.tasks.Redis.from_url", lambda _url: fake_redis)
-    monkeypatch.setattr("ai_core.tasks.time.time", lambda: now)
+    monkeypatch.setattr(
+        "ai_core.tasks.monitoring_tasks.Redis.from_url", lambda _url: fake_redis
+    )
+    monkeypatch.setattr("ai_core.tasks.monitoring_tasks.time.time", lambda: now)
 
     result = cleanup_dead_letter_queue(max_messages=10, ttl_ms=1000)
     payload = result["data"]
@@ -81,12 +83,14 @@ def test_alert_emits_event_when_threshold_exceeded(monkeypatch) -> None:
     events: list[tuple[str, dict[str, object]]] = []
 
     monkeypatch.setattr(
-        "ai_core.tasks.settings",
+        "ai_core.tasks.monitoring_tasks.settings",
         SimpleNamespace(CELERY_BROKER_URL="redis://localhost:6379/0"),
     )
-    monkeypatch.setattr("ai_core.tasks.Redis.from_url", lambda _url: fake_redis)
     monkeypatch.setattr(
-        "ai_core.tasks.emit_event",
+        "ai_core.tasks.monitoring_tasks.Redis.from_url", lambda _url: fake_redis
+    )
+    monkeypatch.setattr(
+        "ai_core.tasks.monitoring_tasks.emit_event",
         lambda name, payload=None: events.append((name, payload or {})),
     )
 

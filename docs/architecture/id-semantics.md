@@ -21,7 +21,7 @@ This document describes how IDs are represented in the current codebase and poin
 | `case_id` | business/meta/tool context | Optional at HTTP request level; graphs validate when required (`ai_core/graph/schemas.py:normalize_meta`) |
 | `workflow_id` | business/meta/tool context | Optional business identifier; defaults are handled by specific call paths |
 | `run_id` | scope/tool context; graph execution | May co-exist with `ingestion_run_id` (e.g., when workflow triggers ingestion) |
-| `ingestion_run_id` | scope/tool context; ingestion tasks | May co-exist with `run_id`; ingestion task entrypoints live in `ai_core/tasks.py` |
+| `ingestion_run_id` | scope/tool context; ingestion tasks | May co-exist with `run_id`; ingestion task entrypoints live in `ai_core/tasks/ingestion_tasks.py` |
 | `trace_id` | scope/meta/tool context | Normalized/coerced by `ai_core/ids/*`; generated when absent |
 | `invocation_id` | scope/tool context | Generated when absent by the normalizers; new per "hop" (HTTP request or Celery task) |
 | `user_id` | scope/tool context | User identity for User Request Hops (UUID string); extracted from Django auth; mutually exclusive with `service_id` |

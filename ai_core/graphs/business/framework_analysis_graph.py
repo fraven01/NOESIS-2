@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Tuple, Literal
 
@@ -11,8 +9,12 @@ from typing import Any, Callable, Dict, Mapping, Tuple, Literal
 from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.graphs.transition_contracts import GraphTransition
 from ai_core.infra.observability import observe_span
-from ai_core.infra.prompts import load as load_prompt
-from ai_core.llm import client as llm_client
+from ai_core.services.framework_analysis_capabilities import (
+    call_llm_json_prompt,
+    extract_toc_from_chunks,
+    normalize_gremium_identifier,
+    validate_component_locations,
+)
 from ai_core.nodes import retrieve
 from ai_core.tool_contracts import ToolContext
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -93,56 +95,6 @@ def _transition(
             "attributes": attributes or {},
         }
     )
-
-
-def normalize_gremium_identifier(suggestion: str, raw_name: str) -> str:
-    """
-    Normalize gremium identifier for database storage.
-
-    Examples:
-    - "Konzernbetriebsrat" → "KBR"
-    - "Gesamtbetriebsrat München" → "GBR_MUENCHEN"
-    - "Betriebsrat Berlin" → "BR_BERLIN"
-    """
-    normalized = suggestion.upper()
-    # Replace umlauts
-    normalized = normalized.replace("Ü", "UE").replace("Ä", "AE").replace("Ö", "OE")
-    normalized = normalized.replace("ü", "ue").replace("ä", "ae").replace("ö", "oe")
-    # Replace special chars with underscore
-    normalized = re.sub(r"[^A-Z0-9_]", "_", normalized)
-    # Remove consecutive underscores
-    normalized = re.sub(r"_+", "_", normalized)
-    # Remove leading/trailing underscores
-    normalized = normalized.strip("_")
-    return normalized
-
-
-def extract_toc_from_chunks(chunks: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    """Extract table of contents from parent node metadata."""
-    parent_map = {}
-
-    for chunk in chunks:
-        parents = chunk.get("meta", {}).get("parents", [])
-        for parent in parents:
-            parent_id = parent.get("id")
-            if parent_id and parent_id not in parent_map:
-                parent_type = parent.get("type", "")
-                # Only include structural elements
-                if parent_type in {"heading", "section", "article", "document"}:
-                    parent_map[parent_id] = {
-                        "id": parent_id,
-                        "title": parent.get("title", ""),
-                        "type": parent_type,
-                        "level": parent.get("level", 0),
-                        "order": parent.get("order", 0),
-                    }
-
-    # Sort by level and order
-    toc_entries = sorted(
-        parent_map.values(), key=lambda p: (p.get("level", 0), p.get("order", 0))
-    )
-
-    return toc_entries
 
 
 class FrameworkAnalysisGraph:
@@ -321,29 +273,16 @@ class FrameworkAnalysisGraph:
                 chunk.get("text", "")[:1000] for chunk in retrieve_output.matches[:2]
             )[:2000]
 
-            # Load prompt and call LLM
-            prompt = load_prompt("framework/detect_type_gremium.v1")
-            full_prompt = f"{prompt['text']}\n\nDokument (Anfang):\n{document_text}"
-
+            prompt_input = f"Dokument (Anfang):\n{document_text}"
             meta = {
                 "tenant_id": state["tenant_id"],
                 "trace_id": state["trace_id"],
-                "prompt_version": prompt["version"],
             }
-
-            llm_result = llm_client.call("analyze", full_prompt, meta)
-
-            # Parse JSON
-            try:
-                detection_result = json.loads(llm_result["text"])
-            except json.JSONDecodeError:
-                json_match = re.search(
-                    r"```json\s*(.*?)\s*```", llm_result["text"], re.DOTALL
-                )
-                if json_match:
-                    detection_result = json.loads(json_match.group(1))
-                else:
-                    raise ValueError("LLM response is not valid JSON")
+            detection_result = call_llm_json_prompt(
+                prompt_key="framework/detect_type_gremium.v1",
+                prompt_input=prompt_input,
+                meta=meta,
+            )
 
             # Normalize gremium
             gremium_identifier = normalize_gremium_identifier(
@@ -448,9 +387,6 @@ class FrameworkAnalysisGraph:
                 retrieve_output = retrieve.run(context, retrieve_params)
                 component_chunks[component] = retrieve_output.matches[:10]
 
-            # Call LLM
-            prompt = load_prompt("framework/locate_components.v1")
-
             toc_text = "\n".join(
                 f"{'  ' * entry.get('level', 0)}{entry.get('title', '')}"
                 for entry in state.get("toc", [])[:50]
@@ -462,27 +398,16 @@ class FrameworkAnalysisGraph:
                 for i, chunk in enumerate(chunks[:5]):
                     chunks_text += f"[{i+1}] {chunk.get('text', '')[:300]}...\n"
 
-            full_prompt = f"{prompt['text']}\n\n## ToC:\n{toc_text}\n{chunks_text}"
-
+            prompt_input = f"## ToC:\n{toc_text}\n{chunks_text}"
             meta = {
                 "tenant_id": state["tenant_id"],
                 "trace_id": state["trace_id"],
-                "prompt_version": prompt["version"],
             }
-
-            llm_result = llm_client.call("analyze", full_prompt, meta)
-
-            # Parse JSON
-            try:
-                locations_result = json.loads(llm_result["text"])
-            except json.JSONDecodeError:
-                json_match = re.search(
-                    r"```json\s*(.*?)\s*```", llm_result["text"], re.DOTALL
-                )
-                if json_match:
-                    locations_result = json.loads(json_match.group(1))
-                else:
-                    raise ValueError("LLM response is not valid JSON")
+            locations_result = call_llm_json_prompt(
+                prompt_key="framework/locate_components.v1",
+                prompt_input=prompt_input,
+                meta=meta,
+            )
 
             state["located_components"] = locations_result
 
@@ -516,12 +441,10 @@ class FrameworkAnalysisGraph:
     def _validate_components(self, state: StateMapping) -> Tuple[GraphTransition, bool]:
         """Validate component locations."""
         # Simplified validation based on confidence
-        validations = {}
-        for component, location in state.get("located_components", {}).items():
-            resolved = ComponentLocation.from_partial(location)
-            validations[component] = resolved.validation_summary(
-                high_confidence_threshold=0.8
-            )
+        validations = validate_component_locations(
+            state.get("located_components", {}),
+            high_confidence_threshold=0.8,
+        )
 
         state["validations"] = validations
 
@@ -623,3 +546,12 @@ class FrameworkAnalysisGraph:
 def build_graph() -> FrameworkAnalysisGraph:
     """Build and return a framework analysis graph instance."""
     return FrameworkAnalysisGraph()
+
+
+def run(
+    state: Mapping[str, Any], meta: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """GraphRunner adapter for registry execution."""
+    graph = build_graph()
+    result = graph.invoke(state)
+    return dict(state), result

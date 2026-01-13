@@ -423,7 +423,7 @@ If HybridChunker causes issues:
 
 **SemanticChunker** (deprecated):
 - Section tree + token-based sliding window
-- Used in legacy `ai_core/tasks.py:chunk()`
+- Used in legacy `ai_core/tasks/ingestion_tasks.py:chunk()`
 
 Both will be replaced by **HybridChunker** with no migration needed (pre-MVP, DB reset OK).
 

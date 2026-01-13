@@ -71,7 +71,7 @@ Additional technical graph modules in `ai_core/graphs/`:
 ### Queues and tasks (code)
 
 - Agents worker task: `llm_worker/tasks.py:run_graph` (`queue="agents-high"` default, `agents-low` for background)
-- Ingestion graph task: `ai_core/tasks.py:run_ingestion_graph` (`queue="ingestion"`)
+- Ingestion graph task: `ai_core/tasks/graph_tasks.py:run_ingestion_graph` (`queue="ingestion"`)
 
 ### Queue wiring (local compose)
 

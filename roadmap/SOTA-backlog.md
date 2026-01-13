@@ -34,9 +34,9 @@
   - `UpstreamError` (external service failures)
 - [x] Migration auf `RetryableTask` für alle Tasks:
   - `llm_worker/tasks.py:run_graph`
-  - `ai_core/tasks.py:embed`
-  - `ai_core/tasks.py:upsert`
-  - `ai_core/tasks.py:run_ingestion_graph`
+  - `ai_core/tasks/ingestion_tasks.py:embed`
+  - `ai_core/tasks/ingestion_tasks.py:upsert`
+  - `ai_core/tasks/graph_tasks.py:run_ingestion_graph`
 
 **Acceptance Criteria**:
 - LiteLLM Rate-Limits triggern automatisch Retry
@@ -501,12 +501,21 @@
 ---
 
 ### 5.3 Document-Versioning
-**Priorität**: P2 | **Aufwand**: L | **Status**: 🟢 Ready
+**Priorität**: P2 | **Aufwand**: L | **Status**: 🟡 Partial
 
 **Problem**: Document-Updates überschreiben alte Chunks → History verloren
 
+**Current State (2026-01-13)**:
+- ✅ `document_version_id` in `BusinessContext` (can be propagated, ai_core/contracts/business.py:79-82)
+- ✅ `soft_deleted_at` exists in Document/DocumentCollection models (documents/models.py:145)
+- ❌ `document_version_id` NOT in `ChunkMeta` (ai_core/rag/ingestion_contracts.py:69-90)
+- ❌ No `is_latest` flag anywhere
+- ❌ No DocumentVersion table or version history tracking
+- ❌ No version-history APIs
+- ❌ No cleanup job for old versions
+
 **Tasks**:
-- [ ] **BREAKING**: `document_version_id` in `ChunkMeta`
+- [ ] **BREAKING**: Add `document_version_id` to `ChunkMeta`
   - UUID für jede Upload-Version
   - `is_latest`: Boolean-Flag
 - [ ] Version-History-API:

@@ -207,9 +207,19 @@ def web_search(request):
             "tool_context": col_tool_context.model_dump(mode="json", exclude_none=True)
         }
 
+        # Build GraphIOSpec-compliant request (Hard Enforcement)
+        boundary_request = {
+            "schema_id": "noesis.graphs.collection_search",
+            "schema_version": "1.0.0",
+            "input": graph_input,
+            "tool_context": col_tool_context,
+        }
+
         col_graph = build_collection_search_graph()
         # CollectionSearchGraph.run returns (state, result)
-        final_state, result = col_graph.run(state=graph_input, meta=col_context_payload)
+        final_state, result = col_graph.run(
+            state=boundary_request, meta=col_context_payload
+        )
 
         search_payload = final_state.get("search", {})
         results = search_payload.get("results", [])

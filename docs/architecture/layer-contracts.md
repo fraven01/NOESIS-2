@@ -11,7 +11,7 @@ This document defines the strict API contracts and allowed call patterns between
 1. **Layer 1 (Customer/UI)**: `theme/`, `noesis2/`, `ai_core/views.py`
 2. **Layer 2 (Business/Case)**: `cases/`, `ai_core/graphs/business/`
 3. **Layer 3 (Technical/Capability)**: `ai_core/graphs/technical/`, `ai_core/services/`, `documents/`
-4. **Layer 4 (Worker/Execution)**: `llm_worker/`, `ai_core/tasks.py`, `common/celery.py`
+4. **Layer 4 (Worker/Execution)**: `llm_worker/`, `ai_core/tasks/`, `common/celery.py`
 
 ---
 

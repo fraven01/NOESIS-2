@@ -5,7 +5,7 @@ from typing import Any, Mapping
 from celery import shared_task
 from django.db import connection
 
-from ai_core.graph.registry import get as get_graph_runner
+from ai_core.graph.execution import LocalGraphExecutor
 from ai_core.graphs.technical.cost_tracking import track_ledger_costs
 from ai_core.ids.http_scope import normalize_task_context
 from ai_core.infra.observability import emit_event
@@ -118,8 +118,10 @@ def run_graph(  # type: ignore[no-untyped-def]
                 )
                 new_state = runner_state
             else:
-                runner = get_graph_runner(graph_name)
-                new_state, result = runner.run(runner_state, runner_meta)
+                graph_executor = LocalGraphExecutor()
+                new_state, result = graph_executor.run(
+                    graph_name, runner_state, runner_meta
+                )
         finally:
             runner_meta.pop("ledger_logger", None)
             # Ensure ledger_logger is removed from the state if it was copied there

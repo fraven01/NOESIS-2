@@ -379,7 +379,7 @@ Deterministic error type identifiers are defined in `ai_core/tools/errors.py:Too
 
 ## Worker queue (ingestion)
 
-- Ingestion Celery queue name is `"ingestion"` (e.g. `ai_core/tasks.py:run_ingestion_graph` uses `@shared_task(..., queue="ingestion", name="ai_core.tasks.run_ingestion_graph")`).
+- Ingestion Celery queue name is `"ingestion"` (e.g. `ai_core/tasks/graph_tasks.py:run_ingestion_graph` uses `@shared_task(..., queue="ingestion", name="ai_core.tasks.run_ingestion_graph")`).
 
 ## Worker queue (agents)
 
