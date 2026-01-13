@@ -92,7 +92,6 @@ def test_graph_output_includes_schema_metadata():
             "schema_id": UNIVERSAL_INGESTION_SCHEMA_ID,
             "schema_version": UNIVERSAL_INGESTION_IO_VERSION_STRING,
         },
-        formatted_status="Processed successfully",
     )
 
     assert graph_output.schema_id == "noesis.graphs.universal_ingestion"
@@ -143,7 +142,6 @@ def test_graph_output_decision_enum_validation():
             document_id=None,
             ingestion_run_id=None,
             telemetry={},
-            formatted_status=None,
         )
         assert output.decision == decision
 
@@ -156,7 +154,6 @@ def test_graph_output_decision_enum_validation():
             document_id=None,
             ingestion_run_id=None,
             telemetry={},
-            formatted_status=None,
         )
 
     errors = exc_info.value.errors()
@@ -180,7 +177,6 @@ def test_graph_output_reason_code_enum_validation():
             document_id=None,
             ingestion_run_id=None,
             telemetry={},
-            formatted_status=None,
         )
         assert output.reason_code == reason_code
 
@@ -193,7 +189,6 @@ def test_graph_output_reason_code_enum_validation():
             document_id=None,
             ingestion_run_id=None,
             telemetry={},
-            formatted_status=None,
         )
 
     errors = exc_info.value.errors()

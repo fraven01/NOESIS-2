@@ -63,9 +63,6 @@ class UniversalIngestionOutput(TypedDict):
     ingestion_run_id: str | None
     telemetry: dict[str, Any]
 
-    # Legacy compatibility fields (can be deprecated later)
-    formatted_status: str | None
-
 
 class UniversalIngestionInputModel(BaseModel):
     """Pydantic input contract for the universal ingestion graph."""
@@ -106,7 +103,6 @@ class UniversalIngestionGraphOutput(BaseModel):
     document_id: str | None
     ingestion_run_id: str | None
     telemetry: dict[str, Any]
-    formatted_status: str | None
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -425,7 +421,6 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
         document_id=doc_id,
         ingestion_run_id=ingestion_run_id,
         telemetry=telemetry,
-        formatted_status=decision.upper(),  # Legacy compat
     )
     return {"output": output.model_dump(mode="json")}
 
