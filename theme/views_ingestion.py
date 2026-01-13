@@ -9,9 +9,9 @@ from django.views.decorators.http import require_POST
 from pydantic import ValidationError
 from structlog.stdlib import get_logger
 
-from ai_core.contracts import BusinessContext, ScopeContext
 from ai_core.schemas import CrawlerRunRequest
-from ai_core.services.crawler_runner import run_crawler_runner
+from crawler.manager import CrawlerManager
+from theme.helpers.context import prepare_workbench_context
 
 logger = get_logger(__name__)
 
@@ -104,36 +104,13 @@ def crawler_submit(request):
 
                 payload["origins"] = unique_origins
 
-        scope = views._scope_context_from_request(request)
-        tenant_id = scope.tenant_id
-        tenant_schema = scope.tenant_schema or tenant_id
-        case_id = str(data.get("case_id") or "").strip() or None
-        trace_id = str(uuid4())
-        user = getattr(request, "user", None)
-        user_id = (
-            str(user.pk)
-            if user
-            and getattr(user, "is_authenticated", False)
-            and getattr(user, "pk", None) is not None
-            else None
+        # 1. Build Context using helper
+        tool_context = prepare_workbench_context(
+            request,
+            case_id=data.get("case_id"),
         )
-        scope = ScopeContext(
-            tenant_id=tenant_id,
-            tenant_schema=tenant_schema,
-            trace_id=trace_id,
-            invocation_id=str(uuid4()),
-            run_id=str(uuid4()),
-            ingestion_run_id=payload.get("ingestion_run_id"),
-            user_id=user_id,
-        )
-        business = BusinessContext(case_id=case_id)
-        tool_context = scope.to_tool_context(business=business)
-        meta = {
-            "scope_context": scope.model_dump(mode="json", exclude_none=True),
-            "business_context": business.model_dump(mode="json", exclude_none=True),
-            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
-        }
 
+        # 2. Validate Request
         try:
             request_model = CrawlerRunRequest.model_validate(payload)
         except ValidationError as exc:
@@ -144,15 +121,42 @@ def crawler_submit(request):
                 {"result": response_data, "error": response_data["detail"]},
             )
 
+        # 3. Dispatch via Manager
+        manager = CrawlerManager()
+        # Ensure ingestion_run_id match (helper generates one via scope if needed, but payload has one)
+        # We need to sync them or just rely on payload?
+        # CrawlerManager uses tool_context.scope.ingestion_run_id usually?
+        # Let's check CrawlerManager signature. It takes `request_model` and `meta`.
+        # dispatch_crawl_request(self, request_model: CrawlerRunRequest, meta: dict[str, Any])
+
+        # We need to manually inject ingestion_run_id into scope if we want it to match payload
+        if payload.get("ingestion_run_id"):
+            tool_context.scope.ingestion_run_id = payload["ingestion_run_id"]
+
+        meta = {
+            "scope_context": tool_context.scope.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "business_context": tool_context.business.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+        }
+
         try:
-            result = run_crawler_runner(
-                meta=meta,
-                request_model=request_model,
-                lifecycle_store=views._resolve_lifecycle_store(),
-                graph_factory=None,
-            )
-            response_data = result.payload
-            status_code = result.status_code
+            result = manager.dispatch_crawl_request(request_model, meta)
+            # result is CrawlerValidationResult
+            response_data = (
+                result.payload
+            )  # This might be 'details' in the new manager?
+            # Start/dispatch usually returns a dict with decision/task_ids
+            # Checking CrawlerManager... it returns CrawlerValidationResult(valid=True, payload=...)
+            if not response_data:
+                response_data = {"decision": "dispatched", "task_ids": result.task_ids}
+            else:
+                response_data["task_ids"] = result.task_ids
+
+            status_code = 200  # if success
         except Exception as exc:
             response_data = {"detail": str(exc), "code": "crawler_error"}
             status_code = 500
@@ -191,9 +195,12 @@ def ingestion_submit(request):
             )
 
         uploaded_file = request.FILES["file"]
+        uploaded_file = request.FILES["file"]
+
+        # Resolve initial scope for tenant ID (needed for manual collection)
         scope = views._scope_context_from_request(request)
         tenant_id = scope.tenant_id
-        tenant_schema = scope.tenant_schema or tenant_id
+
         case_id = request.POST.get("case_id") or request.headers.get("X-Case-ID")
         workflow_id = str(request.POST.get("workflow_id") or "").strip()
         if not workflow_id:
@@ -204,32 +211,30 @@ def ingestion_submit(request):
             tenant_id, None, ensure=True
         )
 
-        # Prepare metadata for upload
-        user = getattr(request, "user", None)
-        user_id = (
-            str(user.pk)
-            if user
-            and getattr(user, "is_authenticated", False)
-            and getattr(user, "pk", None) is not None
-            else None
-        )
-        scope = ScopeContext(
-            tenant_id=tenant_id,
-            tenant_schema=tenant_schema,
-            trace_id=uuid4().hex,
-            invocation_id=uuid4().hex,
-            run_id=uuid4().hex,
-            user_id=user_id,
-        )
-        business = BusinessContext(
-            case_id=case_id,
-            collection_id=manual_collection_id,  # Explicitly set collection
+        # Build Context using helper
+        tool_context = prepare_workbench_context(
+            request,
             workflow_id=workflow_id,
+            case_id=case_id,
+            collection_id=manual_collection_id,
         )
-        tool_context = scope.to_tool_context(business=business)
+
+        # Manual injection of user_id if missing? (prepare_workbench_context uses get_scope_context which handles it)
+        # However, we want to ensure tool_context -> meta has all fields expected by handle_document_upload
+
+        # We need to manually inject a fresh invocation_id if not present?
+        # get_scope_context usually persists trace, but invocation_id is per-request.
+        # Let's ensure a fresh invocation_id for this specific action if needed.
+        if not tool_context.scope.invocation_id:
+            tool_context.scope.invocation_id = str(uuid4())
+
         meta = {
-            "scope_context": scope.model_dump(mode="json", exclude_none=True),
-            "business_context": business.model_dump(mode="json", exclude_none=True),
+            "scope_context": tool_context.scope.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "business_context": tool_context.business.model_dump(
+                mode="json", exclude_none=True
+            ),
             "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         }
 

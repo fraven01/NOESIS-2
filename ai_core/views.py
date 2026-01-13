@@ -780,15 +780,6 @@ def _prepare_request(request: Request):
     return meta, None
 
 
-LEGACY_DEPRECATION_ID = "ai-core-legacy"
-
-
-def _legacy_schema_kwargs(base_kwargs: dict[str, object]) -> dict[str, object]:
-    legacy_kwargs = dict(base_kwargs)
-    legacy_kwargs["deprecated"] = True
-    return legacy_kwargs
-
-
 def _curl(command: str) -> dict[str, object]:
     """Return extensions embedding a curl code sample."""
 
@@ -1388,27 +1379,6 @@ INTAKE_SCHEMA = {
 }
 
 
-RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
-    name="RagDemoDeprecatedResponse",
-    fields={
-        "status": serializers.CharField(),
-        "input": serializers.DictField(),
-        "error": inline_serializer(
-            name="RagDemoDeprecatedErrorDetail",
-            fields={
-                "type": serializers.CharField(),
-                "message": serializers.CharField(),
-                "code": serializers.CharField(required=False),
-            },
-        ),
-        "meta": inline_serializer(
-            name="RagDemoDeprecatedErrorMeta",
-            fields={"took_ms": serializers.IntegerField()},
-        ),
-    },
-)
-
-
 class _BaseAgentView(DeprecationHeadersMixin, APIView):
     # Authentication and permissions are inherited from REST_FRAMEWORK defaults
     # (SessionAuthentication + IsAuthenticated)
@@ -1428,17 +1398,6 @@ class PingViewV1(_PingBase):
     """Lightweight endpoint used to verify AI Core availability."""
 
     @default_extend_schema(**PING_SCHEMA)
-    def get(self, request: Request) -> Response:
-        return super().get(request)
-
-
-class LegacyPingView(_PingBase):
-    """Legacy heartbeat endpoint served under the unversioned prefix."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-
-    @default_extend_schema(**_legacy_schema_kwargs(PING_SCHEMA))
     def get(self, request: Request) -> Response:
         return super().get(request)
 
@@ -1481,18 +1440,6 @@ class IntakeViewV1(_GraphView):
     graph_name = "info_intake"
 
     @default_extend_schema(**INTAKE_SCHEMA)
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class LegacyIntakeView(_GraphView):
-    """Deprecated intake endpoint retained for backwards compatibility."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-    graph_name = "info_intake"
-
-    @default_extend_schema(**_legacy_schema_kwargs(INTAKE_SCHEMA))
     def post(self, request: Request) -> Response:
         return super().post(request)
 
@@ -2197,62 +2144,9 @@ class CrawlerIngestionRunnerView(APIView):
         return apply_response_headers(response, meta, result.idempotency_key)
 
 
-class RagDemoViewV1(_BaseAgentView):
-    """Deprecated demo endpoint retained only for backwards compatibility."""
-
-    api_deprecated = True
-    api_deprecation_id = "rag-demo-mvp"
-
-    @default_extend_schema(
-        request=IntakeRequestSerializer,
-        responses={410: RAG_DEMO_DEPRECATED_RESPONSE},
-        error_statuses=RATE_LIMIT_JSON_ERROR_STATUSES,
-        include_trace_header=True,
-        description=(
-            "This demo workflow has been removed from the MVP build. The endpoint "
-            "returns HTTP 410 to signal permanent removal."
-        ),
-        examples=[
-            OpenApiExample(
-                name="RagDemoRemoved",
-                summary="Deprecated",
-                description="The demo endpoint has been removed and now returns HTTP 410.",
-                value={
-                    "status": "error",
-                    "input": {},
-                    "error": {
-                        "type": "VALIDATION",
-                        "message": "The RAG demo endpoint has been removed.",
-                        "code": "rag_demo_removed",
-                    },
-                    "meta": {"took_ms": 0},
-                },
-            )
-        ],
-    )
-    def post(self, request: Request) -> Response:
-        meta, error = _prepare_request(request)
-        if error:
-            return error
-
-        response = _error_response(
-            "The RAG demo endpoint is deprecated and no longer available in the MVP build.",
-            "rag_demo_removed",
-            status.HTTP_410_GONE,
-        )
-        return apply_std_headers(response, meta)
-
-
 ping_v1 = PingViewV1.as_view()
-ping_legacy = LegacyPingView.as_view()
-ping = ping_legacy
 
 intake_v1 = IntakeViewV1.as_view()
-intake_legacy = LegacyIntakeView.as_view()
-intake = intake_legacy
-
-rag_demo_v1 = RagDemoViewV1.as_view()
-rag_demo = rag_demo_v1
 
 rag_query_v1 = RagQueryViewV1.as_view()
 rag_query = rag_query_v1

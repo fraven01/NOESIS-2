@@ -7,7 +7,7 @@ re-exporting the canonical context model.
 
 from __future__ import annotations
 
-from .base import ToolContext
+from .base import ToolContext, tool_context_from_meta, tool_context_from_scope
 from .validation import require_business_field, require_runtime_id
 
 
@@ -68,4 +68,6 @@ __all__ = [
     "InternalToolError",
     "require_business_field",
     "require_runtime_id",
+    "tool_context_from_meta",
+    "tool_context_from_scope",
 ]

@@ -13,4 +13,4 @@ if [ -z "$1" ]; then
 fi
 
 docker compose -f docker-compose.dev.yml run --rm web sh -c \
-    "pip install -q -r requirements.txt -r requirements-dev.txt && python -m pytest -q -v $1"
+    "pip install -q -r requirements.txt -r requirements-dev.txt && DJANGO_SETTINGS_MODULE=noesis2.settings.test_parallel python -m pytest -q -v --reuse-db $1"

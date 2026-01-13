@@ -58,3 +58,11 @@ def bootstrap() -> None:
         return module_runner(framework_analysis_graph)
 
     register("framework_analysis", LazyGraphFactory(_make_framework_analysis))
+
+    # 6. Web Acquisition
+    def _make_web_acquisition():
+        from ai_core.graphs.web_acquisition_graph import build_web_acquisition_graph
+
+        return build_web_acquisition_graph()
+
+    register("web_acquisition", LazyGraphFactory(_make_web_acquisition))

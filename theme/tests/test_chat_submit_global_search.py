@@ -19,22 +19,27 @@ def test_chat_submit_global_search_does_not_require_case_id(tenant_pool):
         data={"message": "hello", "global_search": "on"},
     )
     request.tenant = tenant
+    from django.contrib.sessions.backends.db import SessionStore
+
+    request.session = SessionStore()
 
     captured: dict[str, object] = {}
 
-    def fake_run(state, meta):
-        import importlib
+    captured["meta"] = None  # Reset
 
-        rag = importlib.import_module(
-            "ai_core.graphs.technical.retrieval_augmented_generation"
-        )
-        rag._build_tool_context(meta)
-        captured["meta"] = meta
-        return state, {"answer": "ok", "snippets": []}
+    def fake_submit(graph_name, tool_context, state, **kwargs):
+        captured["meta"] = {
+            "tool_context": tool_context.model_dump(mode="json"),
+            "graph_name": graph_name,
+        }
+        return {
+            "status": "success",
+            "data": {"result": {"answer": "ok", "snippets": []}},
+        }, True
 
     with patch(
-        "ai_core.graphs.technical.retrieval_augmented_generation.run",
-        side_effect=fake_run,
+        "theme.helpers.tasks.submit_business_graph",
+        side_effect=fake_submit,
     ):
         response = chat_submit(request)
 
@@ -43,5 +48,7 @@ def test_chat_submit_global_search_does_not_require_case_id(tenant_pool):
 
     meta = captured["meta"]
     assert isinstance(meta, dict)
-    assert meta.get("business_context", {}).get("case_id") is None
-    assert isinstance(meta.get("tool_context"), dict)
+    tool_ctx = meta.get("tool_context")
+    assert isinstance(tool_ctx, dict)
+    # Check case_id in business part of tool_context
+    assert tool_ctx.get("business", {}).get("case_id") is None

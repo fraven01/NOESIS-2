@@ -44,6 +44,7 @@ from llm_worker.schemas import (
     ScoringContext,
     SearchCandidate,
 )
+from ai_core.schemas import CrawlerRunRequest, CrawlerOriginConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -235,6 +236,15 @@ class CoverageVerifier(Protocol):
         interval_s: int,
     ) -> Mapping[str, Any]:
         """Verify coverage improvements within the configured polling limits."""
+
+
+class CrawlerManagerProtocol(Protocol):
+    """Protocol for the crawler manager service."""
+
+    def dispatch_crawl_request(
+        self, request: CrawlerRunRequest, meta: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Dispatch a crawler run."""
 
 
 # -----------------------------------------------------------------------------
@@ -698,17 +708,69 @@ def hitl_node(state: CollectionSearchState) -> dict[str, Any]:
     return {"hitl": {"decision": None}}
 
 
-@observe_span(name="node.auto_ingest")
-def auto_ingest_node(state: CollectionSearchState) -> dict[str, Any]:
-    """Check auto-ingest conditions."""
-    input_data = state["input"]
-    if not input_data.get("auto_ingest"):
-        return {"ingestion": {"status": "skipped"}}
+@observe_span(name="node.trigger_ingestion")
+def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
+    """Trigger ingestion for selected URLs via CrawlerManager."""
+    plan_data = state.get("plan")
+    if not plan_data:
+        return {"ingestion": {"status": "skipped_no_plan"}}
 
-    # logic for finding items to ingest based on score
-    # ... (omitted for brevity, relying on hybrid or search results)
+    # Check execution conditions
+    raw_input = state["input"]
+    hitl_state = state.get("hitl", {})
+    decision = hitl_state.get("decision")
+    decision_status = decision.get("status") if decision else None
 
-    return {"ingestion": {"status": "processed"}}
+    should_execute = (
+        raw_input.get("execute_plan")
+        or raw_input.get("auto_ingest", False)
+        or decision_status in ("approved", "partial")
+    )
+
+    if not should_execute:
+        return {"ingestion": {"status": "planned_only"}}
+
+    selected_urls = plan_data.get("selected_urls", [])
+    if not selected_urls:
+        return {"ingestion": {"status": "skipped_no_selection"}}
+
+    # Resolve Crawler Manager
+    runtime = state["runtime"]
+    manager: CrawlerManagerProtocol | None = runtime.get("runtime_crawler_manager")
+    if not manager:
+        return {"ingestion": {"error": "No crawler manager configured"}}
+
+    tool_context = state["tool_context"]
+    collection_id = plan_data["collection_id"]
+
+    # Build Crawler Request (Bulk)
+    # CrawlerRunRequest automatically creates Origins from origins list
+    origins = [CrawlerOriginConfig(url=u) for u in selected_urls]
+
+    crawl_req = CrawlerRunRequest(
+        origins=origins,
+        collection_id=collection_id,
+        mode="live",  # Default to live crawl
+        provider="web",
+        fetch=True,
+        workflow_id=tool_context.business.workflow_id,
+    )
+
+    # Prepare Meta for Context
+    meta = {
+        "tenant_id": tool_context.scope.tenant_id,
+        "trace_id": tool_context.scope.trace_id,
+        "case_id": tool_context.business.case_id,
+        "user_id": tool_context.scope.user_id,
+        "ingestion_run_id": tool_context.scope.ingestion_run_id or str(uuid4()),
+    }
+
+    try:
+        result_info = manager.dispatch_crawl_request(crawl_req, meta)
+        return {"ingestion": {"status": "triggered", "task_info": result_info}}
+    except Exception as exc:
+        LOGGER.exception("Crawler dispatch failed")
+        return {"ingestion": {"error": str(exc)}}
 
 
 @observe_span(name="node.build_plan")
@@ -787,86 +849,6 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
     return {"plan": plan.model_dump(mode="json")}
 
 
-@observe_span(name="node.delegate")
-def optionally_delegate_node(state: CollectionSearchState) -> dict[str, Any]:
-    """Execute plan via Universal Ingestion Graph if requested."""
-    plan_data = state.get("plan")
-    if not plan_data:
-        return {}
-
-    # Check execution flag from input (Phase 5 requirement)
-    # GraphInput doesn't have explicit execute flag, but we use auto_ingest or implicit
-    # UTP says: execute standardmäßig false, UI entscheidet.
-    # We'll check input "execute_plan", auto_ingest, OR if HITL explicitly approved it.
-    raw_input = state["input"]
-    hitl_state = state.get("hitl", {})
-    decision = hitl_state.get("decision")
-    decision_status = decision.get("status") if decision else None
-
-    should_execute = (
-        raw_input.get("execute_plan")
-        or raw_input.get("auto_ingest", False)
-        or decision_status in ("approved", "partial")
-    )
-
-    if not should_execute:
-        return {"ingestion": {"status": "planned_only"}}
-
-    selected_urls = plan_data.get("selected_urls", [])
-    if not selected_urls:
-        return {"ingestion": {"status": "skipped_no_selection"}}
-
-    # Invoke Universal Graph
-    runtime = state["runtime"]
-    ug_factory = runtime.get("runtime_universal_ingestion_factory")
-
-    if ug_factory:
-        ug = ug_factory()
-    else:
-        # Fallback to default implementation
-        from ai_core.graphs.technical.universal_ingestion_graph import (
-            build_universal_ingestion_graph,
-        )
-
-        ug = build_universal_ingestion_graph()
-
-    # Prepare Input
-    # We use acquire_and_ingest mode because we want to ingest what we selected
-    ug_input = {
-        "source": "search",
-        "mode": "acquire_and_ingest",
-        "collection_id": plan_data["collection_id"],
-        "preselected_results": [{"url": u} for u in selected_urls],
-        # We don't query again
-    }
-
-    tool_context = state["tool_context"]
-    # Filter context for UG (Pre-MVP ID Contract: propagate identity)
-    ug_context = {
-        "tenant_id": tool_context.scope.tenant_id,
-        "trace_id": tool_context.scope.trace_id,
-        "case_id": tool_context.business.case_id,
-        "workflow_id": tool_context.business.workflow_id,
-        "ingestion_run_id": tool_context.scope.ingestion_run_id
-        or str(uuid4()),  # Ensure valid scope
-        # Identity IDs (Pre-MVP ID Contract)
-        "user_id": tool_context.scope.user_id,  # User Request Hop
-        "service_id": tool_context.scope.service_id,  # S2S Hop
-    }
-
-    try:
-        ug_result = ug.invoke({"input": ug_input, "context": ug_context})
-
-        # Determine status from UG output
-        ug_out = ug_result.get("output", {})
-        decision = ug_out.get("decision", "error")
-        return {"ingestion": {"status": decision, "universal_output": ug_out}}
-
-    except Exception as exc:
-        LOGGER.exception("Delegation failed")
-        return {"ingestion": {"error": str(exc)}}
-
-
 # -----------------------------------------------------------------------------
 # Graph Construction
 # -----------------------------------------------------------------------------
@@ -882,7 +864,7 @@ def build_compiled_graph():
     workflow.add_node("hybrid_score", hybrid_score_node)
     workflow.add_node("hitl", hitl_node)
     workflow.add_node("build_plan", build_plan_node)
-    workflow.add_node("delegate", optionally_delegate_node)
+    workflow.add_node("trigger_ingestion", trigger_ingestion_node)
     # workflow.add_node("verification", verification_node)
 
     workflow.set_entry_point("strategy")
@@ -891,8 +873,8 @@ def build_compiled_graph():
     workflow.add_edge("embedding_rank", "hybrid_score")
     workflow.add_edge("hybrid_score", "hitl")
     workflow.add_edge("hitl", "build_plan")
-    workflow.add_edge("build_plan", "delegate")
-    workflow.add_edge("delegate", END)
+    workflow.add_edge("build_plan", "trigger_ingestion")
+    workflow.add_edge("trigger_ingestion", END)
 
     return workflow.compile()
 
@@ -1017,6 +999,7 @@ def build_graph() -> CollectionSearchAdapter:
     from ai_core.tools.shared_workers import get_web_search_worker
     from llm_worker.graphs.hybrid_search_and_score import run as hybrid_run
     from llm_worker.schemas import HybridResult
+    from crawler.manager import CrawlerManager
 
     class _HybridExecutorAdapter:
         def run(self, *, scoring_context, candidates, tenant_context) -> HybridResult:
@@ -1032,7 +1015,7 @@ def build_graph() -> CollectionSearchAdapter:
         "runtime_search_worker": search_worker,
         "runtime_hybrid_executor": _HybridExecutorAdapter(),
         "runtime_hitl_gateway": _ProductionHitlGateway(),
-        # "runtime_ingestion_trigger": REMOVED Phase 5
+        "runtime_crawler_manager": CrawlerManager(),
         "runtime_coverage_verifier": _ProductionCoverageVerifier(),
     }
 

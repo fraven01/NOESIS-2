@@ -18,7 +18,7 @@ from .ingestion_tasks import (
 )
 
 # Graph tasks
-from .graph_tasks import build_graph, run_ingestion_graph
+from .graph_tasks import run_business_graph, run_ingestion_graph
 
 # Monitoring tasks
 from .monitoring_tasks import (
@@ -40,7 +40,7 @@ __all__ = [
     "pii_mask",
     "upsert",
     # Graph
-    "build_graph",
+    "run_business_graph",
     "run_ingestion_graph",
     # Monitoring
     "alert_dead_letter_queue",

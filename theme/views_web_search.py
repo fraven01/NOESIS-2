@@ -15,8 +15,8 @@ from structlog.stdlib import get_logger
 from ai_core.contracts import BusinessContext, ScopeContext
 from ai_core.graphs.technical.collection_search import (
     GraphInput as CollectionSearchGraphInput,
-    build_graph as build_collection_search_graph,
 )
+from theme.helpers.tasks import submit_business_graph
 from ai_core.schemas import CrawlerRunRequest
 from common.logging import bind_log_context
 from crawler.manager import CrawlerManager
@@ -203,23 +203,36 @@ def web_search(request):
         )
 
         col_tool_context = col_scope.to_tool_context(business=col_business)
-        col_context_payload = {
-            "tool_context": col_tool_context.model_dump(mode="json", exclude_none=True)
-        }
 
         # Build GraphIOSpec-compliant request (Hard Enforcement)
         boundary_request = {
             "schema_id": "noesis.graphs.collection_search",
             "schema_version": "1.0.0",
             "input": graph_input,
-            "tool_context": col_tool_context,
+            "tool_context": col_tool_context.model_dump(mode="json"),
         }
 
-        col_graph = build_collection_search_graph()
-        # CollectionSearchGraph.run returns (state, result)
-        final_state, result = col_graph.run(
-            state=boundary_request, meta=col_context_payload
+        response_payload, completed = submit_business_graph(
+            graph_name="collection_search",
+            tool_context=col_tool_context,
+            state=boundary_request,
+            timeout_s=60,
         )
+        if not completed:
+            return views._json_error_response(
+                "Search timed out.", status_code=504, code="timeout"
+            )
+
+        if response_payload.get("status") == "error":
+            return views._json_error_response(
+                f"Worker Error: {response_payload.get('error')}",
+                status_code=500,
+                code="internal_error",
+            )
+
+        data_res = response_payload.get("data", {})
+        final_state = data_res.get("state", {})
+        result = data_res.get("result", {})
 
         search_payload = final_state.get("search", {})
         results = search_payload.get("results", [])
@@ -239,7 +252,6 @@ def web_search(request):
 
     else:
         # Web Acquisition Graph (Search Only)
-        from ai_core.graphs.web_acquisition_graph import build_web_acquisition_graph
         from ai_core.tool_contracts import ToolContext
 
         # Parse configurable parameters from request
@@ -282,11 +294,28 @@ def web_search(request):
         # Acquisition State
         graph_state = {
             "input": input_payload,
-            "tool_context": tool_context,
+            "tool_context": tool_context.model_dump(mode="json"),
         }
 
-        web_graph = build_web_acquisition_graph()
-        result_state = web_graph.invoke(graph_state)
+        # M-2: Async Worker
+        response_payload, completed = submit_business_graph(
+            graph_name="web_acquisition",
+            tool_context=tool_context,
+            state=graph_state,
+            timeout_s=60,
+        )
+        if not completed:
+            return views._json_error_response(
+                "Acquisition timed out.", status_code=504, code="timeout"
+            )
+
+        if response_payload.get("status") == "error":
+            # Treat as graph execution error
+            result_state = {
+                "output": {"decision": "error", "error": response_payload.get("error")}
+            }
+        else:
+            result_state = response_payload.get("data", {}).get("state", {})
 
         output = result_state.get("output", {})
         decision = output.get("decision", "error")
