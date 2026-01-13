@@ -780,15 +780,6 @@ def _prepare_request(request: Request):
     return meta, None
 
 
-LEGACY_DEPRECATION_ID = "ai-core-legacy"
-
-
-def _legacy_schema_kwargs(base_kwargs: dict[str, object]) -> dict[str, object]:
-    legacy_kwargs = dict(base_kwargs)
-    legacy_kwargs["deprecated"] = True
-    return legacy_kwargs
-
-
 def _curl(command: str) -> dict[str, object]:
     """Return extensions embedding a curl code sample."""
 
@@ -1411,17 +1402,6 @@ class PingViewV1(_PingBase):
         return super().get(request)
 
 
-class LegacyPingView(_PingBase):
-    """Legacy heartbeat endpoint served under the unversioned prefix."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-
-    @default_extend_schema(**_legacy_schema_kwargs(PING_SCHEMA))
-    def get(self, request: Request) -> Response:
-        return super().get(request)
-
-
 class _GraphView(_BaseAgentView):
     graph_name: str | None = None
 
@@ -1460,18 +1440,6 @@ class IntakeViewV1(_GraphView):
     graph_name = "info_intake"
 
     @default_extend_schema(**INTAKE_SCHEMA)
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class LegacyIntakeView(_GraphView):
-    """Deprecated intake endpoint retained for backwards compatibility."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-    graph_name = "info_intake"
-
-    @default_extend_schema(**_legacy_schema_kwargs(INTAKE_SCHEMA))
     def post(self, request: Request) -> Response:
         return super().post(request)
 
@@ -2177,12 +2145,8 @@ class CrawlerIngestionRunnerView(APIView):
 
 
 ping_v1 = PingViewV1.as_view()
-ping_legacy = LegacyPingView.as_view()
-ping = ping_legacy
 
 intake_v1 = IntakeViewV1.as_view()
-intake_legacy = LegacyIntakeView.as_view()
-intake = intake_legacy
 
 rag_query_v1 = RagQueryViewV1.as_view()
 rag_query = rag_query_v1

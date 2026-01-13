@@ -7,8 +7,6 @@ from . import views
 app_name = "ai_core"
 
 urlpatterns = [
-    path("ping/", views.ping, name="ping"),
-    path("intake/", views.intake, name="intake"),
     path("rag/query/", views.rag_query, name="rag_query"),
     path("rag/documents/upload/", views.rag_upload, name="rag_upload"),
     path("rag/ingestion/run/", views.rag_ingestion_run, name="rag_ingestion_run"),
