@@ -17,4 +17,4 @@ if ([string]::IsNullOrWhiteSpace($TestPath)) {
 # Normalize path to use forward slashes for pytest
 $TestPath = $TestPath -replace '\\', '/'
 
-docker compose -f docker-compose.dev.yml run --rm web sh -c "pip install -q -r requirements.txt -r requirements-dev.txt && python -m pytest -q -n 1 --reuse-db -v $TestPath"
+docker compose -f docker-compose.dev.yml run --rm web sh -c "pip install -q -r requirements.txt -r requirements-dev.txt && DJANGO_SETTINGS_MODULE=noesis2.settings.test_parallel python -m pytest -q -n 1 --reuse-db -v $TestPath"

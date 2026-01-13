@@ -6,24 +6,21 @@ from django.shortcuts import render
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
-from ai_core.graph.core import GraphContext, ThreadAwareCheckpointer
+# from ai_core.graph.core import GraphContext, ThreadAwareCheckpointer (Removed M-5)
 from common.constants import (
     X_CASE_ID_HEADER,
     X_COLLECTION_ID_HEADER,
     X_THREAD_ID_HEADER,
 )
 from theme.chat_utils import (
-    append_history,
     build_hybrid_config,
     build_snippet_items,
     coerce_optional_text,
-    load_history,
-    resolve_history_limit,
-    trim_history,
 )
 
 logger = get_logger(__name__)
-CHECKPOINTER = ThreadAwareCheckpointer()
+logger = get_logger(__name__)
+# CHECKPOINTER = ThreadAwareCheckpointer() (Removed M-5)
 
 
 def _views():
@@ -73,15 +70,30 @@ def chat_submit(request):
         from ai_core.graphs.technical.retrieval_augmented_generation import (
             RAG_IO_VERSION_STRING,
             RAG_SCHEMA_ID,
-            run as run_rag_graph,
+        )
+        from theme.helpers.context import prepare_workbench_context
+
+        # 1. Prepare Context
+        tool_context = prepare_workbench_context(
+            request,
+            case_id=case_id,
+            collection_id=collection_id,
+            thread_id=thread_id,
+            workflow_id="rag-chat-manual",
         )
 
-        views = _views()
-        scope = views._scope_context_from_request(request)
+        # Add graph metadata manually (helper doesn't add it)
+        tool_context = tool_context.model_copy(
+            update={"metadata": {"graph_name": "rag.default", "graph_version": "v0"}}
+        )
+
+        # graph_context removed (M-5)
+
+        scope = tool_context.scope
         tenant_id = scope.tenant_id
         tenant_schema = scope.tenant_schema or tenant_id
 
-        # 1. Prepare State & Meta
+        # 2. Prepare State & Meta
         state = {
             "schema_id": RAG_SCHEMA_ID,
             "schema_version": RAG_IO_VERSION_STRING,
@@ -90,61 +102,49 @@ def chat_submit(request):
             "hybrid": build_hybrid_config(request),
         }
 
-        from ai_core.contracts.business import BusinessContext
+        # History loading removed (M-5), handled by Graph
 
-        business = BusinessContext(
-            case_id=case_id,
-            collection_id=collection_id,
-            workflow_id="rag-chat-manual",
-            thread_id=thread_id,
-        )
-        tool_context = scope.to_tool_context(
-            business=business,
-            metadata={"graph_name": "rag.default", "graph_version": "v0"},
-        )
-        graph_context = GraphContext(
-            tool_context=tool_context,
+        from theme.helpers.tasks import submit_business_graph
+
+        # 3. Run Graph via Worker (M-2)
+        # We wait for the result to maintain the synchronous UI experience for now
+        response_payload, completed = submit_business_graph(
             graph_name="rag.default",
-            graph_version="v0",
+            tool_context=tool_context,
+            state=state,
+            timeout_s=30,
         )
 
-        meta = {
-            "scope_context": scope.model_dump(mode="json", exclude_none=True),
-            "business_context": business.model_dump(mode="json", exclude_none=True),
-            # Ensure we have a valid tool context
-            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
-        }
-
-        history_limit = resolve_history_limit()
-        history = []
-        try:
-            history = load_history(CHECKPOINTER.load(graph_context))
-        except Exception:
-            logger.exception(
-                "chat_submit.checkpoint_load_failed",
-                extra={"thread_id": thread_id},
+        if not completed:
+            logger.warning("chat_submit.timeout", extra={"thread_id": thread_id})
+            return render(
+                request,
+                "theme/partials/chat_message.html",
+                {"error": "Request timed out. Please try again."},
             )
 
-        state["chat_history"] = list(history)
+        # Parse generic worker response
+        if response_payload.get("status") == "error":
+            logger.error(
+                "chat_submit.worker_error", error=response_payload.get("error")
+            )
+            return render(
+                request,
+                "theme/partials/chat_message.html",
+                {"error": "An error occurred during processing."},
+            )
 
-        # 2. Run Graph
-        final_state, result_payload = run_rag_graph(state, meta)
+        data = response_payload.get("data", {})
+        # Note: final_state might not be returned depending on graph, but usually is
+        # result_payload usually contains "answer"
+        result_payload = data.get("result", {})
 
-        # 3. Extract Answer
+        # 4. Extract Answer
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
         snippet_items = build_snippet_items(snippets)
 
-        append_history(history, role="user", content=message)
-        append_history(history, role="assistant", content=answer)
-        history = trim_history(history, limit=history_limit)
-        try:
-            CHECKPOINTER.save(graph_context, {"chat_history": history})
-        except Exception:
-            logger.exception(
-                "chat_submit.checkpoint_save_failed",
-                extra={"thread_id": thread_id},
-            )
+        # History saving removed (M-5), handled by Graph
 
         # 4. Render Response Partial
         return render(

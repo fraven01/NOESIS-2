@@ -207,27 +207,25 @@ def start_rerank_workflow(request):
                 code="missing_collection_id",
             )
 
-        try:
-            scope = views._scope_context_from_request(request)
-        except TenantRequiredError as exc:
-            return views._tenant_required_response(exc)
-        tenant_id = scope.tenant_id
-        user = getattr(request, "user", None)
-        user_id = (
-            str(user.pk)
-            if user
-            and getattr(user, "is_authenticated", False)
-            and getattr(user, "pk", None) is not None
-            else None
-        )
-        trace_id = str(uuid4())
-        run_id = str(uuid4())
+        from theme.helpers.context import prepare_workbench_context
 
-        # Build graph input state according to GraphInput schema
+        # 1. Prepare Context
+        tool_context = prepare_workbench_context(
+            request,
+            case_id=data.get("case_id"),
+            collection_id=collection_id,
+            workflow_id="rerank-workflow-manual",
+        )
+
+        trace_id = tool_context.scope.trace_id
+        # Ensure run_id for this specific execution
+        if not tool_context.scope.run_id:
+            tool_context.scope.run_id = str(uuid4())
+
+        # Build graph input state
         purpose = data.get("purpose", "collection_search")
-        if not isinstance(purpose, str):
-            purpose = "collection_search"
-        purpose = purpose.strip() or "collection_search"
+        quality_mode = SearchQualityParams.model_validate(data).quality_mode
+        max_candidates = SearchQualityParams.model_validate(data).max_candidates
 
         graph_state = {
             "question": query,
@@ -242,22 +240,18 @@ def start_rerank_workflow(request):
             "state": graph_state,
         }
 
-        scope = {
-            "tenant_id": tenant_id,
-            "case_id": str(data.get("case_id") or "").strip() or None,
-            "trace_id": trace_id,
-            "workflow_id": "rerank-workflow-manual",
-            "run_id": run_id,
-            # Identity ID (Pre-MVP ID Contract)
-            "user_id": user_id,
-        }
+        # Flatten context for legacy worker (Scope + Business)
+        legacy_scope = tool_context.scope.model_dump(mode="json", exclude_none=True)
+        legacy_scope.update(
+            tool_context.business.model_dump(mode="json", exclude_none=True)
+        )
 
-        # Execute task synchronously with extended timeout for pipeline visualization
+        # Execute task synchronously with REDUCED timeout (QW-4)
         result_payload, completed = views.submit_worker_task(
             task_payload=task_payload,
-            scope=scope,
+            scope=legacy_scope,
             graph_name="collection_search",
-            timeout_s=120,
+            timeout_s=30,
         )
 
         logger.info(

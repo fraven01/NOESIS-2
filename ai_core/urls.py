@@ -23,6 +23,5 @@ urlpatterns = [
         views.rag_hard_delete_admin,
         name="rag_hard_delete_admin",
     ),
-    path("v1/rag-demo/", views.rag_demo, name="rag_demo"),
     path("crawl-selected/", views.crawl_selected, name="crawl_selected"),
 ]

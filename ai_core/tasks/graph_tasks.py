@@ -21,6 +21,8 @@ from .helpers.task_utils import (
     _resolve_trace_context,
     _task_result,
 )
+from ai_core.graph import registry
+from ai_core.tool_contracts import tool_context_from_meta
 
 
 def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
@@ -275,3 +277,134 @@ def _prepare_working_state(
         pass
 
     return working_state
+
+
+@shared_task(
+    base=RetryableTask,
+    queue="agents",
+    name="ai_core.tasks.run_business_graph",
+    time_limit=300,  # 5 minutes hard limit
+    soft_time_limit=240,  # 4 minutes soft limit
+)
+def run_business_graph(
+    graph_name: str,
+    state: Mapping[str, Any],
+    meta: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Execute a generic business graph via the registry.
+
+    This task enables asynchronous execution of any registered graph
+    (e.g., collection_search, web_acquisition, framework_analysis).
+
+    Args:
+        graph_name: The registry name of the graph to run.
+        state: The initial graph state.
+        meta: Metadata containing scope_context, business_context, etc.
+
+    Returns:
+        Dict with status, data (graph output), and metadata.
+    """
+    # 1. Resolve Graph
+    try:
+        runner = registry.get(graph_name)
+    except KeyError:
+        return _task_result(
+            status="error",
+            data={"error": f"Graph not found: {graph_name}"},
+            meta=meta,
+            task_name="run_business_graph",
+        )
+
+    # 2. Setup Observability
+    trace_context = _resolve_trace_context(state, meta)
+
+    # We need to construct a robust ToolContext for the graph
+    # tool_context_from_meta handles fallback to scope/business keys
+    try:
+        tool_context = tool_context_from_meta(meta or {})
+    except Exception as e:
+        # Fallback for minimal context if meta is malformed
+        # Create a dummy scope if needed, or fail? Better to fail safely.
+        return _task_result(
+            status="error",
+            data={"error": f"Invalid context metadata: {str(e)}"},
+            meta=meta,
+            task_name="run_business_graph",
+        )
+
+    # Manual Trace Context start (since ObservabilityWrapper is ingestion-centric currently)
+    # Actually, ObservabilityWrapper.start_trace expects IngestionContext.
+    # TODO: Refactor ObservabilityWrapper to be generic.
+    # For now, we use low-level start_trace if wrapper fails, or adapt.
+    # Let's use low-level observability_helpers directly for generic graphs.
+
+    # Start Trace
+    span = observability_helpers.start_trace(
+        name=f"task.{graph_name}",
+        kind="server",
+        trace_id=tool_context.scope.trace_id,
+        parent_id=trace_context.get("span_id"),
+        attributes={
+            "graph.name": graph_name,
+            "tenant.id": tool_context.scope.tenant_id,
+            "case.id": tool_context.business.case_id,
+        },
+    )
+
+    try:
+        # 3. Execute Graph
+        # GraphRunner.run() expects (state, meta) and handles tool_context injection if supported
+        # But wait, registry.get() returns a GraphRunner or ANY (LazyGraphFactory returns instance).
+        # Most graphs via `module_runner` or `build_graph` exposed `run` or `invoke`?
+        # GraphRunner contract has `run(input, meta)`.
+        # LangGraph implementations have `invoke(input, config)`.
+
+        # We need to handle both provided inputs.
+        # Standardize on GraphRunner.run() if possible.
+        # If 'runner' has 'run' method, use it.
+
+        if hasattr(runner, "run"):
+            # Runner handles lifecycle
+            final_state, result = runner.run(state, meta)
+            output = result
+        elif hasattr(runner, "invoke"):
+            # Raw LangGraph or Runnable
+            # We must construct config manually
+            run_config = {"configurable": {"tool_context": tool_context}}
+            # Pass meta as part of state? No.
+            # Usually we pass input dict.
+            # This path is risky without standardization.
+            # AGENTS.md implies we should wrap in GraphRunner or compatible adapter.
+            # Assuming widely used graphs have .run via `module_runner`.
+
+            # Fallback for raw invoke
+            final_state = runner.invoke(state, config=run_config)
+            output = final_state  # Raw state as output
+        else:
+            raise ValueError(
+                f"Graph runner for '{graph_name}' has no run() or invoke() method"
+            )
+
+        # 4. Success Response
+        serialized_output = _jsonify_for_task(output)
+        return _task_result(
+            status="success",
+            data=serialized_output,
+            meta=meta,
+            task_name=f"run_business_graph[{graph_name}]",
+        )
+
+    except Exception as exc:
+        # 5. Error Response
+        observability_helpers.record_exception(span, exc)
+        return _task_result(
+            status="error",
+            data={
+                "error": str(exc),
+                "type": exc.__class__.__name__,
+            },
+            meta=meta,
+            task_name=f"run_business_graph[{graph_name}]",
+        )
+    finally:
+        observability_helpers.end_trace(span)

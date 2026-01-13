@@ -8,6 +8,7 @@ from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, Tuple, TypedDict, cast
 
+from ai_core.graph.core import GraphContext, ThreadAwareCheckpointer
 from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import emit_event, observe_span, update_observation
 from ai_core.nodes import compose, retrieve
@@ -29,6 +30,57 @@ DEFAULT_SCORE_THRESHOLD = 0.65
 DEFAULT_SCORE_DELTA = 0.05
 DEFAULT_QUERY_VARIANTS = 3
 RETRY_QUERY_VARIANTS = 5
+DEFAULT_HISTORY_LIMIT = 6
+
+
+def _resolve_history_limit() -> int:
+    try:
+        limit = int(
+            os.getenv("RAG_CHAT_HISTORY_MAX_MESSAGES", str(DEFAULT_HISTORY_LIMIT))
+        )
+        if limit < 1:
+            return DEFAULT_HISTORY_LIMIT
+        return limit
+    except (TypeError, ValueError):
+        return DEFAULT_HISTORY_LIMIT
+
+
+def _load_history(state: object) -> list[dict[str, str]]:
+    if not isinstance(state, dict):
+        return []
+    history = state.get("chat_history")
+    if not isinstance(history, list):
+        return []
+    cleaned: list[dict[str, str]] = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        role = entry.get("role")
+        content = entry.get("content")
+        if not isinstance(role, str) or not isinstance(content, str):
+            continue
+        cleaned.append({"role": role, "content": content})
+    return cleaned
+
+
+def _append_history(
+    history: list[dict[str, str]],
+    *,
+    role: str,
+    content: str | None,
+) -> None:
+    if not content:
+        return
+    history.append({"role": role, "content": content})
+
+
+def _trim_history(history: list[dict[str, str]], *, limit: int) -> list[dict[str, str]]:
+    if limit <= 0:
+        return history
+    if len(history) <= limit:
+        return history
+    return history[-limit:]
+
 
 RAG_SCHEMA_ID = "noesis.graphs.retrieval_augmented_generation"
 RAG_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
@@ -986,17 +1038,78 @@ class RetrievalAugmentedGenerationGraph:
         working_meta = _ensure_mutable_meta(meta)
         context = _build_tool_context(working_meta)
 
+        # M-5: RAG Graph manages history internally via Checkpointer
+        thread_id = context.business.thread_id
+        checkpointer = ThreadAwareCheckpointer()
+
+        # We construct a GraphContext to access the checkpointer store
+        # Note: We use "rag.default" as canonical name for now, or use meta?
+        # Ideally this should match registry name logic, but file checkpointer
+        # paths are derived from tenant/case/thread.
+        graph_ctx = GraphContext(
+            tool_context=context,
+            graph_name="rag.default",
+            graph_version=RAG_IO_VERSION_STRING,
+        )
+
+        # 1. Load History (if thread exists)
+        if thread_id:
+            try:
+                loaded = checkpointer.load(graph_ctx)
+                history = _load_history(loaded)
+                # Inject history into working state for the graph execution
+                working_state["chat_history"] = history
+            except Exception:
+                # Log but proceed (resilience)
+                logger.warning(
+                    "rag.history.load_failed",
+                    extra={
+                        "tenant_id": context.scope.tenant_id,
+                        "thread_id": thread_id,
+                    },
+                )
+
         graph_state: RetrievalAugmentedGenerationState = {
             "state": working_state,
             "meta": working_meta,
             "context": context,
         }
+
+        # 2. Invoke Graph
         final_state = self._graph.invoke(graph_state)
 
         updated_state = final_state.get("state", working_state)
         result_payload = final_state.get("result") or {}
         if not isinstance(result_payload, Mapping):
             result_payload = {}
+
+        # 3. Save History (if thread exists and answer generated)
+        if thread_id:
+            try:
+                base_query = _resolve_base_query(
+                    final_state.get("graph_input") or _coerce_graph_input(updated_state)
+                )
+                answer = result_payload.get("answer")
+
+                if base_query and answer:
+                    history = _load_history(
+                        updated_state
+                    )  # Get current history from state
+                    _append_history(history, role="user", content=base_query)
+                    _append_history(history, role="assistant", content=answer)
+
+                    limit = _resolve_history_limit()
+                    history = _trim_history(history, limit=limit)
+
+                    checkpointer.save(graph_ctx, {"chat_history": history})
+            except Exception:
+                logger.warning(
+                    "rag.history.save_failed",
+                    extra={
+                        "tenant_id": context.scope.tenant_id,
+                        "thread_id": thread_id,
+                    },
+                )
 
         return updated_state, result_payload
 
