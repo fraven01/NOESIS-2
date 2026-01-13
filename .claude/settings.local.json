@@ -63,7 +63,8 @@
       "Bash(echo:*)",
       "Bash(for file in \"docs/agents/tool-contracts.md\" \"docs/agents/reranking-contracts.md\" \"docs/agents/web-search-tool.md\")",
       "Bash(git stash:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(git merge:*)"
     ],
     "deny": [],
     "ask": []
