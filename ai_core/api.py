@@ -464,6 +464,12 @@ def trigger_embedding(
         vector_space_id=profile_resolution.resolution.vector_space.id,
         workflow_id=document.ref.workflow_id,
         document_id=str(document.ref.document_id),
+        document_version_id=(
+            str(document.ref.document_version_id)
+            if getattr(document.ref, "document_version_id", None) is not None
+            else None
+        ),
+        is_latest=True,
         lifecycle_state=document.lifecycle_state,
     )
 

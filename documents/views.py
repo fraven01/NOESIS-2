@@ -1,7 +1,10 @@
 """Document download views."""
 
+import hashlib
 import json
 import time
+from collections.abc import Mapping
+from uuid import UUID
 
 from django.http import (
     FileResponse,
@@ -20,7 +23,12 @@ from ai_core.services import _get_documents_repository
 from customers.tenant_context import TenantContext, TenantRequiredError
 from documents.activity_service import ActivityTracker
 from documents.authz import DocumentAuthzService
-from documents.models import Document, DocumentActivity, DocumentPermission
+from documents.models import (
+    Document,
+    DocumentActivity,
+    DocumentPermission,
+    DocumentVersion,
+)
 from documents.serializers import DocumentSerializer
 from profiles.models import UserProfile
 from .utils import (
@@ -117,6 +125,40 @@ def _log_download_activity(
             tenant_id=tenant_id,
             document_id=str(document_id),
         )
+
+
+def _serialize_document_version(version: DocumentVersion) -> dict[str, object]:
+    return {
+        "document_version_id": str(version.id),
+        "document_id": str(version.document_id),
+        "version_label": version.version_label,
+        "sequence": version.sequence,
+        "label_sequence": version.label_sequence,
+        "is_latest": version.is_latest,
+        "deleted_at": version.deleted_at.isoformat() if version.deleted_at else None,
+        "created_at": version.created_at.isoformat() if version.created_at else None,
+        "created_by_user_id": (
+            str(version.created_by_id) if version.created_by_id else None
+        ),
+        "created_by_service_id": version.created_by_service_id,
+    }
+
+
+def _chunk_content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _chunk_identity(chunk: Mapping[str, object]) -> str:
+    metadata = chunk.get("metadata")
+    if isinstance(metadata, Mapping):
+        parent_ref = metadata.get("parent_ref")
+        if parent_ref:
+            return f"parent_ref:{parent_ref}"
+        parent_ids = metadata.get("parent_ids")
+        if isinstance(parent_ids, list) and parent_ids:
+            return f"parent_ids:{parent_ids[0]}"
+    chunk_id = chunk.get("chunk_id") or chunk.get("id")
+    return f"chunk_id:{chunk_id}"
 
 
 @require_http_methods(["GET", "HEAD"])
@@ -531,6 +573,258 @@ def recent_documents(request):
     return JsonResponse(
         DocumentSerializer(ordered_documents, many=True).data, safe=False
     )
+
+
+@require_http_methods(["GET"])
+def document_versions(request, document_id: str):
+    try:
+        doc_uuid = UUID(document_id)
+    except (ValueError, AttributeError):
+        return error(
+            400, "InvalidDocumentId", f"Invalid document ID format: {document_id}"
+        )
+
+    try:
+        tenant_id, tenant_schema = _resolve_tenant_context(request)
+    except TenantRequiredError as exc:
+        return error(403, "TenantRequired", str(exc))
+
+    user, auth_error = _require_authenticated_user(request)
+    if auth_error:
+        return auth_error
+
+    tenant_obj = TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+    with schema_context(tenant_schema):
+        access = DocumentAuthzService.user_can_access_document_id(
+            user=user,
+            document_id=doc_uuid,
+            permission_type=DocumentPermission.PermissionType.VIEW,
+            tenant=tenant_obj,
+        )
+        if not access.allowed:
+            if access.reason == "not_found":
+                return error(
+                    404, "DocumentNotFound", f"Document {document_id} not found"
+                )
+            return error(403, "PermissionDenied", "Permission denied")
+
+        versions = list(
+            DocumentVersion.objects.filter(document_id=doc_uuid).order_by("-sequence")
+        )
+
+    payload = {
+        "document_id": str(doc_uuid),
+        "versions": [_serialize_document_version(version) for version in versions],
+    }
+    return JsonResponse(payload)
+
+
+@require_http_methods(["GET"])
+def document_version_chunks(request, document_id: str, version_id: str):
+    try:
+        doc_uuid = UUID(document_id)
+    except (ValueError, AttributeError):
+        return error(
+            400, "InvalidDocumentId", f"Invalid document ID format: {document_id}"
+        )
+    try:
+        version_uuid = UUID(version_id)
+    except (ValueError, AttributeError):
+        return error(
+            400, "InvalidDocumentVersionId", f"Invalid version ID format: {version_id}"
+        )
+
+    try:
+        tenant_id, tenant_schema = _resolve_tenant_context(request)
+    except TenantRequiredError as exc:
+        return error(403, "TenantRequired", str(exc))
+
+    user, auth_error = _require_authenticated_user(request)
+    if auth_error:
+        return auth_error
+
+    tenant_obj = TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+    with schema_context(tenant_schema):
+        access = DocumentAuthzService.user_can_access_document_id(
+            user=user,
+            document_id=doc_uuid,
+            permission_type=DocumentPermission.PermissionType.VIEW,
+            tenant=tenant_obj,
+        )
+        if not access.allowed:
+            if access.reason == "not_found":
+                return error(
+                    404, "DocumentNotFound", f"Document {document_id} not found"
+                )
+            return error(403, "PermissionDenied", "Permission denied")
+
+        version = DocumentVersion.objects.filter(
+            id=version_uuid,
+            document_id=doc_uuid,
+        ).first()
+        if version is None:
+            return error(
+                404,
+                "DocumentVersionNotFound",
+                f"Document version {version_id} not found",
+            )
+
+    try:
+        limit = int(request.GET.get("limit", "1000"))
+    except (TypeError, ValueError):
+        limit = 1000
+    limit = max(1, min(limit, 5000))
+    try:
+        offset = int(request.GET.get("offset", "0"))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, offset)
+
+    from ai_core.rag.vector_client import get_default_client
+
+    vector_client = get_default_client()
+    chunks = vector_client.list_chunks_by_version(
+        tenant_id=tenant_id,
+        document_id=doc_uuid,
+        document_version_id=version_uuid,
+        limit=limit,
+        offset=offset,
+    )
+
+    payload = {
+        "document_id": str(doc_uuid),
+        "document_version_id": str(version_uuid),
+        "chunks": chunks,
+    }
+    return JsonResponse(payload)
+
+
+@require_http_methods(["GET"])
+def document_version_diff(request, document_id: str, version_id: str):
+    compare_to = request.GET.get("other_version_id")
+    if not compare_to:
+        return error(
+            400,
+            "MissingVersionId",
+            "Query parameter other_version_id is required",
+        )
+
+    try:
+        doc_uuid = UUID(document_id)
+    except (ValueError, AttributeError):
+        return error(
+            400, "InvalidDocumentId", f"Invalid document ID format: {document_id}"
+        )
+    try:
+        left_version_uuid = UUID(version_id)
+        right_version_uuid = UUID(compare_to)
+    except (ValueError, AttributeError):
+        return error(
+            400,
+            "InvalidDocumentVersionId",
+            "Invalid version ID format",
+        )
+
+    try:
+        tenant_id, tenant_schema = _resolve_tenant_context(request)
+    except TenantRequiredError as exc:
+        return error(403, "TenantRequired", str(exc))
+
+    user, auth_error = _require_authenticated_user(request)
+    if auth_error:
+        return auth_error
+
+    tenant_obj = TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+    with schema_context(tenant_schema):
+        access = DocumentAuthzService.user_can_access_document_id(
+            user=user,
+            document_id=doc_uuid,
+            permission_type=DocumentPermission.PermissionType.VIEW,
+            tenant=tenant_obj,
+        )
+        if not access.allowed:
+            if access.reason == "not_found":
+                return error(
+                    404, "DocumentNotFound", f"Document {document_id} not found"
+                )
+            return error(403, "PermissionDenied", "Permission denied")
+
+        versions = {
+            version.id
+            for version in DocumentVersion.objects.filter(
+                document_id=doc_uuid,
+                id__in=[left_version_uuid, right_version_uuid],
+            )
+        }
+        if left_version_uuid not in versions or right_version_uuid not in versions:
+            return error(
+                404,
+                "DocumentVersionNotFound",
+                "One or more document versions not found",
+            )
+
+    from ai_core.rag.vector_client import get_default_client
+
+    vector_client = get_default_client()
+    left_chunks = vector_client.list_chunks_by_version(
+        tenant_id=tenant_id,
+        document_id=doc_uuid,
+        document_version_id=left_version_uuid,
+    )
+    right_chunks = vector_client.list_chunks_by_version(
+        tenant_id=tenant_id,
+        document_id=doc_uuid,
+        document_version_id=right_version_uuid,
+    )
+
+    left_index: dict[str, dict[str, object]] = {}
+    for chunk in left_chunks:
+        identity = _chunk_identity(chunk)
+        text = str(chunk.get("text") or "")
+        left_index[identity] = {
+            "chunk": chunk,
+            "hash": _chunk_content_hash(text),
+        }
+
+    right_index: dict[str, dict[str, object]] = {}
+    for chunk in right_chunks:
+        identity = _chunk_identity(chunk)
+        text = str(chunk.get("text") or "")
+        right_index[identity] = {
+            "chunk": chunk,
+            "hash": _chunk_content_hash(text),
+        }
+
+    added = []
+    removed = []
+    changed = []
+    for identity, right_entry in right_index.items():
+        if identity not in left_index:
+            added.append(right_entry["chunk"])
+            continue
+        left_entry = left_index[identity]
+        if left_entry["hash"] != right_entry["hash"]:
+            changed.append(
+                {
+                    "key": identity,
+                    "before": left_entry["chunk"],
+                    "after": right_entry["chunk"],
+                }
+            )
+
+    for identity, left_entry in left_index.items():
+        if identity not in right_index:
+            removed.append(left_entry["chunk"])
+
+    payload = {
+        "document_id": str(doc_uuid),
+        "from_version_id": str(left_version_uuid),
+        "to_version_id": str(right_version_uuid),
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+    }
+    return JsonResponse(payload)
 
 
 @require_http_methods(["POST"])

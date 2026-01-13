@@ -503,13 +503,23 @@ def _prepare_request(request: Request):
         tenant_header = request.META.get(META_TENANT_ID_KEY)
     if tenant_header is None:
         tenant_header = request.META.get(X_TENANT_ID_HEADER)
-    case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
-    workflow_id = (request.headers.get(X_WORKFLOW_ID_HEADER) or "").strip()
+    case_id = (
+        request.headers.get(X_CASE_ID_HEADER)
+        or request.META.get(META_CASE_ID_KEY)
+        or ""
+    ).strip()
+    workflow_id = (
+        request.headers.get(X_WORKFLOW_ID_HEADER)
+        or request.META.get(META_WORKFLOW_ID_KEY)
+        or ""
+    ).strip()
     if not workflow_id:
         # Default workflow_id to case_id if available, otherwise generate UUID
         workflow_id = case_id or uuid4().hex
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
     collection_header = request.headers.get(X_COLLECTION_ID_HEADER)
+    if collection_header is None:
+        collection_header = request.META.get(META_COLLECTION_ID_KEY)
     idempotency_header = request.headers.get(IDEMPOTENCY_KEY_HEADER)
     if not idempotency_header:
         idempotency_header = request.META.get(
@@ -1781,7 +1791,9 @@ class RagUploadView(APIView):
         # scope_context is infrastructure only (ScopeContext).
         # Business IDs like case_id should be in a separate business_context dict.
         # For now, check and set case_id in request.META instead.
-        case_id_from_header = request.headers.get("X-Case-ID", "").strip()
+        case_id_from_header = (
+            request.headers.get("X-Case-ID") or request.META.get(META_CASE_ID_KEY) or ""
+        ).strip()
 
         # Fix for Silent RAG Failure (Finding #22):
         # In DEV/DEBUG mode, default missing case_id to the dev default.
@@ -1797,11 +1809,21 @@ class RagUploadView(APIView):
         # Add business context to meta for handle_document_upload
         from ai_core.contracts.business import BusinessContext
 
+        workflow_id_from_header = (
+            request.headers.get("X-Workflow-ID")
+            or request.META.get(META_WORKFLOW_ID_KEY)
+            or ""
+        ).strip()
+        collection_id_from_header = (
+            request.headers.get("X-Collection-ID")
+            or request.META.get(META_COLLECTION_ID_KEY)
+            or ""
+        ).strip()
+
         business_context = BusinessContext(
             case_id=case_id_from_header,
-            workflow_id=request.headers.get("X-Workflow-ID", "").strip()
-            or case_id_from_header,
-            collection_id=request.headers.get("X-Collection-ID", "").strip() or None,
+            workflow_id=workflow_id_from_header or case_id_from_header,
+            collection_id=collection_id_from_header or None,
         )
         meta["business_context"] = business_context.model_dump(
             mode="json", exclude_none=True

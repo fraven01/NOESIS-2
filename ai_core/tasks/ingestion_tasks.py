@@ -1471,6 +1471,8 @@ def upsert(
                         "process",
                         "collection_id",
                         "workflow_id",
+                        "document_version_id",
+                        "is_latest",
                     ):
                         if raw_meta.get(key) is not None:
                             fallback_meta[key] = raw_meta.get(key)

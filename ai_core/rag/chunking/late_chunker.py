@@ -196,11 +196,12 @@ class LateChunker:
         boundaries = self._detect_boundaries(sentences, context)
 
         # 5. Build chunks with metadata
+        namespace_id = self._resolve_chunk_namespace_id(context)
         chunks = self._build_chunks(
             sentences=sentences,
             boundaries=boundaries,
             block_map=block_map,
-            document_id=context.metadata.document_id,
+            document_id=namespace_id,
             parsed=parsed,
         )
 
@@ -368,11 +369,12 @@ class LateChunker:
         if not sentences:
             return []
         boundaries = self._detect_boundaries(sentences, context)
+        namespace_id = self._resolve_chunk_namespace_id(context)
         return self._build_chunks_adaptive(
             run=run,
             sentences=sentences,
             boundaries=boundaries,
-            document_id=context.metadata.document_id,
+            document_id=namespace_id,
         )
 
     def _count_tokens(self, text: str) -> int:
@@ -988,7 +990,7 @@ class LateChunker:
             },
         )
         chunks: list[Mapping[str, Any]] = []
-        document_id = context.metadata.document_id
+        namespace_id = self._resolve_chunk_namespace_id(context)
         for idx, block in enumerate(parsed.text_blocks):
             text = block.text.strip()
             if not text:
@@ -999,7 +1001,7 @@ class LateChunker:
             )
             chunk_text = text[:2048]
             chunk_id = self._build_adaptive_chunk_id(
-                document_id=document_id,
+                document_id=namespace_id,
                 chunk_text=chunk_text,
                 kind="text",
                 parent_ref=parent_ref,
@@ -1030,6 +1032,7 @@ class LateChunker:
             return []
         chunks: list[Mapping[str, Any]] = []
         document_id = context.metadata.document_id
+        namespace_id = self._resolve_chunk_namespace_id(context)
 
         for index, asset in enumerate(assets):
             chunk_text = self._build_asset_text(asset, index)
@@ -1037,7 +1040,7 @@ class LateChunker:
                 continue
             parent_ref = self._resolve_asset_parent_ref(asset, index, document_id)
             chunk_id = self._build_adaptive_chunk_id(
-                document_id=document_id,
+                document_id=namespace_id,
                 chunk_text=chunk_text,
                 kind="asset",
                 parent_ref=parent_ref,
@@ -1195,13 +1198,14 @@ class LateChunker:
 
         # Simple fallback: use block-based chunking (like SimpleDocumentChunker)
         chunks = []
+        namespace_id = self._resolve_chunk_namespace_id(context)
         for idx, block in enumerate(parsed.text_blocks):
             text = block.text.strip()
             if not text:
                 continue
 
             locator = f"fallback:{idx}"
-            chunk_id = str(uuid5(context.metadata.document_id, f"chunk:{locator}"))
+            chunk_id = str(uuid5(namespace_id, f"chunk:{locator}"))
 
             chunk = {
                 "chunk_id": chunk_id,
@@ -1217,3 +1221,17 @@ class LateChunker:
             chunks.append(chunk)
 
         return chunks
+
+    def _resolve_chunk_namespace_id(self, context: Any) -> UUID:
+        document_id = context.metadata.document_id
+        raw_version_id = getattr(context.metadata, "document_version_id", None)
+        if raw_version_id in {None, ""}:
+            return document_id
+        try:
+            return (
+                raw_version_id
+                if isinstance(raw_version_id, UUID)
+                else UUID(str(raw_version_id))
+            )
+        except (TypeError, ValueError, AttributeError):
+            return document_id

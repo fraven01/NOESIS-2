@@ -10,7 +10,7 @@ from documents.contracts import (
     Asset,
     AssetRef,
 )
-from documents.models import DocumentCollection
+from documents.models import DocumentCollection, DocumentVersion
 from customers.models import Tenant
 
 
@@ -133,6 +133,75 @@ class TestDbDocumentsRepository:
 
         assert len(refs) == 1
         assert refs[0].version == "v2"
+
+    def test_upsert_creates_document_versions(self, repository, tenant, collection):
+        doc_id = uuid4()
+
+        doc_v1 = NormalizedDocument(
+            ref=DocumentRef(
+                tenant_id=tenant.schema_name,
+                document_id=doc_id,
+                workflow_id="test",
+                collection_id=collection.collection_id,
+                version="v1",
+            ),
+            meta=DocumentMeta(
+                tenant_id=tenant.schema_name,
+                workflow_id="test",
+                document_collection_id=collection.collection_id,
+                title="Test Doc V1",
+            ),
+            blob=InlineBlob(
+                type="inline",
+                media_type="text/plain",
+                base64="aGVsbG8=",
+                sha256="2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                size=5,
+            ),
+            checksum="2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            created_at=datetime.fromisoformat("2023-01-01T10:00:00+00:00"),
+        )
+        stored_v1 = repository.upsert(doc_v1)
+        assert stored_v1.ref.document_version_id is not None
+
+        doc_v2 = NormalizedDocument(
+            ref=DocumentRef(
+                tenant_id=tenant.schema_name,
+                document_id=doc_id,
+                workflow_id="test",
+                collection_id=collection.collection_id,
+                version="v2",
+            ),
+            meta=DocumentMeta(
+                tenant_id=tenant.schema_name,
+                workflow_id="test",
+                document_collection_id=collection.collection_id,
+                title="Test Doc V2",
+            ),
+            blob=InlineBlob(
+                type="inline",
+                media_type="text/plain",
+                base64="d29ybGQ=",
+                sha256="486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7",
+                size=5,
+            ),
+            checksum="486ea46224d1bb4fb680f34f7c9ad96a8f24ec88be73ea8e5a6c65260e9cb8a7",
+            created_at=datetime.fromisoformat("2023-01-02T10:00:00+00:00"),
+        )
+        stored_v2 = repository.upsert(doc_v2)
+        assert stored_v2.ref.document_version_id is not None
+        assert stored_v2.ref.document_version_id != stored_v1.ref.document_version_id
+
+        versions = list(
+            DocumentVersion.objects.filter(document_id=doc_id).order_by("sequence")
+        )
+        assert len(versions) == 2
+        assert versions[0].sequence == 1
+        assert versions[1].sequence == 2
+        assert versions[0].is_latest is False
+        assert versions[1].is_latest is True
+        assert versions[0].deleted_at is not None
+        assert versions[1].deleted_at is None
 
     def test_asset_persistence(self, repository, tenant, collection):
         """Test adding, getting, listing and deleting assets."""

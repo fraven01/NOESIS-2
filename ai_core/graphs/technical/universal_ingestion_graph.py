@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Literal, TypedDict
+from uuid import UUID, uuid4
 
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables import RunnableConfig
@@ -242,6 +243,30 @@ def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
     # Resolve Repository (Service Dependency)
     repo = (
         tool_context.metadata.get("runtime_repository") or _get_documents_repository()
+    )
+
+    raw_version_id = tool_context.business.document_version_id
+    resolved_version_id: UUID | None = None
+    if raw_version_id:
+        try:
+            resolved_version_id = (
+                raw_version_id
+                if isinstance(raw_version_id, UUID)
+                else UUID(str(raw_version_id))
+            )
+        except (TypeError, ValueError, AttributeError):
+            resolved_version_id = None
+    if resolved_version_id is None:
+        resolved_version_id = uuid4()
+
+    norm_doc = norm_doc.model_copy(
+        update={
+            "ref": norm_doc.ref.model_copy(
+                update={"document_version_id": resolved_version_id},
+                deep=True,
+            )
+        },
+        deep=True,
     )
 
     try:

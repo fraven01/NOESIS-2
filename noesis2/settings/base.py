@@ -485,6 +485,11 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(day_of_month=1, hour=2, minute=0),
         "options": {"queue": "default"},
     },
+    "document-version-cleanup": {
+        "task": "documents.tasks.cleanup_document_versions",
+        "schedule": crontab(hour=3, minute=0),
+        "options": {"queue": "default"},
+    },
 }
 
 

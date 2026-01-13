@@ -1315,6 +1315,18 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         if workflow != ref.workflow_id:
             raise ValueError("workflow_mismatch")
 
+        if getattr(ref, "document_version_id", None) is None:
+            doc_copy = doc_copy.model_copy(
+                update={
+                    "ref": ref.model_copy(
+                        update={"document_version_id": uuid4()},
+                        deep=True,
+                    )
+                },
+                deep=True,
+            )
+            ref = doc_copy.ref
+
         with log_context(
             tenant=ref.tenant_id,
             collection_id=str(ref.collection_id) if ref.collection_id else None,

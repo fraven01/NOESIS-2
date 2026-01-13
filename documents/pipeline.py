@@ -256,6 +256,9 @@ class DocumentProcessingMetadata(BaseModel):
         ..., description="Workflow identifier that processed the document"
     )
     document_id: UUID = Field(..., description="Unique document identifier")
+    document_version_id: Optional[UUID] = Field(
+        default=None, description="Unique document version identifier"
+    )
     version: Optional[str] = Field(
         default=None, description="Semantic document version or revision"
     )
@@ -281,7 +284,9 @@ class DocumentProcessingMetadata(BaseModel):
             raise ValueError("metadata_required_string")
         return normalize_tenant(str(value))
 
-    @field_validator("collection_id", "document_collection_id", mode="before")
+    @field_validator(
+        "collection_id", "document_collection_id", "document_version_id", mode="before"
+    )
     @classmethod
     def _coerce_optional_uuid(cls, value: Optional[UUID] | str) -> Optional[UUID]:
         if value is None:
@@ -371,6 +376,7 @@ class DocumentProcessingMetadata(BaseModel):
             case_id=case_id,
             workflow_id=workflow_id,
             document_id=ref.document_id,
+            document_version_id=getattr(ref, "document_version_id", None),
             version=getattr(ref, "version", None),
             source=source,
             created_at=created_at,
@@ -404,6 +410,7 @@ class DocumentProcessingContext:
             f"case_id={self.metadata.case_id!r}, "
             f"workflow_id={self.metadata.workflow_id!r}, "
             f"document_id={self.metadata.document_id!r}, "
+            f"document_version_id={self.metadata.document_version_id!r}, "
             f"version={self.metadata.version!r}, "
             f"source={self.metadata.source!r}, "
             f"created_at={self.metadata.created_at!r}, "

@@ -67,7 +67,7 @@ def build_graph(*, event_emitter: Optional[Any] = None):
     base=RetryableTask,
     queue="ingestion",
     name="ai_core.tasks.run_ingestion_graph",
-33    soft_time_limit=1740,  # 29 minutes
+    soft_time_limit=1740,  # 29 minutes
 )
 def run_ingestion_graph(
     state: Mapping[str, Any],

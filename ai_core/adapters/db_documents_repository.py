@@ -3,11 +3,12 @@ import base64
 from contextlib import nullcontext
 from datetime import datetime
 from typing import List, Mapping, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 import logging
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
+from django.db.models import Max
 from django.utils import timezone
 from django_tenants.utils import schema_context
 
@@ -103,6 +104,7 @@ class DbDocumentsRepository(DocumentsRepository):
         DocumentCollectionMembership = apps.get_model(
             "documents", "DocumentCollectionMembership"
         )
+        DocumentVersion = apps.get_model("documents", "DocumentVersion")
         User = apps.get_model("users", "User")
 
         with self._schema_ctx(scope, tenant):
@@ -121,6 +123,33 @@ class DbDocumentsRepository(DocumentsRepository):
                         },
                     )
 
+            def _ensure_document_version_id(
+                source_doc: NormalizedDocument,
+            ) -> tuple[NormalizedDocument, UUID]:
+                raw_version_id = getattr(source_doc.ref, "document_version_id", None)
+                resolved_version_id = None
+                if raw_version_id not in {None, ""}:
+                    try:
+                        resolved_version_id = (
+                            raw_version_id
+                            if isinstance(raw_version_id, UUID)
+                            else UUID(str(raw_version_id))
+                        )
+                    except (TypeError, ValueError, AttributeError):
+                        resolved_version_id = None
+                if resolved_version_id is None:
+                    resolved_version_id = uuid4()
+                updated_doc = source_doc.model_copy(
+                    update={
+                        "ref": source_doc.ref.model_copy(
+                            update={"document_version_id": resolved_version_id},
+                            deep=True,
+                        )
+                    },
+                    deep=True,
+                )
+                return updated_doc, resolved_version_id
+
             # Fail fast if collection is specified but missing (Logic Change)
             coll = None
             if collection_id:
@@ -133,6 +162,7 @@ class DbDocumentsRepository(DocumentsRepository):
                     raise ValueError(f"Collection not found: {collection_id}")
 
             document = None
+            document_version_id: UUID | None = None
 
             # Strategy 1: Find by business key (tenant, source, hash)
             try:
@@ -164,6 +194,7 @@ class DbDocumentsRepository(DocumentsRepository):
                     },
                     deep=True,
                 )
+                doc_copy, document_version_id = _ensure_document_version_id(doc_copy)
                 metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                 document = self._update_document_instance(
                     document,
@@ -174,6 +205,7 @@ class DbDocumentsRepository(DocumentsRepository):
                     audit_meta=audit_meta,
                 )
             else:
+                doc_copy, document_version_id = _ensure_document_version_id(doc_copy)
                 metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                 # Create new - handle race condition
                 try:
@@ -255,6 +287,9 @@ class DbDocumentsRepository(DocumentsRepository):
                         },
                         deep=True,
                     )
+                    doc_copy, document_version_id = _ensure_document_version_id(
+                        doc_copy
+                    )
                     metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                     document = self._update_document_instance(
                         document,
@@ -272,6 +307,66 @@ class DbDocumentsRepository(DocumentsRepository):
             if document and created_by_user:
                 document.updated_by = created_by_user
                 document.save(update_fields=["updated_by", "updated_at"])
+
+            if document and doc_copy:
+                version_label = doc_copy.ref.version or None
+                resolved_version_id = document_version_id or uuid4()
+                doc_snapshot = doc_copy.model_dump(mode="json")
+                with transaction.atomic():
+                    existing_version = DocumentVersion.objects.filter(
+                        id=resolved_version_id,
+                        document=document,
+                    ).first()
+                    if existing_version:
+                        update_fields = ["normalized_document"]
+                        existing_version.normalized_document = doc_snapshot
+                        if not existing_version.is_latest:
+                            now = timezone.now()
+                            DocumentVersion.objects.filter(
+                                document=document,
+                                is_latest=True,
+                            ).exclude(id=existing_version.id).update(
+                                is_latest=False,
+                                deleted_at=now,
+                            )
+                            existing_version.is_latest = True
+                            existing_version.deleted_at = None
+                            update_fields.extend(["is_latest", "deleted_at"])
+                        existing_version.save(update_fields=update_fields)
+                    else:
+                        now = timezone.now()
+                        max_seq = (
+                            DocumentVersion.objects.filter(document=document).aggregate(
+                                max_seq=Max("sequence")
+                            )["max_seq"]
+                            or 0
+                        )
+                        max_label_seq = (
+                            DocumentVersion.objects.filter(
+                                document=document,
+                                version_label=version_label,
+                            ).aggregate(max_seq=Max("label_sequence"))["max_seq"]
+                            or 0
+                        )
+                        DocumentVersion.objects.filter(
+                            document=document,
+                            is_latest=True,
+                        ).update(
+                            is_latest=False,
+                            deleted_at=now,
+                        )
+                        DocumentVersion.objects.create(
+                            id=resolved_version_id,
+                            document=document,
+                            version_label=version_label,
+                            sequence=max_seq + 1,
+                            label_sequence=max_label_seq + 1,
+                            is_latest=True,
+                            deleted_at=None,
+                            normalized_document=doc_snapshot,
+                            created_by=created_by_user,
+                            created_by_service_id=last_hop_service_id,
+                        )
 
             # 3. Memberships (Side Effects)
             if coll:

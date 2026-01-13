@@ -105,6 +105,8 @@ SUPPORTED_METADATA_FILTERS = {
     "source": "chunk_meta",
     "doctype": "chunk_meta",
     "published": "chunk_meta",
+    "document_version_id": "chunk_meta",
+    "is_latest": "chunk_meta",
     "hash": "document_hash",
     "id": "document_id",
     "external_id": "document_external_id",
@@ -224,6 +226,30 @@ def _prepare_scope_filters(
 
     normalized_filters["tenant_id"] = tenant
     normalized_filters["case_id"] = case_value
+
+    if "document_version_id" in normalized_filters:
+        doc_version_value = normalized_filters.get("document_version_id")
+        if doc_version_value in {None, ""}:
+            normalized_filters.pop("document_version_id", None)
+        elif isinstance(doc_version_value, uuid.UUID):
+            normalized_filters["document_version_id"] = str(doc_version_value)
+        else:
+            normalized_filters["document_version_id"] = str(doc_version_value).strip()
+
+    if "is_latest" in normalized_filters:
+        latest_value = normalized_filters.get("is_latest")
+        if isinstance(latest_value, bool):
+            normalized_filters["is_latest"] = "true" if latest_value else "false"
+        elif latest_value in {None, ""}:
+            normalized_filters.pop("is_latest", None)
+        else:
+            normalized_filters["is_latest"] = str(latest_value).strip().lower()
+
+    if (
+        "document_version_id" not in normalized_filters
+        and "is_latest" not in normalized_filters
+    ):
+        normalized_filters["is_latest"] = "true"
 
     metadata_filters = [
         (key, value)
@@ -983,6 +1009,114 @@ class PgVectorClient:
         )
         return UpsertResult(inserted_chunks, documents_info)
 
+    def list_chunks_by_version(
+        self,
+        *,
+        tenant_id: str,
+        document_id: uuid.UUID | str,
+        document_version_id: uuid.UUID | str,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[dict[str, object]]:
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        try:
+            document_uuid = (
+                document_id
+                if isinstance(document_id, uuid.UUID)
+                else uuid.UUID(str(document_id))
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("invalid_document_id") from exc
+        version_text = str(document_version_id)
+
+        chunks_table = self._table("chunks")
+        query = sql.SQL(
+            "SELECT id, ord, text, metadata "
+            "FROM {} "
+            "WHERE document_id = %s "
+            "AND tenant_id = %s "
+            "AND metadata ->> 'document_version_id' = %s "
+            "ORDER BY ord"
+        ).format(chunks_table)
+        params: list[object] = [document_uuid, tenant_uuid, version_text]
+        if limit is not None:
+            query += sql.SQL(" LIMIT %s")
+            params.append(int(limit))
+        if offset is not None:
+            query += sql.SQL(" OFFSET %s")
+            params.append(int(offset))
+
+        rows: list[tuple[object, int, str, object]] = []
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = list(cur.fetchall())
+
+        results: list[dict[str, object]] = []
+        for chunk_id, ord_value, text_value, meta_value in rows:
+            metadata = MetadataHandler.coerce_map(meta_value)
+            results.append(
+                {
+                    "chunk_id": str(chunk_id),
+                    "ord": ord_value,
+                    "text": text_value,
+                    "metadata": metadata,
+                }
+            )
+        return results
+
+    def hard_delete_document_versions(
+        self,
+        *,
+        tenant_id: str,
+        document_version_ids: Sequence[object],
+    ) -> dict[str, int]:
+        if not document_version_ids:
+            return {"chunks": 0, "embeddings": 0}
+
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        version_values: list[str] = []
+        for version_id in document_version_ids:
+            try:
+                version_values.append(str(uuid.UUID(str(version_id))))
+            except (TypeError, ValueError, AttributeError):
+                version_values.append(str(version_id))
+
+        chunks_table = self._table("chunks")
+        embeddings_table = self._table("embeddings")
+        embeddings_deleted = 0
+        chunks_deleted = 0
+        with self._connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL(
+                            "DELETE FROM {} WHERE chunk_id IN ("
+                            "SELECT id FROM {} WHERE tenant_id = %s"
+                            " AND metadata ->> 'document_version_id' = ANY(%s)"
+                            ")"
+                        ).format(embeddings_table, chunks_table),
+                        (tenant_uuid, version_values),
+                    )
+                    embeddings_deleted = cur.rowcount or 0
+                    cur.execute(
+                        sql.SQL(
+                            "DELETE FROM {} WHERE tenant_id = %s"
+                            " AND metadata ->> 'document_version_id' = ANY(%s)"
+                        ).format(chunks_table),
+                        (tenant_uuid, version_values),
+                    )
+                    chunks_deleted = cur.rowcount or 0
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        return {
+            "chunks": int(chunks_deleted),
+            "embeddings": int(embeddings_deleted),
+        }
+
     def search(
         self,
         query: str,
@@ -1251,8 +1385,18 @@ class PgVectorClient:
             kind = SUPPORTED_METADATA_FILTERS[key]
             normalised = self._normalise_filter_value(value)
             if kind == "chunk_meta":
-                where_clauses.append("c.metadata ->> %s = %s")
-                where_params.extend([key, normalised])
+                if key == "is_latest":
+                    if normalised == "true":
+                        where_clauses.append(
+                            "(NOT (c.metadata ? 'is_latest') OR c.metadata ->> 'is_latest' = %s)"
+                        )
+                        where_params.append(normalised)
+                    else:
+                        where_clauses.append("c.metadata ->> 'is_latest' = %s")
+                        where_params.append(normalised)
+                else:
+                    where_clauses.append("c.metadata ->> %s = %s")
+                    where_params.extend([key, normalised])
             elif kind == "document_hash":
                 where_clauses.append("(d.hash = %s OR d.metadata ->> 'hash' = %s)")
                 where_params.extend([normalised, normalised])
@@ -3052,22 +3196,63 @@ class PgVectorClient:
             collection_text = (
                 str(collection_uuid) if collection_uuid is not None else None
             )
+            metadata_block = doc.get("metadata", {})
+            raw_version_id = (
+                metadata_block.get("document_version_id")
+                if isinstance(metadata_block, Mapping)
+                else None
+            )
+            document_version_id = None
+            if raw_version_id not in {None, "", "None"}:
+                try:
+                    document_version_id = str(raw_version_id).strip()
+                except Exception:
+                    document_version_id = None
             started = time.perf_counter()
-            cur.execute(
-                sql.SQL(
-                    "DELETE FROM {} WHERE chunk_id IN ("
-                    "SELECT id FROM {} WHERE document_id = %s"
-                    " AND collection_id IS NOT DISTINCT FROM %s)"
-                ).format(embeddings_table, chunks_table),
-                (document_id, collection_uuid),
-            )
-            cur.execute(
-                sql.SQL(
-                    "DELETE FROM {} WHERE document_id = %s"
-                    " AND collection_id IS NOT DISTINCT FROM %s"
-                ).format(chunks_table),
-                (document_id, collection_uuid),
-            )
+            if document_version_id:
+                cur.execute(
+                    sql.SQL(
+                        "UPDATE {} "
+                        "SET metadata = jsonb_set(metadata, %s::text[], 'false'::jsonb, true) "
+                        "WHERE document_id = %s "
+                        "AND collection_id IS NOT DISTINCT FROM %s "
+                        "AND (metadata ->> 'document_version_id') IS DISTINCT FROM %s"
+                    ).format(chunks_table),
+                    ("{is_latest}", document_id, collection_uuid, document_version_id),
+                )
+                cur.execute(
+                    sql.SQL(
+                        "DELETE FROM {} WHERE chunk_id IN ("
+                        "SELECT id FROM {} WHERE document_id = %s"
+                        " AND collection_id IS NOT DISTINCT FROM %s"
+                        " AND metadata ->> 'document_version_id' = %s)"
+                    ).format(embeddings_table, chunks_table),
+                    (document_id, collection_uuid, document_version_id),
+                )
+                cur.execute(
+                    sql.SQL(
+                        "DELETE FROM {} WHERE document_id = %s"
+                        " AND collection_id IS NOT DISTINCT FROM %s"
+                        " AND metadata ->> 'document_version_id' = %s"
+                    ).format(chunks_table),
+                    (document_id, collection_uuid, document_version_id),
+                )
+            else:
+                cur.execute(
+                    sql.SQL(
+                        "DELETE FROM {} WHERE chunk_id IN ("
+                        "SELECT id FROM {} WHERE document_id = %s"
+                        " AND collection_id IS NOT DISTINCT FROM %s)"
+                    ).format(embeddings_table, chunks_table),
+                    (document_id, collection_uuid),
+                )
+                cur.execute(
+                    sql.SQL(
+                        "DELETE FROM {} WHERE document_id = %s"
+                        " AND collection_id IS NOT DISTINCT FROM %s"
+                    ).format(chunks_table),
+                    (document_id, collection_uuid),
+                )
 
             chunk_rows = []
             embedding_rows = []
