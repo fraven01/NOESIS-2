@@ -92,8 +92,7 @@ def test_ingest_with_collection_key_uses_existing_collection(tenant: Tenant):
 
         meta = {
             "tenant_id": str(tenant.id),
-            "collection_key": "manual-search",  # NEW: Use key
-            "collection_id": collection_id,  # OLD: Also pass ID for compat
+            "collection_key": "manual-search",
             "hash": "test-hash-123",
             "content_hash": "test-hash-123",
             "source": "test-source",
