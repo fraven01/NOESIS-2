@@ -4,7 +4,6 @@ import hashlib
 import re
 import time
 import uuid
-import warnings
 from datetime import datetime
 from collections.abc import Mapping as MappingABC
 from pathlib import Path
@@ -47,11 +46,6 @@ from ai_core.rag.embedding_cache import (
     compute_text_hash,
     fetch_cached_embeddings,
     store_cached_embeddings,
-)
-from ai_core.rag.semantic_chunker import (
-    SectionChunkPlan,
-    SemanticChunker,
-    SemanticTextBlock,
 )
 from ai_core.rag.parents import limit_parent_payload
 from ai_core.rag.schemas import Chunk
@@ -577,155 +571,87 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
     chunk_candidates: List[Tuple[str, List[str], str]] = []
     last_registered_stack: List[Dict[str, object]] = []
 
-    semantic_plans: List[SectionChunkPlan] = []
-    if structured_blocks:
-        warnings.warn(
-            "SemanticChunker is deprecated and will be removed in a future version. "
-            "Use HybridChunker from ai_core.rag.chunking instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        semantic_chunker = SemanticChunker(
-            sentence_splitter=_split_sentences,
-            chunkify_fn=lambda sentences: _chunkify(
+    # SemanticChunker has been removed - using simple chunking approach
+    # For structured chunking, use HybridChunker from ai_core.rag.chunking
+    pending_pieces = []
+    pending_parent_ids: Optional[Tuple[str, ...]] = None
+
+    def _flush_pending() -> None:
+        nonlocal pending_pieces, pending_parent_ids
+        if not pending_pieces or pending_parent_ids is None:
+            pending_pieces = []
+            pending_parent_ids = None
+            return
+
+        combined_text = "\n\n".join(part for part in pending_pieces if part.strip())
+        sentences = _split_sentences_impl(combined_text)
+        if not sentences:
+            sentences = [combined_text] if combined_text else []
+
+        if sentences:
+            bodies = _chunkify(
                 sentences,
                 target_tokens=target_tokens,
                 overlap_tokens=overlap_tokens,
                 hard_limit=hard_limit,
-            ),
-        )
-        semantic_blocks: List[SemanticTextBlock] = []
-        for block in structured_blocks:
-            text_value = str(block.get("text") or "")
-            kind = str(block.get("kind") or "").lower() or "paragraph"
-            section_path_raw = block.get("section_path")
-            path_tuple: Tuple[str, ...] = ()
-            if isinstance(section_path_raw, (list, tuple)):
-                path_tuple = tuple(
-                    str(part).strip()
-                    for part in section_path_raw
-                    if isinstance(part, str) and str(part).strip()
-                )
-            masked_text = _mask_for_chunk(text_value)
-            semantic_blocks.append(
-                SemanticTextBlock(
-                    text=masked_text,
-                    kind=kind,
-                    section_path=path_tuple,
-                )
             )
-        semantic_plans = semantic_chunker.build_plans(semantic_blocks)
+            for body in bodies:
+                chunk_candidates.append((body, list(pending_parent_ids), ""))
 
-    if semantic_plans:
-        section_registry: Dict[Tuple[str, ...], Dict[str, object]] = {}
-        for plan in semantic_plans:
-            parent_infos: List[Dict[str, object]] = []
-            if plan.path:
-                for depth in range(1, len(plan.path) + 1):
-                    prefix_tuple = plan.path[:depth]
-                    info = section_registry.get(prefix_tuple)
-                    if info is None:
-                        title_candidate = prefix_tuple[-1] if prefix_tuple else ""
-                        info = _register_section(title_candidate, depth, prefix_tuple)
-                        section_registry[prefix_tuple] = info
-                    parent_infos.append(info)
-
-            target_parent_id = parent_infos[-1]["id"] if parent_infos else root_id
-            if plan.parent_text:
-                _append_parent_text_with_root(
-                    target_parent_id, plan.parent_text, plan.level
-                )
-
-            parent_ids = [root_id] + [info["id"] for info in parent_infos]
-            unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
-            for body in plan.chunk_bodies:
-                body_text = body.strip()
-                if not body_text:
-                    continue
-                chunk_candidates.append(
-                    (body_text, unique_parent_ids, plan.heading_prefix)
-                )
-            last_registered_stack = parent_infos
-    else:
         pending_pieces = []
-        pending_parent_ids: Optional[Tuple[str, ...]] = None
+        pending_parent_ids = None
 
-        def _flush_pending() -> None:
-            nonlocal pending_pieces, pending_parent_ids
-            if not pending_pieces or pending_parent_ids is None:
-                pending_pieces = []
-                pending_parent_ids = None
-                return
+    heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
 
-            combined_text = "\n\n".join(part for part in pending_pieces if part.strip())
-            sentences = _split_sentences_impl(combined_text)
-            if not sentences:
-                sentences = [combined_text] if combined_text else []
+    for block in fallback_segments:
+        stripped_block = block.strip()
+        if not stripped_block:
+            continue
+        heading_match = heading_pattern.match(stripped_block)
+        if heading_match:
+            _flush_pending()
+            hashes, heading_title = heading_match.groups()
+            level = len(hashes)
+            while parent_stack and int(parent_stack[-1].get("level") or 0) >= level:
+                parent_stack.pop()
+            section_info = _register_section(heading_title.strip(), level)
+            parent_stack.append(section_info)
+            _append_parent_text_with_root(section_info["id"], stripped_block, level)
+            continue
 
-            if sentences:
-                bodies = _chunkify(
-                    sentences,
-                    target_tokens=target_tokens,
-                    overlap_tokens=overlap_tokens,
-                    hard_limit=hard_limit,
-                )
-                for body in bodies:
-                    chunk_candidates.append((body, list(pending_parent_ids), ""))
-
-            pending_pieces = []
-            pending_parent_ids = None
-
-        heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
-
-        for block in fallback_segments:
-            stripped_block = block.strip()
-            if not stripped_block:
+        block_pieces = [block]
+        if _token_count(block) > hard_limit:
+            block_pieces = _split_by_limit(block, hard_limit)
+        for piece in block_pieces:
+            piece_text = piece.strip()
+            if not piece_text:
                 continue
-            heading_match = heading_pattern.match(stripped_block)
-            if heading_match:
+            if parent_stack:
+                target_info = parent_stack[-1]
+                target_level = int(target_info.get("level") or 0)
+                _append_parent_text_with_root(
+                    target_info["id"], piece_text, target_level
+                )
+            else:
+                _append_parent_text(root_id, piece_text, 0)
+            parent_ids = [root_id] + [info["id"] for info in parent_stack]
+            unique_parent_ids = list(
+                dict.fromkeys(pid for pid in parent_ids if pid)
+            )
+            new_parent_ids = tuple(unique_parent_ids)
+
+            if (
+                pending_parent_ids is not None
+                and pending_parent_ids != new_parent_ids
+            ):
                 _flush_pending()
-                hashes, heading_title = heading_match.groups()
-                level = len(hashes)
-                while parent_stack and int(parent_stack[-1].get("level") or 0) >= level:
-                    parent_stack.pop()
-                section_info = _register_section(heading_title.strip(), level)
-                parent_stack.append(section_info)
-                _append_parent_text_with_root(section_info["id"], stripped_block, level)
-                continue
 
-            block_pieces = [block]
-            if _token_count(block) > hard_limit:
-                block_pieces = _split_by_limit(block, hard_limit)
-            for piece in block_pieces:
-                piece_text = piece.strip()
-                if not piece_text:
-                    continue
-                if parent_stack:
-                    target_info = parent_stack[-1]
-                    target_level = int(target_info.get("level") or 0)
-                    _append_parent_text_with_root(
-                        target_info["id"], piece_text, target_level
-                    )
-                else:
-                    _append_parent_text(root_id, piece_text, 0)
-                parent_ids = [root_id] + [info["id"] for info in parent_stack]
-                unique_parent_ids = list(
-                    dict.fromkeys(pid for pid in parent_ids if pid)
-                )
-                new_parent_ids = tuple(unique_parent_ids)
+            if pending_parent_ids is None:
+                pending_parent_ids = new_parent_ids
 
-                if (
-                    pending_parent_ids is not None
-                    and pending_parent_ids != new_parent_ids
-                ):
-                    _flush_pending()
+            pending_pieces.append(piece_text)
 
-                if pending_parent_ids is None:
-                    pending_parent_ids = new_parent_ids
-
-                pending_pieces.append(piece_text)
-
-        _flush_pending()
+    _flush_pending()
 
     if not parent_stack and last_registered_stack:
         parent_stack = last_registered_stack
