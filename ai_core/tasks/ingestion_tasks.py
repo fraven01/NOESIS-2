@@ -635,15 +635,10 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
             else:
                 _append_parent_text(root_id, piece_text, 0)
             parent_ids = [root_id] + [info["id"] for info in parent_stack]
-            unique_parent_ids = list(
-                dict.fromkeys(pid for pid in parent_ids if pid)
-            )
+            unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
             new_parent_ids = tuple(unique_parent_ids)
 
-            if (
-                pending_parent_ids is not None
-                and pending_parent_ids != new_parent_ids
-            ):
+            if pending_parent_ids is not None and pending_parent_ids != new_parent_ids:
                 _flush_pending()
 
             if pending_parent_ids is None:
