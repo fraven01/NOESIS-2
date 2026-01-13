@@ -52,8 +52,8 @@ def test_expected_paths_are_present(openapi_schema):
         "/v1/ai/ping/",
         "/v1/ai/intake/",
         "/ai/rag/query/",
-        "/v1/v1/ai/ping/",
-        "/v1/v1/ai/intake/",
+        "/v1/ai/ping/",
+        "/v1/ai/intake/",
         "/v1/ai/rag/query/",
     }
     missing = sorted(required_paths - paths)

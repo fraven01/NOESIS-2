@@ -119,7 +119,7 @@ def test_v1_ping_does_not_require_authorization(
     authenticated_client, test_tenant_schema_name
 ):
     response = authenticated_client.get(
-        "/v1/v1/ai/ping/",
+        "/v1/ai/ping/",
         **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
 
@@ -321,7 +321,7 @@ def test_non_json_payload_returns_415(
     assert error_body["error"]["code"] == "unsupported_media_type"
 
     v1_response = authenticated_client.post(
-        "/v1/v1/ai/intake/",
+        "/v1/ai/intake/",
         data="raw body",
         content_type="text/plain",
         **{

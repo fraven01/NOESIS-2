@@ -262,7 +262,7 @@ def test_ai_core_endpoints_expose_serializers():
         ]
     )
 
-    ping_operation = schema["paths"]["/v1/v1/ai/ping/"]["get"]
+    ping_operation = schema["paths"]["/v1/ai/ping/"]["get"]
     ping_ref = ping_operation["responses"]["200"]["content"]["application/json"][
         "schema"
     ]["$ref"]
@@ -283,7 +283,7 @@ def test_ai_core_endpoints_expose_serializers():
     assert legacy_ping_operation.get("deprecated") is True
     assert not ping_operation.get("deprecated")
 
-    intake_operation = schema["paths"]["/v1/v1/ai/intake/"]["post"]
+    intake_operation = schema["paths"]["/v1/ai/intake/"]["post"]
     intake_request_ref = intake_operation["requestBody"]["content"]["application/json"][
         "schema"
     ]["$ref"]
