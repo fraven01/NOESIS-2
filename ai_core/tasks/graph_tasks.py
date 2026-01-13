@@ -59,12 +59,6 @@ def _build_ingestion_graph(event_emitter: Optional[Any]):
     return build_universal_ingestion_graph()
 
 
-def build_graph(*, event_emitter: Optional[Any] = None):
-    """Legacy shim so older tests can import ai_core.tasks.build_graph."""
-
-    return _build_ingestion_graph(event_emitter)
-
-
 @shared_task(
     base=RetryableTask,
     queue="ingestion",
