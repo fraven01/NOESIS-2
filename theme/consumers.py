@@ -9,12 +9,8 @@ from pydantic import ValidationError
 from structlog.stdlib import get_logger
 
 from ai_core.graph.core import GraphContext, ThreadAwareCheckpointer
-from ai_core.graphs.technical.retrieval_augmented_generation import (
-    RAG_IO_VERSION_STRING,
-    RAG_SCHEMA_ID,
-    run as run_rag_graph,
-)
 from ai_core.tool_contracts import ContextError
+from ai_core.services.rag_query import RagQueryService
 from theme.chat_utils import (
     append_history,
     build_hybrid_config_from_payload,
@@ -24,7 +20,7 @@ from theme.chat_utils import (
     trim_history,
 )
 from theme.websocket_payloads import RagChatPayload
-from theme.websocket_utils import build_websocket_context
+from theme.helpers.context import prepare_workbench_context
 
 
 logger = get_logger(__name__)
@@ -46,15 +42,15 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
         message = payload.message
         tenant_id = payload.tenant_id
         tenant_schema = payload.tenant_schema or tenant_id
-        case_id = payload.case_id or "dev-case-local"
+        case_id = payload.case_id  # No dev-case-local fallback (SCOPE-1)
         collection_id = payload.collection_id
         thread_id = payload.thread_id or uuid4().hex
         if payload.global_search:
             case_id = None
 
         try:
-            scope, business = build_websocket_context(
-                request=self.scope,
+            tool_context = prepare_workbench_context(
+                self.scope,
                 tenant_id=tenant_id,
                 tenant_schema=tenant_schema,
                 case_id=case_id,
@@ -70,16 +66,10 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json({"event": "error", "error": "Forbidden."})
             return
 
-        tool_context = scope.to_tool_context(
-            business=business,
-            metadata={"graph_name": "rag.default", "graph_version": "v0"},
+        # Add graph metadata (helper doesn't add this)
+        tool_context = tool_context.model_copy(
+            update={"metadata": {"graph_name": "rag.default", "graph_version": "v0"}}
         )
-
-        meta = {
-            "scope_context": scope.model_dump(mode="json", exclude_none=True),
-            "business_context": business.model_dump(mode="json", exclude_none=True),
-            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
-        }
 
         graph_context = GraphContext(
             tool_context=tool_context,
@@ -98,17 +88,6 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
                 extra={"thread_id": thread_id},
             )
 
-        state = {
-            "schema_id": RAG_SCHEMA_ID,
-            "schema_version": RAG_IO_VERSION_STRING,
-            "question": message,
-            "query": message,
-            "hybrid": build_hybrid_config_from_payload(
-                payload.model_dump(exclude_none=True)
-            ),
-            "chat_history": list(history),
-        }
-
         loop = asyncio.get_running_loop()
 
         def stream_callback(text: str) -> None:
@@ -116,11 +95,20 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
                 self.send_json({"event": "delta", "text": text}), loop
             )
 
-        meta["stream_callback"] = stream_callback
+        service = RagQueryService(stream_callback=stream_callback)
 
+        hybrid_config = build_hybrid_config_from_payload(
+            payload.model_dump(exclude_none=True)
+        )
         try:
-            final_state, result_payload = await sync_to_async(run_rag_graph)(
-                state, meta
+            _, result_payload = await sync_to_async(
+                service.execute, thread_sensitive=False
+            )(
+                tool_context=tool_context,
+                question=message,
+                hybrid=hybrid_config,
+                chat_history=list(history),
+                graph_state={"question": message, "hybrid": hybrid_config},
             )
         except Exception as exc:
             logger.exception("rag_chat.graph_failed", extra={"thread_id": thread_id})

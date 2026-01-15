@@ -20,7 +20,7 @@
         this.activeTab = tab;
         window.location.hash = tab;
     }
-}">
+}" hx-headers='{"X-Tenant-ID": "{{ tenant_id }}", "X-Tenant-Schema": "{{ tenant_schema }}", "X-Case-ID": "{{ case_id|default:'' }}"}'>
 
     <!-- Sidebar Navigation -->
     <aside class="w-72 bg-white border-r border-slate-200 flex flex-col shadow-xl z-20 relative">
@@ -33,7 +33,7 @@
                     </svg>
                 </div>
                 <span
-                    class="bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">Workbench</span>
+                    class="bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">RAG Developer Workbench</span>
             </h2>
             <p class="text-xs font-medium text-slate-400 mt-2 ml-1 uppercase tracking-wider">RAG Command Center</p>
         </div>
@@ -148,20 +148,51 @@
 
         <!-- Context Info -->
         <div class="p-4 border-t border-slate-200 bg-slate-50/50 backdrop-blur-sm">
-            <div class="bg-white rounded-lg border border-slate-200 p-3 shadow-sm space-y-2">
-                <div class="flex justify-between items-center text-xs">
+            <div class="bg-white rounded-lg border border-slate-200 p-3 shadow-sm space-y-3">
+                <div class="flex justify-between items-center text-xs border-b border-slate-100 pb-2">
                     <span class="text-slate-500 font-medium">Tenant</span>
                     <span class="font-mono text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">{{ tenant_id }}</span>
                 </div>
-                <div class="flex justify-between items-center text-xs">
-                    <span class="text-slate-500 font-medium">Schema</span>
-                    <span class="font-mono text-slate-700">{{ tenant_schema }}</span>
-                </div>
-                <div class="flex justify-between items-center text-xs">
-                    <span class="text-slate-500 font-medium">Case ID</span>
-                    <span class="font-mono text-slate-700 truncate max-w-[100px]" title="{{ case_id }}">{{
-                        case_id|default:"-" }}</span>
-                </div>
+
+                <!-- Global Context Form -->
+                <form hx-post="{% url 'rag_tools_set_context' %}" hx-trigger="change" class="space-y-3">
+                    {% csrf_token %}
+
+                    <!-- Active Case -->
+                    <div class="space-y-1">
+                        <label for="ctx-case"
+                            class="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Active
+                            Case</label>
+                        <select id="ctx-case" name="case_id"
+                            class="block w-full rounded border-slate-300 py-1 pl-2 pr-8 text-xs focus:border-indigo-500 focus:ring-indigo-500 text-slate-700">
+                            <option value="">-- All Cases / Global --</option>
+                            {% for c in case_options %}
+                            <option value="{{ c.id }}" {% if c.id == active_case_id %}selected{% endif %}>
+                                {{ c.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- Active Collection -->
+                    <div class="space-y-1">
+                        <label for="ctx-col"
+                            class="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Active
+                            Collection</label>
+                        <div class="flex gap-1">
+                            <select id="ctx-col" name="collection_id"
+                                class="block w-full rounded border-slate-300 py-1 pl-2 pr-8 text-xs focus:border-indigo-500 focus:ring-indigo-500 text-slate-700">
+                                <option value="">-- All Collections --</option>
+                                {% for col in collection_options %}
+                                <option value="{{ col }}" {% if col == active_collection_id %}selected{% endif %}>
+                                    {{ col }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                </form>
+
             </div>
         </div>
     </aside>
@@ -169,6 +200,7 @@
     <!-- Main Content Area -->
     <main class="flex-1 flex flex-col overflow-hidden bg-slate-50 relative">
         <!-- Top Header -->
+
         <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shadow-sm z-10">
             <div class="flex items-center gap-4">
                 <nav class="flex" aria-label="Breadcrumb">
@@ -211,12 +243,17 @@
                 <form action="{% url 'rag_tools_identity_switch' %}" method="post" class="flex items-center gap-2">
                     {% csrf_token %}
                     <input type="hidden" name="active_tab" :value="activeTab">
-                    <label for="identity-switch" class="text-xs font-medium text-slate-500">Acting As:</label>
+                    <!-- Persist context on reload -->
+                    <input type="hidden" name="collection_id" value="{{ active_collection_id|default:'' }}">
+                    <input type="hidden" name="case_id" value="{{ active_case_id|default:'' }}">
+                    <label for="identity-switch" class="text-xs font-medium text-slate-500">Acting
+                        As:</label>
                     <div class="flex flex-col">
                         <select name="user_id" id="identity-switch" onchange="this.form.submit()"
                             class="block w-40 rounded border-slate-300 py-1 pl-2 pr-8 text-xs focus:border-indigo-500 focus:ring-indigo-500 {% if request.is_simulated_user %}bg-amber-50 text-amber-900 border-amber-300 font-semibold{% endif %}">
                             <option value="">-- Real User --</option>
-                            <option value="anonymous" {% if not request.user.is_authenticated and not request.is_simulated_user %}selected{% endif %}>Anonymous</option>
+                            <option value="anonymous"
+                                {% if not request.user.is_authenticated and not request.is_simulated_user %}selected{% endif %}>Anonymous</option>
                             <optgroup label="Simulated Persons">
                                 {% for u in simulated_users %}
                                 <option value="{{ u.pk }}" {% if u.pk|stringformat:"s" == current_simulated_user_id|stringformat:"s" %}selected{% endif %}>
@@ -226,7 +263,8 @@
                             </optgroup>
                         </select>
                         {% if request.is_simulated_user %}
-                        <span class="text-[10px] text-amber-700 text-right font-medium leading-none mt-0.5">Role: {{
+                        <span class="text-[10px] text-amber-700 text-right font-medium leading-none mt-0.5">Role:
+                            {{
                             request.user.profile.role|default:"User" }}</span>
                         {% endif %}
                     </div>

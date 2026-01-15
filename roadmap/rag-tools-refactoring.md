@@ -1,10 +1,28 @@
 # RAG-Tools Refactoring: Dev-Workbench Architecture Cleanup
 
-**Status:** � In Progress (P0 Done, P1 Partial)
+**Status:** MERGED into [consolidated-architecture-cleanup-plan.md](consolidated-architecture-cleanup-plan.md)
 **Created:** 2026-01-13
-**Updated:** 2026-01-13
+**Updated:** 2026-01-15 (Consolidated)
 **Analysis:** [docs/architecture/rag-tools-architecture-analysis.md](../docs/architecture/rag-tools-architecture-analysis.md)
 **Owner:** Backend Team
+
+---
+
+## IMPORTANT: This plan has been consolidated
+
+**Dieser Plan wurde mit [rag-global-scope-plan.md](rag-global-scope-plan.md) zusammengeführt.**
+
+**See full consolidated plan:** [consolidated-architecture-cleanup-plan.md](consolidated-architecture-cleanup-plan.md)
+
+**Status-Update:**
+- Quick Wins (QW-1, QW-2, QW-4): Already implemented
+- M-1, M-2: Already implemented (run_business_graph, WebSocket Chat)
+- Remaining: Scope-Fixes (P0), API-First (P1), Graph Cleanup (P2)
+- **Total Remaining Effort:** 4.5d (down from originally 16d)
+
+---
+
+## Original Plan (Reference Only)
 
 ---
 

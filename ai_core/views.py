@@ -1479,7 +1479,13 @@ def _resolve_lifecycle_store() -> object | None:
 def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     """Return the payload projected onto the public RAG response contract."""
 
-    allowed_top_level = {"answer", "prompt_version", "retrieval", "snippets"}
+    allowed_top_level = {
+        "answer",
+        "prompt_version",
+        "retrieval",
+        "snippets",
+        "diagnostics",
+    }
     allowed_retrieval = {
         "alpha",
         "min_sim",
@@ -1496,7 +1502,11 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     allowed_routing = {"profile", "vector_space_id"}
 
     projected: dict[str, object] = {}
-    diagnostics: dict[str, object] = {}
+    diagnostics: dict[str, object] = (
+        dict(payload["diagnostics"])
+        if isinstance(payload.get("diagnostics"), Mapping)
+        else {}
+    )
 
     top_level_extras = {
         key: value for key, value in payload.items() if key not in allowed_top_level
@@ -1504,6 +1514,8 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
 
     for key in allowed_top_level:
         if key not in payload:
+            continue
+        if key == "diagnostics":
             continue
         if key != "retrieval":
             projected[key] = _serialise_json_value(payload[key])

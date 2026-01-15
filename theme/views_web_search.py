@@ -231,7 +231,8 @@ def web_search(request):
             )
 
         data_res = response_payload.get("data", {})
-        final_state = data_res.get("state", {})
+        # Correctly treat 'data' as the state itself
+        final_state = data_res
         result = data_res.get("result", {})
 
         search_payload = final_state.get("search", {})
@@ -315,12 +316,11 @@ def web_search(request):
                 "output": {"decision": "error", "error": response_payload.get("error")}
             }
         else:
-            result_state = response_payload.get("data", {}).get("state", {})
+            result_state = response_payload.get("data", {})
 
         output = result_state.get("output", {})
         decision = output.get("decision", "error")
         error_msg = output.get("error")
-        # Legacy UI expects "search.results" structure
         search_results = output.get("search_results") or []
 
         response_data = {
@@ -329,7 +329,6 @@ def web_search(request):
                 "completed" if decision in ("acquired", "no_results") else "error"
             ),
             "results": search_results,
-            "search": {"results": search_results},
             "telemetry": {},
             "trace_id": trace_id,
         }
@@ -344,9 +343,19 @@ def web_search(request):
                 )
 
     # Common Logic
-    results = response_data.get("results", [])
+    # P2 Fix: Backend result key is 'search_results' (from line 325) while view logic expects 'results'
+    # 'search_results' variable is already extracted at line 325, so we prioritize that.
+    results = response_data.get("results") or search_results
     search_payload = response_data.get("search", {})
     trace_id = response_data.get("trace_id")
+
+    logger.info(
+        "web_search.rendering",
+        result_count=len(results),
+        response_keys=list(response_data.keys()),
+        search_type=search_type,
+        hx_request=bool(request.headers.get("HX-Request")),
+    )
 
     if data.get("rerank"):
         try:
@@ -358,6 +367,7 @@ def web_search(request):
                 tenant_id=tenant_id,
                 case_id=case_id,
                 trace_id=trace_id,
+                run_id=run_id,
                 user_id=user_id,
             )
         except Exception:  # pragma: no cover - defensive

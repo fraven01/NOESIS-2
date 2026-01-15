@@ -23,8 +23,8 @@ from ai_core.rag.collections import (
 from documents.collection_service import CollectionService
 from documents.models import DocumentCollection
 from ai_core.llm import routing as llm_routing
-from llm_worker.runner import submit_worker_task
 from ai_core.schemas import CrawlerRunRequest
+from theme.helpers.tasks import submit_business_graph
 
 from customers.tenant_context import TenantContext, TenantRequiredError
 from documents.services.document_space_service import DocumentSpaceService
@@ -48,9 +48,15 @@ def _get_documents_repository():
 
 def _get_dev_simulated_users():
     User = get_user_model()
-    usernames = ["admin", "legal_bob", "alice_stakeholder", "charles_external"]
+    usernames = ["admin", "dev", "legal_bob", "alice_stakeholder", "charles_external"]
     users = list(User.objects.filter(username__in=usernames).order_by("username"))
     return users
+
+
+def get_simulated_users(user):
+    """Expose the simulated user list for the workbench."""
+    del user  # user is intentionally unused for now
+    return _get_dev_simulated_users()
 
 
 def home(request):
@@ -119,12 +125,38 @@ def _rag_tools_allowed() -> bool:
     )
 
 
-def _rag_tools_gate(*, json_response: bool) -> JsonResponse | HttpResponse | None:
-    if _rag_tools_allowed():
-        return None
-    if json_response:
-        return _json_error_response("Not found.", status_code=404, code="not_found")
-    return HttpResponse("Not found.", status=404)
+def _rag_tools_gate(
+    request=None, *, json_response: bool
+) -> JsonResponse | HttpResponse | None:
+    allowed = _rag_tools_allowed()
+
+    # If not globally allowed (DEBUG/TESTING/ENABLED), block it.
+    if not allowed:
+        if json_response:
+            return _json_error_response("Not found.", status_code=404, code="not_found")
+        return HttpResponse("Not found.", status=404)
+
+    # If allowed, we can optionally enforce User role if request is provided.
+    if request and hasattr(request, "user"):
+        check_user = request.user
+
+        # If simulated, check the ORIGINAL user for permissions to access the workbench
+        # because the simulated user might be a non-staff stakeholder.
+        if getattr(request, "is_simulated_user", False) and hasattr(
+            request, "original_user"
+        ):
+            check_user = request.original_user
+
+        if check_user.is_authenticated and not check_user.is_staff:
+            if json_response:
+                return _json_error_response(
+                    "Forbidden: Developer access required.",
+                    status_code=403,
+                    code="forbidden",
+                )
+            return HttpResponse("Forbidden: Developer access required.", status=403)
+
+    return None
 
 
 def _resolve_manual_collection(
@@ -314,6 +346,7 @@ def _run_rerank_workflow(
     tenant_id: str,
     case_id: str | None,
     trace_id: str,
+    run_id: str,  # Required for ScopeContext
     user_id: str | None = None,
 ) -> tuple[dict[str, object], list[dict[str, object]] | None]:
     """Trigger the rerank worker graph and return ``(meta, updated_results)``."""
@@ -334,24 +367,37 @@ def _run_rerank_workflow(
         request_data=request_data,
     )
     model_preset = _resolve_rerank_model_preset()
-    task_payload = {
-        "state": state,
-        "control": {
-            "model_preset": model_preset,
-        },
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Build ScopeContext and BusinessContext for Rerank Workflow
+    col_scope = ScopeContext(
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        invocation_id=str(uuid4()),
+        run_id=run_id,
+        user_id=user_id,
+    )
+
+    col_business = BusinessContext(
+        case_id=case_id,
+        collection_id=collection_id,
+        workflow_id="web-search-rerank",
+    )
+
+    col_tool_context = col_scope.to_tool_context(business=col_business)
+
+    # Build GraphIOSpec-compliant request (Hard Enforcement)
+    boundary_request = {
+        "schema_id": "noesis.graphs.collection_search",
+        "schema_version": "1.0.0",
+        "input": state,
+        "tool_context": col_tool_context.model_dump(mode="json"),
     }
-    scope = {
-        "tenant_id": tenant_id,
-        "case_id": case_id,
-        "trace_id": trace_id,
-        "workflow_id": "web-search-rerank",
-        # Identity ID (Pre-MVP ID Contract)
-        "user_id": user_id,
-    }
-    rerank_response, completed = submit_worker_task(
-        task_payload=task_payload,
-        scope=scope,
+
+    # Execute task synchronously with REDUCED timeout (M-1 adapter)
+    rerank_response, completed = submit_business_graph(
         graph_name="collection_search",
+        tool_context=col_tool_context,
+        state=boundary_request,
         timeout_s=60,
     )
 
@@ -469,6 +515,7 @@ def _resolve_lifecycle_store() -> object | None:
 from theme.views_rag_tools import (  # noqa: E402,F401
     rag_tools,
     rag_tools_identity_switch,
+    rag_tools_set_context,
     tool_collaboration,
     start_rerank_workflow,
     workbench_index,

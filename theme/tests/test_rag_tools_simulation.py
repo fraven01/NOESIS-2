@@ -30,7 +30,9 @@ def test_simulated_user_middleware_switches_identity(client, settings, monkeypat
 
     # Create users
     User = get_user_model()
-    real_user = User.objects.create_user("real_user", "real@example.com", "password")
+    real_user = User.objects.create_user(
+        "real_user", "real@example.com", "password", is_staff=True
+    )
     simulated_user = User.objects.create_user(
         "simulated_alice", "alice@example.com", "password"
     )
@@ -98,5 +100,5 @@ def test_simulated_user_middleware_ignored_in_production(client, settings, monke
     resp = client.get(url)
 
     # If middleware worked, user would be bob. If not, it's AnonymousUser.
-    assert str(resp.context["request"].user) == "AnonymousUser"
-    assert not getattr(resp.context["request"], "is_simulated_user", False)
+    assert str(resp.wsgi_request.user) == "AnonymousUser"
+    assert not getattr(resp.wsgi_request, "is_simulated_user", False)

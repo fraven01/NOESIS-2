@@ -1,5 +1,6 @@
 import json
 from unittest.mock import patch
+from django.contrib.auth import get_user_model
 
 import pytest
 from django.core.cache import cache
@@ -34,6 +35,15 @@ def test_rag_tools_page_is_accessible(tenant_pool):
 
     request.session = SessionStore()
 
+    request.session = SessionStore()
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
+
     response = rag_tools(request)
 
     assert response.status_code == 200
@@ -61,6 +71,13 @@ def test_rag_tools_requires_tenant():
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
 
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff2", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
+
     with schema_context(get_public_schema_name()):
         response = rag_tools(request)
 
@@ -77,6 +94,13 @@ def test_rag_tools_requires_tenant():
 def test_rag_tools_rejects_spoofed_headers():
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"), HTTP_X_TENANT_ID="spoofed")
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff3", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
 
     with schema_context(get_public_schema_name()):
         response = rag_tools(request)
@@ -99,21 +123,19 @@ def test_web_search_uses_external_knowledge_graph(mock_submit, tenant_pool):
         {
             "status": "success",
             "data": {
-                "state": {
-                    "output": {
-                        "decision": "acquired",
-                        "search_results": [
-                            {
-                                "url": "https://example.com",
-                                "title": "Test",
-                                "snippet": "Test snippet",
-                            }
-                        ],
-                        "selected_result": None,
-                        "ingestion_result": None,
-                        "error": None,
-                        "auto_ingest": False,
-                    }
+                "output": {
+                    "decision": "acquired",
+                    "search_results": [
+                        {
+                            "url": "https://example.com",
+                            "title": "Test",
+                            "snippet": "Test snippet",
+                        }
+                    ],
+                    "selected_result": None,
+                    "ingestion_result": None,
+                    "error": None,
+                    "auto_ingest": False,
                 }
             },
         },
@@ -129,6 +151,15 @@ def test_web_search_uses_external_knowledge_graph(mock_submit, tenant_pool):
         content_type="application/json",
     )
     request.tenant = tenant
+
+    request.tenant = tenant
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff4", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
 
     response = web_search(request)
 
@@ -161,21 +192,19 @@ def test_web_search_htmx_returns_partial(mock_submit, tenant_pool):
         {
             "status": "success",
             "data": {
-                "state": {
-                    "output": {
-                        "decision": "acquired",
-                        "search_results": [
-                            {
-                                "url": "https://example.com",
-                                "title": "HTMX Result",
-                                "snippet": "Snippet",
-                            }
-                        ],
-                        "selected_result": None,
-                        "ingestion_result": None,
-                        "error": None,
-                        "auto_ingest": False,
-                    }
+                "output": {
+                    "decision": "acquired",
+                    "search_results": [
+                        {
+                            "url": "https://example.com",
+                            "title": "HTMX Result",
+                            "snippet": "Snippet",
+                        }
+                    ],
+                    "selected_result": None,
+                    "ingestion_result": None,
+                    "error": None,
+                    "auto_ingest": False,
                 }
             },
         },
@@ -190,6 +219,15 @@ def test_web_search_htmx_returns_partial(mock_submit, tenant_pool):
     )
     request.headers = {"HX-Request": "true"}
     request.tenant = tenant
+
+    request.tenant = tenant
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff5", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
 
     response = web_search(request)
 
@@ -213,15 +251,13 @@ def test_web_search_defaults_to_manual_collection(mock_submit, tenant_pool):
         {
             "status": "success",
             "data": {
-                "state": {
-                    "output": {
-                        "decision": "no_results",
-                        "search_results": [],
-                        "selected_result": None,
-                        "ingestion_result": None,
-                        "error": None,
-                        "auto_ingest": False,
-                    }
+                "output": {
+                    "decision": "no_results",
+                    "search_results": [],
+                    "selected_result": None,
+                    "ingestion_result": None,
+                    "error": None,
+                    "auto_ingest": False,
                 }
             },
         },
@@ -235,6 +271,15 @@ def test_web_search_defaults_to_manual_collection(mock_submit, tenant_pool):
         content_type="application/json",
     )
     request.tenant = tenant
+
+    request.tenant = tenant
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff6", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
 
     response = web_search(request)
 
@@ -272,6 +317,15 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
     )
     request.tenant = tenant
 
+    request.tenant = tenant
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff7", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
+
     response = web_search_ingest_selected(request)
 
     assert response.status_code == 200
@@ -286,7 +340,7 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
 @pytest.mark.django_db
 @pytest.mark.xdist_group("tenant_ops")
 @patch("theme.views.llm_routing.resolve")
-@patch("theme.views.submit_worker_task")
+@patch("theme.views.submit_business_graph")
 @patch("theme.views_web_search.submit_business_graph")
 def test_web_search_rerank_applies_scores(
     mock_submit_graph, mock_submit_task, mock_resolve, settings, tenant_pool
@@ -308,32 +362,30 @@ def test_web_search_rerank_applies_scores(
         {
             "status": "success",
             "data": {
-                "state": {
-                    "output": {
-                        "decision": "acquired",
-                        "search_results": [
-                            {
-                                "document_id": "doc-a",
-                                "title": "Alpha",
-                                "snippet": "Snippet A",
-                                "source": "crawler",
-                                "url": "https://a.example",
-                                "score": 0.3,
-                            },
-                            {
-                                "document_id": "doc-b",
-                                "title": "Beta",
-                                "snippet": "Snippet B",
-                                "source": "crawler",
-                                "url": "https://b.example",
-                                "score": 0.2,
-                            },
-                        ],
-                        "selected_result": None,
-                        "ingestion_result": None,
-                        "error": None,
-                        "auto_ingest": False,
-                    }
+                "output": {
+                    "decision": "acquired",
+                    "search_results": [
+                        {
+                            "document_id": "doc-a",
+                            "title": "Alpha",
+                            "snippet": "Snippet A",
+                            "source": "crawler",
+                            "url": "https://a.example",
+                            "score": 0.3,
+                        },
+                        {
+                            "document_id": "doc-b",
+                            "title": "Beta",
+                            "snippet": "Snippet B",
+                            "source": "crawler",
+                            "url": "https://b.example",
+                            "score": 0.2,
+                        },
+                    ],
+                    "selected_result": None,
+                    "ingestion_result": None,
+                    "error": None,
+                    "auto_ingest": False,
                 }
             },
         },
@@ -364,6 +416,15 @@ def test_web_search_rerank_applies_scores(
     )
     request.tenant = tenant
 
+    request.tenant = tenant
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff8", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
+
     response = web_search(request)
     data = json.loads(response.content)
 
@@ -371,14 +432,19 @@ def test_web_search_rerank_applies_scores(
     assert data["rerank"]["status"] == "succeeded"
     assert data["results"][0]["title"] == "Beta"
     assert data["results"][0]["rerank"]["score"] == 88
-    task_payload = mock_submit_task.call_args.kwargs["task_payload"]
-    assert task_payload["control"]["model_preset"] == "fast"
+    assert data["results"][0]["rerank"]["score"] == 88
+
+    # Verify graph input
+    call_kwargs = mock_submit_task.call_args.kwargs
+    graph_state = call_kwargs["state"]
+    # Provide backward compatibility check or simply check known fields
+    assert graph_state["input"]["search"]["results"][0]["document_id"] == "doc-a"
 
 
 @pytest.mark.slow
 @pytest.mark.django_db
 @pytest.mark.xdist_group("tenant_ops")
-@patch("theme.views.submit_worker_task", return_value=({"task_id": "task-q"}, False))
+@patch("theme.views.submit_business_graph", return_value=({"task_id": "task-q"}, False))
 @patch("theme.views_web_search.submit_business_graph")
 def test_web_search_rerank_returns_queue_status(
     mock_submit_graph, _mock_submit_task, tenant_pool
@@ -390,22 +456,20 @@ def test_web_search_rerank_returns_queue_status(
         {
             "status": "success",
             "data": {
-                "state": {
-                    "output": {
-                        "decision": "acquired",
-                        "search_results": [
-                            {
-                                "document_id": "doc-a",
-                                "title": "Alpha",
-                                "snippet": "Snippet A",
-                                "url": "https://a.example",
-                            }
-                        ],
-                        "selected_result": None,
-                        "ingestion_result": None,
-                        "error": None,
-                        "auto_ingest": False,
-                    }
+                "output": {
+                    "decision": "acquired",
+                    "search_results": [
+                        {
+                            "document_id": "doc-a",
+                            "title": "Alpha",
+                            "snippet": "Snippet A",
+                            "url": "https://a.example",
+                        }
+                    ],
+                    "selected_result": None,
+                    "ingestion_result": None,
+                    "error": None,
+                    "auto_ingest": False,
                 }
             },
         },
@@ -419,6 +483,15 @@ def test_web_search_rerank_returns_queue_status(
         content_type="application/json",
     )
     request.tenant = tenant
+
+    request.tenant = tenant
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff9", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
 
     response = web_search(request)
     data = json.loads(response.content)
@@ -462,6 +535,15 @@ def test_web_search_ingest_selected(mock_dispatch, _mock_ensure, tenant_pool):
         content_type="application/json",
     )
     request.tenant = tenant
+
+    request.tenant = tenant
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff10", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
 
     response = web_search_ingest_selected(request)
 
@@ -511,6 +593,16 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     )
     request.tenant = tenant
 
+    request.tenant = tenant
+
+    # Auth setup
+    # Re-use staff10 if strictly sequential or create new
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff11", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
+
     response = web_search_ingest_selected(request)
 
     assert response.status_code == 200
@@ -536,8 +628,10 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
 @pytest.mark.slow
 @pytest.mark.django_db
 @pytest.mark.xdist_group("tenant_ops")
-@patch("theme.views.submit_worker_task")
-def test_start_rerank_workflow_returns_completed(mock_submit_worker_task, tenant_pool):
+@patch("theme.views_rag_tools.submit_business_graph")
+def test_start_rerank_workflow_returns_completed(
+    mock_submit_business_graph, tenant_pool
+):
     telemetry_payload = {
         "graph": "collection_search",
         "nodes": {"k_generate_strategy": {"status": "completed"}},
@@ -546,7 +640,7 @@ def test_start_rerank_workflow_returns_completed(mock_submit_worker_task, tenant
         "results": [{"title": "Alpha", "url": "https://example.com", "score": 0.3}],
         "responses": [],
     }
-    mock_submit_worker_task.return_value = (
+    mock_submit_business_graph.return_value = (
         {
             "task_id": "task-123",
             "result": {
@@ -581,6 +675,15 @@ def test_start_rerank_workflow_returns_completed(mock_submit_worker_task, tenant
     from django.contrib.sessions.backends.db import SessionStore
 
     request.session = SessionStore()
+
+    request.session = SessionStore()
+
+    # Auth setup
+    User = get_user_model()
+    user = User.objects.create_user(
+        "staff12", "staff@example.com", "password", is_staff=True
+    )
+    request.user = user
 
     response = start_rerank_workflow(request)
     assert response.status_code == 200

@@ -19,10 +19,10 @@
 
             <!-- Input Area -->
             <div class="p-4 bg-white border-t border-slate-200">
-                <form hx-post="{% url 'chat-submit' %}" hx-target="#chat-history" hx-swap="beforeend"
-                    class="relative" data-rag-chat-form>
+                <form hx-post="{% url 'chat-submit' %}" hx-target="#chat-history" hx-swap="beforeend" class="relative"
+                    data-rag-chat-form>
                     {% csrf_token %}
-                    <input type="hidden" name="case_id" value="{{ case_id }}">
+                    <!-- Hidden inputs handled below/dynamically -->
                     <input type="hidden" name="tenant_id" value="{{ tenant_id }}">
                     <input type="hidden" name="tenant_schema" value="{{ tenant_schema }}">
 
@@ -40,6 +40,7 @@
                             </svg>
                         </button>
                     </div>
+                    <!-- Unified Context managed globally -->
                     <div class="mt-2 space-y-2 px-1">
                         <div class="flex flex-wrap items-center gap-3">
                             <div class="flex items-center gap-2">
@@ -51,19 +52,57 @@
                                     New
                                 </button>
                             </div>
-                            <label for="chat-collection" class="text-xs text-slate-500">Collection</label>
-                            <select id="chat-collection" name="collection_id"
-                                class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500">
-                                <option value="">All Collections</option>
-                                {% for collection in collection_options %}
-                                <option value="{{ collection.id }}">{{ collection.label }}</option>
-                                {% endfor %}
-                            </select>
-                            <div class="flex items-center">
-                                <input id="chat-global-search" name="global_search" type="checkbox"
-                                    class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
-                                <label for="chat-global-search" class="ml-2 block text-xs text-slate-500">Global
-                                    Search</label>
+
+                            <!-- Local Context Overrides -->
+                            <div class="flex items-center gap-2">
+                                <!-- Collection Select -->
+                                <div class="flex items-center gap-2">
+                                    <label class="text-[10px] text-slate-400 uppercase tracking-wider">Scope</label>
+                                    <select name="chat_scope"
+                                        class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500 py-1 pl-2 pr-8 max-w-[150px]">
+                                        <option value="collection" {% if chat_scope == "collection" %}selected{% endif %}>
+                                            Collections only
+                                        </option>
+                                        <option value="case" {% if chat_scope == "case" %}selected{% endif %}>
+                                            Cases only
+                                        </option>
+                                        <option value="global" {% if chat_scope == "global" %}selected{% endif %}>
+                                            All Collections & Cases
+                                        </option>
+                                    </select>
+                                </div>
+                                <select name="collection_id"
+                                    class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500 py-1 pl-2 pr-8 max-w-[150px]">
+                                    <option value="">All Collections</option>
+                                    {% for c in collection_options %}
+                                    <option value="{{ c.id }}" {% if c.id == active_collection_id %}selected{% endif %}>
+                                        {{ c.label|truncatechars:20 }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+
+                                <span class="text-slate-300">|</span>
+
+                                <!-- Case Select (Simplified, assumes we only have ID context or Global) -->
+                                <div class="relative">
+                                    <!-- Note: Full Case options are not currently passed to tool_chat to save query overhead. 
+                                          If needed, we can fetch them. For now, showing current ID or All. 
+                                          We'll use a simple input/display or a select if options were available. 
+                                          Given user request, let's allow entering a case ID or clearing it, essentially. 
+                                          Or rely on global context for Case switching and local for Collection.
+                                          Wait, user asked for "selecting created Collections OR Cases".
+                                          We have collection_options. We don't have case_options here yet.
+                                          Using a text input for Case ID fallback or just displaying it if set.
+                                          Ideally we'd have case_options too. Let's stick to Collection dropdown + Case ID display for now 
+                                          unless I fetch case options too.
+                                          Actually, let's keep Case ID as hidden/display for now to avoid perf hit, 
+                                          but Collection is the main request. 
+                                     -->
+                                    <input type="text" name="case_id" value="{{ case_id|default:'' }}"
+                                        placeholder="All Cases"
+                                        class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500 py-1 px-2 w-24"
+                                        title="Case ID (Leave empty for Global)">
+                                </div>
                             </div>
                         </div>
                         <p class="text-xs text-slate-400">Press Enter to send, Shift + Enter for new line</p>

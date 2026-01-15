@@ -9,7 +9,7 @@ from typing import Callable, Iterable, Mapping, Sequence
 from uuid import UUID, uuid4
 
 from django.conf import settings
-from django.db import transaction
+from django.db import transaction, models
 from django.db.models import Count
 from django.utils import timezone
 
@@ -180,7 +180,13 @@ class DocumentDomainService:
         metadata_payload = dict(metadata or {})
         if document_id is not None:
             metadata_payload.setdefault("document_id", str(document_id))
-        audit_meta_payload = dict(audit_meta or {}) if audit_meta is not None else None
+        if audit_meta is not None:
+            audit_meta_payload = {
+                k: str(v) if isinstance(v, (UUID, object)) and hasattr(v, "hex") else v
+                for k, v in audit_meta.items()
+            }
+        else:
+            audit_meta_payload = None
 
         lifecycle_state = DocumentLifecycleState(initial_lifecycle_state)
         lifecycle_timestamp = timezone.now()
@@ -198,20 +204,38 @@ class DocumentDomainService:
                 )
 
         with transaction.atomic():
-            defaults = {
-                "metadata": metadata_payload,
-                "lifecycle_state": lifecycle_state.value,
-                "lifecycle_updated_at": lifecycle_timestamp,
-                **({"id": document_id} if document_id is not None else {}),
-            }
+            # Support updating by explicit ID or by the composite (tenant, source, hash)
+            document = None
+            if document_id:
+                document = Document.objects.filter(
+                    tenant=tenant, id=document_id
+                ).first()
+
+            if not document:
+                document, created = Document.objects.update_or_create(
+                    tenant=tenant,
+                    source=source,
+                    hash=content_hash,
+                    defaults={
+                        "metadata": metadata_payload,
+                        "lifecycle_state": lifecycle_state.value,
+                        "lifecycle_updated_at": lifecycle_timestamp,
+                        **({"id": document_id} if document_id is not None else {}),
+                    },
+                )
+            else:
+                created = False
+                document.source = source
+                document.hash = content_hash
+                document.metadata = metadata_payload
+                document.lifecycle_state = lifecycle_state.value
+                document.lifecycle_updated_at = lifecycle_timestamp
+                document.save()
+
             if audit_meta_payload is not None:
-                defaults["audit_meta"] = audit_meta_payload
-            document, created = Document.objects.update_or_create(
-                tenant=tenant,
-                source=source,
-                hash=content_hash,
-                defaults=defaults,
-            )
+                document.audit_meta = audit_meta_payload
+                document.save(update_fields=["audit_meta"])
+
             if created and created_by_user:
                 document.created_by = created_by_user
                 document.updated_by = created_by_user
@@ -219,9 +243,45 @@ class DocumentDomainService:
             elif created_by_user:
                 document.updated_by = created_by_user
                 document.save(update_fields=["updated_by", "updated_at"])
-            if not created and metadata:
-                document.metadata = dict(metadata_payload)
-                document.save(update_fields=["metadata", "updated_at"])
+
+            # --- SOTA 5.3: Document Versioning ---
+            # 1. Demote existing latest versions (normally just one)
+            from documents.models import DocumentVersion
+
+            DocumentVersion.objects.filter(document=document, is_latest=True).update(
+                is_latest=False
+            )
+
+            # 2. Determine next sequence
+            max_seq = (
+                DocumentVersion.objects.filter(document=document).aggregate(
+                    models.Max("sequence")
+                )["sequence__max"]
+                or 0
+            )
+            new_seq = max_seq + 1
+
+            # 3. Create new version
+            version_label = f"v{new_seq}"
+            new_version = DocumentVersion.objects.create(
+                document=document,
+                version_label=version_label,
+                sequence=new_seq,
+                label_sequence=new_seq,
+                is_latest=True,
+                created_by=created_by_user,
+            )
+
+            # 4. Inject into document metadata
+            # We must ensure the metadata in the DB is updated with the version info.
+            # This is critical for downstream ingestion tasks that read from the DB.
+            if document.metadata is None:
+                document.metadata = {}
+
+            document.metadata["document_version_id"] = str(new_version.id)
+            document.metadata["is_latest"] = True
+            document.metadata["version"] = version_label
+            document.save(update_fields=["metadata", "updated_at"])
 
             collection_instances: list[DocumentCollection] = []
             for collection in collections:

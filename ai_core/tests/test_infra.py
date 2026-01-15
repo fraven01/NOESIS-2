@@ -307,7 +307,9 @@ def test_start_and_end_trace_manage_context(monkeypatch):
             return False
 
     class FakeTracer:
-        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+        def start_as_current_span(
+            self, name: str, attributes=None, **kwargs
+        ):  # noqa: D401
             seen.append(name)
             return FakeContext()
 

@@ -52,6 +52,8 @@ from .ingestion import (
     start_ingestion_run,
 )
 from .repository import _build_documents_repository, _get_documents_repository
+from .rag_query import RagQueryService
+
 from .upload_support import (
     _build_document_meta,
     _coerce_transition_result,
@@ -101,6 +103,7 @@ __all__ = [
     "handle_document_upload",
     "ledger",
     "start_ingestion_run",
+    "RagQueryService",
     "update_observation",
     "with_scope_apply_async",
 ]

@@ -1,5 +1,12 @@
+"""WebSocket utilities for RAG Workbench.
+
+DEPRECATED: This module is deprecated. Use `theme.helpers.context.prepare_workbench_context`
+instead, which now supports both HTTP requests and WebSocket ASGI scopes.
+"""
+
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from typing import Any
 from uuid import UUID, uuid4
@@ -36,7 +43,18 @@ def build_websocket_context(
     workflow_id: str | None = None,
     thread_id: str | None = None,
 ) -> tuple[ScopeContext, BusinessContext]:
-    """Build ScopeContext and BusinessContext from a WebSocket request."""
+    """Build ScopeContext and BusinessContext from a WebSocket request.
+
+    .. deprecated:: 2026-01-15
+        Use `theme.helpers.context.prepare_workbench_context` instead,
+        which now supports both HTTP and WebSocket contexts.
+    """
+    warnings.warn(
+        "build_websocket_context is deprecated. Use "
+        "theme.helpers.context.prepare_workbench_context instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     user_id = _extract_user_id(request)
     try:
         scope = ScopeContext(

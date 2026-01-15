@@ -215,6 +215,7 @@ class GraphExecutionCommand:
                     pass
 
         cost_summary: dict[str, Any] | None = None
+        service_response: Response | None = None
         try:
             try:
                 update_observation_fn(**observation_kwargs)
@@ -295,7 +296,16 @@ class GraphExecutionCommand:
                 except Exception:
                     pass
 
-                if should_enqueue_graph(context.graph_name):
+                # RAG Service path: Direct execution without worker for rag.default (sync only)
+                if context.graph_name == "rag.default" and not should_enqueue_graph(
+                    context.graph_name
+                ):
+                    new_state, result = _run_rag_service(
+                        request, context, incoming_state or {}
+                    )
+                    service_response = Response(_dump_jsonable(result))
+                    cost_summary = None
+                elif should_enqueue_graph(context.graph_name):
                     signature = current_app.signature(
                         "llm_worker.tasks.run_graph",
                         kwargs={
@@ -503,7 +513,7 @@ class GraphExecutionCommand:
                 )
 
             try:
-                response = Response(_dump_jsonable(result))
+                response = service_response or Response(_dump_jsonable(result))
             except TypeError:
                 logger.exception(
                     "graph.response_serialization_error",
@@ -556,3 +566,28 @@ class GraphExecutionCommand:
                 )
             except Exception:
                 pass
+
+
+def _run_rag_service(
+    request: Request, context: GraphContext, incoming_state: Mapping[str, object]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Delegate rag.default graphs to the shared RagQueryService."""
+    from ai_core.services.rag_query import RagQueryService
+
+    payload = incoming_state or {}
+    question = payload.get("question") or payload.get("query") or ""
+    hybrid = payload.get("hybrid")
+    chat_history = payload.get("chat_history")
+
+    tool_context = getattr(request, "tool_context", None)
+    if tool_context is None:
+        tool_context = context.tool_context
+
+    service = RagQueryService()
+    return service.execute(
+        tool_context=tool_context,
+        question=question,
+        hybrid=hybrid,
+        chat_history=chat_history if isinstance(chat_history, list) else None,
+        graph_state=dict(incoming_state or {}),
+    )

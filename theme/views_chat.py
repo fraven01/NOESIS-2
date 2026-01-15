@@ -7,6 +7,7 @@ from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
 # from ai_core.graph.core import GraphContext, ThreadAwareCheckpointer (Removed M-5)
+from ai_core.services.rag_query import RagQueryService
 from common.constants import (
     X_CASE_ID_HEADER,
     X_COLLECTION_ID_HEADER,
@@ -39,8 +40,7 @@ def chat_submit(request):
     case_id = coerce_optional_text(
         request.POST.get("case_id") or request.headers.get(X_CASE_ID_HEADER)
     )
-    if case_id is None:
-        case_id = "dev-case-local"
+    # No dev-case-local fallback (SCOPE-1): Scope logic below will set to None if needed
     collection_id = coerce_optional_text(
         request.POST.get("collection_id") or request.headers.get(X_COLLECTION_ID_HEADER)
     )
@@ -54,10 +54,28 @@ def chat_submit(request):
     except Exception:
         pass
 
-    # Feature: Global Search in RAG Chat (Dev Workbench)
-    # If global_search is checked, ignore case_id to search entire tenant
+    scope_option = (
+        request.POST.get("chat_scope")
+        or request.session.get("rag_chat_scope")
+        or "collection"
+    )
     if request.POST.get("global_search") == "on":
+        scope_option = "global"
+    if scope_option not in {"collection", "case", "global"}:
+        scope_option = "collection"
+    request.session["rag_chat_scope"] = scope_option
+
+    manual_collection_id = None
+
+    needs_manual_collection = False
+    if scope_option == "collection":
         case_id = None
+    elif scope_option == "case":
+        collection_id = None
+    else:  # global
+        case_id = None
+        collection_id = None
+        needs_manual_collection = True
 
     if not message:
         return render(
@@ -67,10 +85,6 @@ def chat_submit(request):
         )
 
     try:
-        from ai_core.graphs.technical.retrieval_augmented_generation import (
-            RAG_IO_VERSION_STRING,
-            RAG_SCHEMA_ID,
-        )
         from theme.helpers.context import prepare_workbench_context
 
         # 1. Prepare Context
@@ -92,61 +106,22 @@ def chat_submit(request):
         scope = tool_context.scope
         tenant_id = scope.tenant_id
         tenant_schema = scope.tenant_schema or tenant_id
+        views = _views()
+        manual_collection_id, _ = views._resolve_manual_collection(tenant_id, None)
+        if needs_manual_collection and manual_collection_id:
+            collection_id = manual_collection_id
 
-        # 2. Prepare State & Meta
-        state = {
-            "schema_id": RAG_SCHEMA_ID,
-            "schema_version": RAG_IO_VERSION_STRING,
-            "question": message,
-            "query": message,  # Required for retrieval
-            "hybrid": build_hybrid_config(request),
-        }
-
-        # History loading removed (M-5), handled by Graph
-
-        from theme.helpers.tasks import submit_business_graph
-
-        # 3. Run Graph via Worker (M-2)
-        # We wait for the result to maintain the synchronous UI experience for now
-        response_payload, completed = submit_business_graph(
-            graph_name="rag.default",
+        service = RagQueryService()
+        _, result_payload = service.execute(
             tool_context=tool_context,
-            state=state,
-            timeout_s=30,
+            question=message,
+            hybrid=build_hybrid_config(request),
         )
 
-        if not completed:
-            logger.warning("chat_submit.timeout", extra={"thread_id": thread_id})
-            return render(
-                request,
-                "theme/partials/chat_message.html",
-                {"error": "Request timed out. Please try again."},
-            )
-
-        # Parse generic worker response
-        if response_payload.get("status") == "error":
-            logger.error(
-                "chat_submit.worker_error", error=response_payload.get("error")
-            )
-            return render(
-                request,
-                "theme/partials/chat_message.html",
-                {"error": "An error occurred during processing."},
-            )
-
-        data = response_payload.get("data", {})
-        # Note: final_state might not be returned depending on graph, but usually is
-        # result_payload usually contains "answer"
-        result_payload = data.get("result", {})
-
-        # 4. Extract Answer
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
         snippet_items = build_snippet_items(snippets)
 
-        # History saving removed (M-5), handled by Graph
-
-        # 4. Render Response Partial
         return render(
             request,
             "theme/partials/chat_message.html",
@@ -159,6 +134,7 @@ def chat_submit(request):
                 "case_id": case_id,
                 "collection_id": collection_id,
                 "thread_id": thread_id,
+                "chat_scope": scope_option,
             },
         )
 
