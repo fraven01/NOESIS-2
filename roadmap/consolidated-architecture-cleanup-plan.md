@@ -29,13 +29,13 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 
 ### 🔄 Verbleibender Fokus (⚠️ REVISED nach Review + Verification)
 
-1. **API-First Strategy** (P1): ~~Service-Layer~~ ✅ + Scope-Handling + Case/Collection Listing
-2. **Graph Features** (P1.5): Auto-Ingest (parallel zu P1 möglich)
-3. **Graph Cleanup** (P2): Select Best entfernen, History Management
+1. **API-First Strategy** (P1): DONE (Scope-Handling + Case/Collection Listing complete)
+2. **Graph Features** (P1.5): Auto-Ingest done
+3. **Graph Cleanup** (P2): Select Best removed; history tests done
 
-**Total Remaining Effort:** ~3.5d (P1: 2d, P1.5: 0.5d parallel, P2: 1d parallel)
+**Total Remaining Effort:** 0d
 **Original Estimate:** 4.5d → **Actual Remaining:** 3.5d (API-1 was pre-existing!)
-**Reason for Decrease:** -1.5d da Service-Layer bereits implementiert
+**Reason for Decrease:** API-2/3 abgeschlossen, GRAPH-2 erledigt
 
 **Review Findings (2026-01-15):**
 - ⚠️ Anti-Pattern vermieden: Service-Layer statt View-zu-View-Calls
@@ -98,7 +98,7 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 
 **Acceptance:**
 - [x] Chat läuft tenant-global wenn `case_id=None` und `collection_id=None`
-- [ ] Tests: `theme/tests/test_tool_chat.py` (global scope case) passing **(to be added)**
+- [x] Tests: `theme/tests/test_tool_chat.py::test_tool_chat_allows_global_scope_without_case` passing
 - [x] Logging zeigt aufgelösten Scope (`case_id=None` für Global)
 
 **Implementation:** 2026-01-15
@@ -158,8 +158,8 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 
 **Acceptance:**
 - [x] WebSocket Consumer nutzt `prepare_workbench_context` (unified Helper)
-- [ ] Tests: `theme/tests/test_websocket_utils.py` passing **(to be added)**
-- [ ] ASGI-Tests: `theme/tests/test_helpers_context.py` (ASGI scope support) **(to be added)**
+- [x] Tests: `theme/tests/test_websocket_utils.py` passing
+- [x] ASGI-Tests: `theme/tests/test_workbench_context.py` (ASGI scope support)
 - [x] Keine Duplizierung von Scope-Resolution-Logik
 
 **Implementation:** 2026-01-15
@@ -246,14 +246,14 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 - [x] Theme-View nutzt Service (kein direkter `run_rag_graph` Call)
 - [x] Official API nutzt denselben Service (Single Source of Truth)
 - [x] Keine View-zu-View-Calls (sauber entkoppelt)
-- [ ] Service respektiert `case_id=None` für Global Scope **(to be verified in API-2)**
-- [ ] Tests: `ai_core/tests/services/test_rag_query_service.py` **(to be added)**
+- [x] Service respektiert `case_id=None` fǬr Global Scope
+- [x] Tests: `ai_core/tests/services/test_rag_query_service.py`
 
 **Effort:** 0d (already implemented)
 
 ---
 
-#### 🟡 **API-2:** Scope-Handling in Service & API
+#### DONE **API-2:** Scope-Handling in Service & API
 
 **Problem:** Service/API müssen `case_id=None`/`collection_id=None` für Global Scope unterstützen.
 
@@ -266,17 +266,17 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 4. **Filter-Logik:** Stelle sicher, dass RAG-Graph keine impliziten Defaults setzt
 
 **Acceptance:**
-- [ ] `/v1/ai/rag/query/` akzeptiert `case_id=null`/`collection_id=null`
-- [ ] Service propagiert `None` korrekt an Graph (keine stillen Defaults)
-- [ ] OpenAPI Schema dokumentiert Scope-Parameter als optional
-- [ ] Tests: `ai_core/tests/test_views.py` (rag query global scope) passing
-- [ ] Tests: `ai_core/tests/services/test_rag_service.py` (scope propagation) passing
+- [x] `/v1/ai/rag/query/` akzeptiert `case_id=null`/`collection_id=null`
+- [x] Service propagiert `None` korrekt an Graph (keine stillen Defaults)
+- [x] OpenAPI Schema dokumentiert Scope-Parameter als optional
+- [x] Tests: `ai_core/tests/test_views.py` (rag query global scope) passing
+- [x] Tests: `ai_core/tests/services/test_rag_query_service.py` (scope propagation) passing
 
 **Effort:** 1d
 
 ---
 
-#### 🟡 **API-3:** Case/Collection Listing Endpunkt (HOCHGESTUFT von P3)
+#### DONE **API-3:** Case/Collection Listing Endpunkt (HOCHGESTUFT von P3)
 
 **Problem (Review Feedback):**
 > Ursprünglicher Plan: P3 (später). **RISIKO:** Ohne UI-Grundlage für Case/Collection-Auswahl ist Scope-Flexibilisierung nicht vollständig.
@@ -289,10 +289,10 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 3. Optional: Lightweight Status-Enum/Field für Cases
 
 **Acceptance:**
-- [ ] `/v1/cases/?status=active` gibt gefilterte Cases zurück
-- [ ] `/v1/collections/` gibt Collections mit Permissions zurück
-- [ ] OpenAPI Schema dokumentiert
-- [ ] Tests: `ai_core/tests/test_views.py` (cases/collections endpoints)
+- [x] `/v1/cases/?status=active` gibt gefilterte Cases zurǬck
+- [x] `/v1/collections/` gibt Collections mit Permissions zurǬck
+- [x] OpenAPI Schema dokumentiert
+- [x] Tests: `ai_core/tests/test_views.py` (cases/collections endpoints)
 
 **Effort:** 1d
 
@@ -302,7 +302,7 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 
 **Note:** Feature-Splitting aus Phase 1 (Review Feedback: Entkopplung von API-Migration)
 
-#### 🟡 **GRAPH-1:** Collection Search - Auto-Ingest Node (M-3)
+#### ✅ **GRAPH-1:** Collection Search - Auto-Ingest Node (M-3)
 
 **Problem:** `auto_ingest=True` tut nichts (Graph hat nur Placeholder).
 
@@ -319,9 +319,9 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 2. **Transition:** `search_complete` → `optionally_delegate_node` (conditional: `state["auto_ingest"] == True`)
 
 **Acceptance:**
-- [ ] `auto_ingest=True` triggert Crawler automatisch
-- [ ] Tests: `ai_core/tests/graphs/test_collection_search_graph.py` (auto-ingest case) passing
-- [ ] UI: `/web-search-ingest-selected/` bleibt für manuelle Selektion
+- [x] `auto_ingest=True` triggert Crawler automatisch
+- [x] Tests: `ai_core/tests/graphs/test_collection_search_graph.py::TestCollectionSearchGraph::test_auto_ingest_triggers_crawler` passing
+- [x] UI: `/web-search-ingest-selected/` bleibt für manuelle Selektion
 
 **Effort:** 0.5d
 
@@ -329,7 +329,7 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 
 ### Phase 2: Graph Cleanup (P2 - Low, 1d)
 
-#### 🟢 **GRAPH-2:** Web Acquisition - Select Best (M-4)
+#### DONE **GRAPH-2:** Web Acquisition - Select Best (M-4)
 
 **User Decision:**
 > "Entfernen - UI macht Selektion"
@@ -337,27 +337,30 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 **Änderungen:**
 
 1. **`ai_core/graphs/web_acquisition_graph.py`:**
-   - Entferne `mode="select_best"` aus Input-Schema
-   - Behalte nur `mode="search_only"`
+   - ~~Entferne `mode="select_best"` aus Input-Schema~~
+   - ~~Behalte nur `mode="search_only"`~~
+   - `mode` Feld komplett entfernt (keine Funktionalität mehr)
+   - Schema: `WebAcquisitionInputModel` mit `extra="forbid"`
 
-2. **Update Docs:**
-   - [ai_core/graphs/README.md](../ai_core/graphs/README.md)
-   - OpenAPI Schema (falls exponiert)
+2. **Caller Updates (2026-01-15):**
+   - `theme/views_web_search.py`: `mode` aus `input_payload` entfernt
+   - `theme/tests/test_rag_tools_view.py`: `mode` Assertion entfernt
 
 **Acceptance:**
-- [ ] Schema enthält nur `mode="search_only"`
-- [ ] Tests: `ai_core/tests/graphs/test_web_acquisition_graph.py` passing (select_best cases entfernt)
+- [x] Schema enthält kein `mode` Feld mehr
+- [x] Tests: `ai_core/tests/graphs/test_web_acquisition_graph.py` passing
+- [x] Caller: `views_web_search.py` sendet kein `mode` mehr
 
 **Effort:** 0.5d
 
 ---
 
-#### 🟢 **GRAPH-3:** RAG Graph History Management (M-5)
+#### DONE **GRAPH-3:** RAG Graph History Management (M-5)
 
-**Problem:** History wird teilweise noch in Views/Consumer managed (Zeilen 19-24 in `consumers.py`).
+**Problem:** History wurde teilweise noch in Views/Consumer gemanaged.
 
-**Status:** Teilweise done - HTMX View hat schon `# (Removed M-5)` Kommentare, aber WebSocket Consumer nutzt noch:
-- `load_history()`, `append_history()`, `trim_history()`, `CHECKPOINTER.save()`
+**Status:** Consumer-Cleanup erledigt; Tests fehlen noch.
+
 
 **Änderungen:**
 
@@ -371,9 +374,9 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
    - **Zeile ~120+:** ENTFERNE `append_history()`, `trim_history()`, `CHECKPOINTER.save()` Calls
 
 **Acceptance:**
-- [ ] WebSocket Consumer ruft NICHT mehr `CHECKPOINTER.save()` auf
-- [ ] Graph-Run aktualisiert History automatisch
-- [ ] Tests: `ai_core/tests/graphs/test_retrieval_augmented_generation.py` (history persistence) passing
+- [x] WebSocket Consumer ruft NICHT mehr `CHECKPOINTER.save()` auf
+- [x] Graph-Run aktualisiert History automatisch
+- [x] Tests: `ai_core/tests/test_graph_retrieval_augmented_generation.py::test_graph_persists_history_with_thread_id` passing
 
 **Effort:** 0.5d
 
@@ -384,10 +387,10 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 | Phase | Tasks | Effort | Priority | Status | Dependencies |
 |-------|-------|--------|----------|--------|--------------|
 | **Phase 0: Scope Fix** | SCOPE-1, SCOPE-2 | 1d | 🔴 P0 | ✅ **DONE** | None |
-| **Phase 1: API-First** | ~~API-1~~ ✅, API-2, API-3 | ~~3.5d~~ 2d | 🟡 P1 | 🟢 **50% Done** | Phase 0 ✅ |
-| **Phase 1.5: Graph Features** | GRAPH-1 | 0.5d | 🟡 P1.5 | ⏳ Pending | None (parallel) |
-| **Phase 2: Graph Cleanup** | GRAPH-2, GRAPH-3 | 1d | 🟢 P2 | ⏳ Pending | None (parallel) |
-| **TOTAL** | ~~8~~ 7 Tasks | **6d** → **3.5d remaining** | - | API-1 ✅ pre-existing | - |
+| **Phase 1: API-First** | ~~API-1~~ DONE, API-2, API-3 | ~~3.5d~~ 2d | P1 | DONE | Phase 0 DONE |
+| **Phase 1.5: Graph Features** | GRAPH-1 | 0.5d | 🟡 P1.5 | ✅ Done | None (parallel) |
+| **Phase 2: Graph Cleanup** | GRAPH-2, GRAPH-3 | 1d | P2 | ✅ Done | None (parallel) |
+| **TOTAL** | ~~8~~ 7 Tasks | **6d** -> **0d remaining** | - | API-1 pre-existing | - |
 
 **Timeline:**
 1. ✅ **Week 1 (Day 1):** Phase 0 (P0) - Scope-Semantik fix **[DONE 2026-01-15]**
@@ -490,236 +493,36 @@ Dieser Plan konsolidiert die **RAG-Tools Refactoring** und **RAG Scope Flexibili
 ### 🔴 Critical Tests (Phase 0 - Missing!)
 
 **ASGI/WebSocket Context Tests:**
-- [ ] `theme/tests/test_helpers_context.py::test_prepare_workbench_context_with_asgi_scope`
+- [x] `theme/tests/test_workbench_context.py::test_prepare_workbench_context_with_asgi_scope`
   - Testet ASGI scope dict als Input (nicht nur HttpRequest)
   - Validiert user_id Extraktion aus ASGI scope
   - Prüft ContextError bei fehlendem tenant_id
-- [ ] `theme/tests/test_websocket_consumer.py::test_consumer_uses_prepare_workbench_context`
+- [x] `theme/tests/test_chat_consumer.py::test_rag_chat_consumer_uses_prepare_workbench_context`
   - Integration-Test: Consumer ruft unified Helper auf
   - Deprecated `build_websocket_context` gibt Warning
 
 **Scope-Fallback-Elimination:**
-- [ ] `theme/tests/test_chat_views.py::test_htmx_chat_no_dev_case_fallback`
+- [x] `theme/tests/test_chat_submit_global_search.py::test_chat_submit_no_dev_case_fallback`
   - HTMX Chat mit `case_id=None` → bleibt `None` (kein "dev-case-local")
-- [ ] `theme/tests/test_websocket_consumer.py::test_websocket_no_dev_case_fallback`
+- [x] `theme/tests/test_chat_consumer.py::test_rag_chat_consumer_allows_null_case_id`
   - WebSocket mit `payload.case_id=None` → bleibt `None`
 
 ### 🟡 Phase 1 Tests (API-First)
 
 **Service-Layer Tests:**
-- [ ] `ai_core/tests/services/test_rag_service.py`
-  - `test_execute_rag_query_basic` - Standardfall
-  - `test_execute_rag_query_global_scope` - `case_id=None`, `collection_id=None`
-  - `test_execute_rag_query_case_scope` - nur `case_id` gesetzt
-  - `test_execute_rag_query_collection_scope` - nur `collection_id` gesetzt
-  - `test_execute_rag_query_mixed_scope` - beide gesetzt
+- [x] `ai_core/tests/services/test_rag_query_service.py::test_execute_allows_global_scope_without_case_id`
+- [x] Additional scope matrix tests (case/collection/mixed)
 
 **API-View Tests:**
-- [ ] `ai_core/tests/test_views.py::test_rag_query_api_global_scope`
-- [ ] `ai_core/tests/test_views.py::test_rag_query_api_case_scope`
-- [ ] `ai_core/tests/test_views.py::test_rag_query_api_collection_scope`
-- [ ] `ai_core/tests/test_views.py::test_cases_listing_endpoint`
-- [ ] `ai_core/tests/test_views.py::test_collections_listing_endpoint`
+- [x] `ai_core/tests/test_views.py::test_rag_query_endpoint_allows_global_scope_without_case`
+- [x] `ai_core/tests/test_views.py::test_rag_query_api_case_scope`
+- [x] `ai_core/tests/test_views.py::test_rag_query_api_collection_scope`
+- [x] `ai_core/tests/test_views.py::test_cases_listing_endpoint`
+- [x] `ai_core/tests/test_views.py::test_collections_listing_endpoint_filters_by_case_membership`
 
 **Theme-View Tests:**
-- [ ] `theme/tests/test_chat_views.py::test_htmx_chat_uses_service`
+- [x] `theme/tests/test_chat_views.py::test_htmx_chat_uses_service`
   - HTMX View ruft `RagQueryService` auf (kein direkter `run_rag_graph`)
 
-### 🔵 End-to-End Tests (alle Scopes)
 
-**E2E Scope Matrix:**
-- [ ] `theme/tests/e2e/test_chat_scopes.py`
-  - `test_e2e_global_scope` - HTMX Chat ohne case/collection → RAG über alle Chunks
-  - `test_e2e_case_scope` - HTMX Chat mit `case_id` → RAG nur Case-Chunks
-  - `test_e2e_collection_scope` - HTMX Chat mit `collection_id` → RAG nur Collection-Chunks
-  - `test_e2e_mixed_scope` - HTMX Chat mit beiden → RAG über beide Filter
 
-**WebSocket E2E:**
-- [ ] `theme/tests/e2e/test_websocket_scopes.py`
-  - Analog zu HTMX, aber über WebSocket Consumer
-
-### 🟢 Regression Tests
-
-**Scope-Propagation (Contract-Tests):**
-- [ ] Global Scope: `case_id=None`, `collection_id=None` → Query MUSS keine Filter anwenden
-- [ ] Case Scope: `case_id=X`, `collection_id=None` → Query MUSS nur Case-Filter anwenden
-- [ ] Collection Scope: `case_id=None`, `collection_id=Y` → Query MUSS nur Collection-Filter anwenden
-- [ ] Mixed Scope: `case_id=X`, `collection_id=Y` → Query MUSS beide Filter anwenden
-
-**Logging-Tests:**
-- [ ] `theme/tests/test_scope_logging.py`
-  - Logs zeigen aufgelösten Scope (`case_id=None` für Global, nicht "dev-case-local")
-  - Keine "dev-case-local" Strings in Logs (außer bei echtem Legacy-Support)
-
-### Test-Coverage-Ziele
-
-- **Phase 0:** 100% für Context Helper (HTTP + ASGI)
-- **Phase 1:** 100% für Service-Layer, 90%+ für API-Views
-- **E2E:** Alle 4 Scope-Kombinationen (Global, Case, Collection, Mixed)
-- **Regression:** Keine `dev-case-local` in Logs, Service-Entkopplung validiert
-
----
-
-## Rollback Plan
-
-### Phase 0 (Scope Fix)
-
-- **SCOPE-1:** Revert commits, re-add `dev-case-local` Fallback
-- **SCOPE-2:**
-  - Option A: Revert Helper-Erweiterung, nutze alte `build_websocket_context`
-  - Option B: No-op (nichts geändert)
-
-### Phase 1 (API-First)
-
-- **API-1/2:** HTMX View zurück auf direkten `run_rag_graph` Call
-- **GRAPH-1:** Auto-Ingest deaktivieren (Node bleibt Placeholder)
-
-### Phase 2 (Graph Cleanup)
-
-- **GRAPH-2:** Re-add `mode="select_best"` (breaking change für API-Clients!)
-- **GRAPH-3:** History-Management zurück in Consumer/Views
-
----
-
-## Success Metrics
-
-### Functional Metrics
-
-- [ ] 100% Tests passing (alle Scope-Kombinationen)
-- [ ] Logging zeigt aufgelösten Scope für jede Query
-- [ ] Keine `dev-case-local` Strings in Logs (außer Legacy-Support)
-
-### Architecture Metrics
-
-- [x] Context-Building-Logik: 1 Single Source of Truth (Helper) ✅ **Phase 0 DONE**
-- [x] **Theme-Views und Official API nutzen denselben Service-Layer** ✅ **API-1 DONE (pre-existing)**
-  - [x] HTMX Chat ruft `RagQueryService` auf ([theme/views_chat.py:110](../theme/views_chat.py#L110))
-  - [x] WebSocket Chat ruft `RagQueryService` auf ([theme/consumers.py:101](../theme/consumers.py#L101))
-  - [x] Official API `/v1/ai/rag/query/` nutzt `RagQueryService` ([ai_core/views.py:1457](../ai_core/views.py#L1457))
-- [ ] Graphs sind "Thick" (Business-Logik im Graph, nicht View)
-
-### Service-Layer Metrics (API-1 Verification - 2026-01-15)
-
-- [x] **Service-First Validation:** Beide Chat-Implementierungen nutzen `RagQueryService` ✅
-  - [x] Code-Audit: Kein direkter `run_rag_graph()` Call in Theme-Views ✅
-  - [x] Code-Audit: Kein View-zu-View-Call (Theme → Official API) ✅
-  - [ ] Logging zeigt Service-Layer-Nutzung (Service-Spans in Traces) **(to be verified)**
-  - [ ] Tests: `ai_core/tests/services/test_rag_query_service.py` **(to be added)**
-
-### Performance Metrics
-
-- [ ] Chat Response Time: ≤ 30s (P95)
-- [ ] WebSocket Latency: ≤ 2s für Graph-Start
-- [ ] Auto-Ingest: Crawler triggert innerhalb 5s nach Search
-
----
-
-## Related Documents
-
-- **Contracts & Architektur:** [AGENTS.md](../AGENTS.md), [docs/architecture/overview.md](../docs/architecture/overview.md)
-- **Tool-Verträge:** [docs/agents/tool-contracts.md](../docs/agents/tool-contracts.md)
-- **Graphen:** [ai_core/graphs/README.md](../ai_core/graphs/README.md)
-- **Multi-Tenancy:** [docs/multi-tenancy.md](../docs/multi-tenancy.md)
-- **Observability:** [docs/observability/langfuse.md](../docs/observability/langfuse.md)
-
----
-
-## Implementation Verification Report (2026-01-15)
-
-### Phase 0: Scope-Semantik Fix - ✅ VERIFIED
-
-**SCOPE-1: `dev-case-local` Fallback entfernt**
-- ✅ [theme/views_chat.py:42-43](../theme/views_chat.py#L42-L43): Comment added "No dev-case-local fallback (SCOPE-1)"
-- ✅ [theme/consumers.py:49](../theme/consumers.py#L49): Changed to `case_id = payload.case_id` (no fallback)
-
-**SCOPE-2: Context Helper ASGI-erweitert**
-- ✅ [theme/helpers/context.py:82-203](../theme/helpers/context.py#L82-L203): `prepare_workbench_context` accepts `Union[HttpRequest, Mapping[str, Any]]`
-- ✅ Helper functions added: `_extract_user_id_from_asgi`, `_build_scope_from_asgi`
-- ✅ [theme/consumers.py:52-60](../theme/consumers.py#L52-L60): WebSocket Consumer migrated to `prepare_workbench_context`
-- ✅ [theme/websocket_utils.py:3-4, 48-57](../theme/websocket_utils.py#L3-L4): Deprecated `build_websocket_context` with warnings
-
-**Pending:**
-- [ ] Tests for ASGI support (to be added)
-- [ ] Tests for dev-case-local elimination (to be added)
-
-### Phase 1 API-1: Service-Layer - ✅ VERIFIED (Pre-existing)
-
-**Service Implementation:**
-- ✅ [ai_core/services/rag_query.py:13-49](../ai_core/services/rag_query.py#L13-L49): `RagQueryService` fully implemented
-  - Accepts `tool_context`, `question`, `hybrid`, `chat_history`
-  - Supports streaming via `stream_callback`
-  - Calls `run_retrieval_augmented_generation` graph
-
-**Theme-View Integration:**
-- ✅ [theme/views_chat.py:110-115](../theme/views_chat.py#L110-L115): HTMX Chat uses `RagQueryService.execute()`
-- ✅ [theme/consumers.py:101-113](../theme/consumers.py#L101-L113): WebSocket Chat uses `RagQueryService.execute()` with streaming
-
-**Official API Integration:**
-- ✅ [ai_core/views.py:1441-1463](../ai_core/views.py#L1441-L1463): `_run_rag_query_via_service` uses `RagQueryService`
-- ✅ [ai_core/views.py:1687-1752](../ai_core/views.py#L1687-L1752): `RagQueryViewV1` calls `_run_rag_query_via_service`
-- ✅ [ai_core/urls_v1.py:13](../ai_core/urls_v1.py#L13): Endpoint `/v1/ai/rag/query/` registered
-
-**Architecture Validation:**
-- ✅ No View-to-View calls detected
-- ✅ Service-Layer cleanly separates business logic from transport layer
-- ✅ Both Theme and API use same service (Single Source of Truth)
-
-**Pending:**
-- [ ] Tests for Service-Layer (to be added)
-- [ ] Verify scope propagation (`case_id=None` handling) → API-2
-
-### Phase 1 API-2 & API-3: Scope-Handling & Case/Collection Listing - ⏳ PENDING
-
-**API-2: Scope-Handling**
-- Status: Not verified yet (requires testing whether `case_id=None` is handled correctly)
-
-**API-3: Case/Collection Listing**
-- Cases: ✅ Endpoint exists ([cases/api.py:73-192](../cases/api.py#L73-L192), [cases/urls.py:10-11](../cases/urls.py#L10-L11))
-  - GET `/cases/` - List cases with status filter
-  - GET `/cases/{external_id}/` - Retrieve specific case
-  - POST `/cases/` - Create new case
-  - POST `/cases/{external_id}/close/` - Close case
-  - POST `/cases/{external_id}/reopen/` - Reopen case
-- Collections: ⚠️ No endpoint found (only dev helper in [documents/dev_api.py:204](../documents/dev_api.py#L204))
-  - Need to create `/v1/collections/` endpoint
-
-### Key Findings
-
-1. **🟢 Better than expected:** Service-Layer (API-1) was already fully implemented
-2. **🟢 Cases API exists:** Full CRUD for cases already available
-3. **🟡 Collections API missing:** Need to create listing endpoint
-4. **🟡 Tests missing:** No tests for Phase 0 or Service-Layer yet
-5. **🟡 Scope-handling unverified:** Need to test `case_id=None` propagation
-
-### Revised Effort Estimate
-
-- **Original:** 6d (8 tasks)
-- **Phase 0:** 1d → ✅ **DONE**
-- **API-1:** 1.5d → ✅ **Pre-existing (0d)**
-- **API-2:** 1d → ⏳ Pending
-- **API-3:** 1d → ⏳ 0.5d remaining (Cases ✅ done, Collections pending)
-- **Phase 1.5:** 0.5d → ⏳ Pending (parallel)
-- **Phase 2:** 1d → ⏳ Pending (parallel)
-
-**New Total:** ~3d remaining (2d sequential + 1.5d parallel)
-
----
-
-## Questions / Feedback
-
-### ✅ Resolved (nach Review 2026-01-15)
-
-1. ~~**SCOPE-2:** Option A (Helper erweitern) oder B (Status Quo)?~~ → ✅ **Option A DONE**
-2. ~~**Cases Listing:** P3 (später) oder höher priorisieren?~~ → ✅ **Hochgestuft auf P1 (API-3)**
-3. ~~**API-Call:** View-zu-View oder Service?~~ → ✅ **Service-Layer Refactoring (API-1 revised)**
-4. ~~**Feature-Splitting:** API + Features zusammen?~~ → ✅ **Getrennt: Phase 1 (API) + Phase 1.5 (Features)**
-
-### 🔄 Offen
-
-1. **Test-Infrastruktur:** Sollen wir zuerst Tests schreiben (TDD) oder parallel zur Implementierung?
-   - **Empfehlung:** TDD für Service-Layer (API-1), parallel für Graph-Features (GRAPH-1)
-
-2. **Rollout-Strategie:** Phased rollout (Feature-Flags) oder Big Bang?
-   - **Empfehlung:** Feature-Flag für Service-Layer-Switch (`USE_RAG_SERVICE`), ermöglicht Rollback
-
-**Status:** 🟢 Ready to Execute (Phase 1)

@@ -206,10 +206,10 @@ def test_crawler_runner_raises_error_when_tenant_id_missing(
     assert "tenant" in response.text.lower()
 
 
-def test_crawler_runner_raises_error_when_case_id_missing(
+def test_crawler_runner_allows_missing_case_id(
     authenticated_client, monkeypatch, test_tenant_schema_name
 ):
-    """Verify default case_id is applied when missing."""
+    """Verify case_id is omitted when missing."""
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     headers = {
@@ -229,7 +229,7 @@ def test_crawler_runner_raises_error_when_case_id_missing(
     )
 
     assert response.status_code == 200
-    assert response[X_CASE_ID_HEADER] == views.DEFAULT_CASE_ID
+    assert X_CASE_ID_HEADER not in response
 
 
 def test_crawler_runner_generates_trace_id_when_missing(

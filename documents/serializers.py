@@ -7,6 +7,7 @@ from rest_framework import serializers
 from documents.models import (
     Document,
     DocumentComment,
+    DocumentCollection,
     DocumentMention,
     DocumentNotification,
     SavedSearch,
@@ -195,3 +196,35 @@ class SavedSearchResponseSerializer(SavedSearchSerializer):
 class DocumentNotificationStatusSerializer(serializers.Serializer):
     idempotent = serializers.BooleanField(read_only=True)
     status = serializers.CharField()
+
+
+class DocumentCollectionSerializer(serializers.ModelSerializer):
+    case = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DocumentCollection
+        fields = [
+            "id",
+            "collection_id",
+            "key",
+            "name",
+            "type",
+            "visibility",
+            "metadata",
+            "embedding_profile",
+            "case",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_case(self, obj):
+        case_obj = getattr(obj, "case", None)
+        if case_obj is None:
+            return None
+        return {
+            "id": str(case_obj.id),
+            "external_id": case_obj.external_id,
+            "title": case_obj.title,
+            "status": case_obj.status,
+        }

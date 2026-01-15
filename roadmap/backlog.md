@@ -10,14 +10,13 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 - [x] Workbench exception: allow UI/views to trigger technical graphs only in `DEBUG` (explicit guard at endpoint level; e.g. `ai_core/views.py:_GraphView`, `ai_core/views.py:CrawlerIngestionRunnerView`)
 - [x] Graph convergence: refactor `retrieval_augmented_generation.py` to real `langgraph` and migrate module-level singleton to factory (inventory `ai_core/graphs/technical/retrieval_augmented_generation.py`)
 - [x] Deprecation plan: `info_intake` graph + intake endpoint (`ai_core/graphs/technical/info_intake.py`, `ai_core/views.py:IntakeViewV1`, `docs/api/reference.md`)
-- [ ] **Workbench: Architecture Cleanup + RAG Scope Flexibilisierung (CONSOLIDATED)**  
-  - **Status:** Scope fix + helper refactor done; Service-first execution (HTMX chat, websocket, API+tests) implemented per `roadmap/consolidated-architecture-cleanup-plan.md`.  
-  - **Remaining (per plan):**  
-    - Auto-ingest trigger (`ai_core/graphs/technical/collection_search.py`)  
-    - Web Acquisition Select Best removal + RAG history persistence cleanup (`ai_core/graphs/web_acquisition_graph.py`, `ai_core/graphs/technical/retrieval_augmented_generation.py`)  
-    - Expanded scope coverage tests (global/case/collection/mixed) especially once the graphs above settle  
+- [x] **BREAKING: API-2 global scope support for RAG query (allow `case_id=None`)**  
+  - **Pointers:** `ai_core/views.py:482` (`_prepare_request`), `ai_core/views.py:626` (DEFAULT_CASE_ID fallback), `ai_core/views.py:671` (default-case bootstrap), `ai_core/views.py:346` (DEFAULT_CASE_ID constant)  
+  - **Acceptance:** missing `X-Case-ID` no longer forces `case_id="general"`; `business_context.case_id` can be omitted in meta/tool_context; `/v1/ai/rag/query/` accepts requests without case/collection headers; tests added in `ai_core/tests/test_views.py` and `ai_core/tests/services/test_rag_query_service.py` covering global scope
+- [x] **Workbench: Architecture Cleanup + RAG Scope Flexibilisierung (CONSOLIDATED)**  
+  - **Status:** All tasks complete per `roadmap/consolidated-architecture-cleanup-plan.md`.  
   - **Pointers:** `theme/views_chat.py`, `theme/consumers.py`, `ai_core/views.py`, `ai_core/tests/test_views.py`, `theme/tests/test_chat_*`  
-  - **Acceptance:** No `dev-case-local` fallback, both chat flows and API rely on `RagQueryService`, remaining graph-specific work still outstanding
+  - **Acceptance:** No `dev-case-local` fallback, both chat flows and API rely on `RagQueryService`, graph-specific follow-ups closed
 - [ ] Review later: framework analysis graph convergence (`ai_core/graphs/business/framework_analysis_graph.py`)
 - [x] **Review: RAG Service + Graph Execution integration** – ✅ APPROVED FOR PRODUCTION (2026-01-15). Integration is contract-compliant: `RagQueryService` returns `(state, result)` tuple, `GraphExecutionCommand` wraps only `result` in Response (preserves agentic caller contract), ToolContext propagation works, error handling comprehensive. **Documented technical debt** (non-blocking): (1) State persistence missing in RAG service path (Lines 302-309), (2) Cost tracking disabled (performance trade-off), (3) Test coverage gap for sync path, (4) Unreachable code (Lines 497-515). **Full review**: [`roadmap/rag-service-integration-review.md`](roadmap/rag-service-integration-review.md). **Follow-up issues**: Add state persistence, add sync path test, document cost tracking policy.
 

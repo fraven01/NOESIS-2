@@ -176,7 +176,6 @@ def test_web_search_uses_external_knowledge_graph(mock_submit, tenant_pool):
     state = kwargs["state"]
     # Web Acquisition Graph Input Structure
     assert state["input"]["query"] == "test query"
-    assert state["input"]["mode"] == "search_only"
     assert "collection_id" not in state["input"]  # collection_id is in Context now
 
 

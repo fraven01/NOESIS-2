@@ -486,7 +486,7 @@ def _prepare_request(request: Request):
     This function provides request preparation for AI Core views including:
     - Header validation (tenant, case, key_alias formats)
     - Rate limiting enforcement
-    - Default case bootstrap ("general")
+    - Default case bootstrap ("general") when explicitly requested
     - Case active status check
     - ScopeContext building via normalize_request() (Pre-MVP ID Contract)
     - Request.META enrichment for downstream consumers
@@ -508,6 +508,8 @@ def _prepare_request(request: Request):
         or request.META.get(META_CASE_ID_KEY)
         or ""
     ).strip()
+    if not case_id:
+        case_id = None
     workflow_id = (
         request.headers.get(X_WORKFLOW_ID_HEADER)
         or request.META.get(META_WORKFLOW_ID_KEY)
@@ -622,9 +624,6 @@ def _prepare_request(request: Request):
                 status.HTTP_400_BAD_REQUEST,
             )
 
-    if not case_id:
-        case_id = DEFAULT_CASE_ID
-
     if case_id and not CASE_ID_RE.fullmatch(case_id):
         return None, _error_response(
             "Case header must use the documented format.",
@@ -695,7 +694,10 @@ def _prepare_request(request: Request):
             return None, case_error
 
     request.META[META_TRACE_ID_KEY] = trace_id
-    request.META[META_CASE_ID_KEY] = case_id
+    if case_id:
+        request.META[META_CASE_ID_KEY] = case_id
+    else:
+        request.META.pop(META_CASE_ID_KEY, None)
     request.META[META_TENANT_ID_KEY] = tenant_id
     request.META[META_TENANT_SCHEMA_KEY] = tenant_schema
     if workflow_id:
@@ -841,7 +843,6 @@ INTAKE_CURL = _curl(
             '-H "Content-Type: application/json"',
             '-H "X-Tenant-Schema: acme_prod"',
             '-H "X-Tenant-Id: acme"',
-            '-H "X-Case-Id: crm-7421"',
             '-H "Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a"',
             '-d \'{"prompt": "Erstelle Meeting-Notizen"}\'',
         ]
@@ -939,7 +940,8 @@ RAG_QUERY_SCHEMA = {
     "include_trace_header": True,
     "description": (
         "Execute the production RAG graph. Headers are mapped to a ToolContext and the body is validated "
-        "against the RetrieveInput contract to populate query, filters and related metadata."
+        "against the RetrieveInput contract to populate query, filters and related metadata. "
+        "Business scope headers like X-Case-ID and X-Collection-ID are optional."
     ),
     "examples": [RAG_QUERY_REQUEST_EXAMPLE, RAG_QUERY_RESPONSE_EXAMPLE],
     "extensions": RAG_QUERY_CURL,

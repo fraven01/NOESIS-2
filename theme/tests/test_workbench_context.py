@@ -1,5 +1,11 @@
+from types import SimpleNamespace
+from uuid import uuid4
+
 import pytest
 from django.urls import reverse
+
+from ai_core.tool_contracts import ContextError
+from theme.helpers.context import prepare_workbench_context
 
 
 @pytest.mark.django_db
@@ -45,3 +51,25 @@ class TestWorkbenchContext:
         # Workbench template should render its action headers
         assert "Active Case" in content
         assert "Active Collection" in content
+
+    def test_prepare_workbench_context_with_asgi_scope(self):
+        user_pk = uuid4()
+        scope = {"user": SimpleNamespace(pk=user_pk, is_authenticated=True)}
+
+        context = prepare_workbench_context(
+            scope,
+            tenant_id="tenant-1",
+            tenant_schema="tenant-1",
+            workflow_id="rag-chat-manual",
+            thread_id="thread-1",
+        )
+
+        assert context.scope.tenant_id == "tenant-1"
+        assert context.scope.user_id == str(user_pk)
+        assert context.business.thread_id == "thread-1"
+
+    def test_prepare_workbench_context_requires_tenant_id_for_asgi(self):
+        scope = {"user": SimpleNamespace(pk=uuid4(), is_authenticated=True)}
+
+        with pytest.raises(ContextError):
+            prepare_workbench_context(scope, workflow_id="rag-chat-manual")

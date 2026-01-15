@@ -1,5 +1,5 @@
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -57,6 +57,57 @@ def _dummy_output() -> retrieve.RetrieveOutput:
 def _fake_compose(context: ToolContext, params: compose.ComposeInput):
     assert params.snippets is not None
     return compose.ComposeOutput(answer="answer", prompt_version="v-test")
+
+
+def test_graph_persists_history_with_thread_id() -> None:
+    scope = ScopeContext(
+        tenant_id="tenant-1",
+        trace_id="trace-1",
+        invocation_id=uuid4().hex,
+        run_id=uuid4().hex,
+        service_id="test-worker",
+    )
+    business = BusinessContext(case_id="case-1", thread_id="thread-1")
+    tool_context = scope.to_tool_context(business=business)
+    meta = {"tool_context": tool_context.model_dump(mode="json")}
+
+    history = [
+        {"role": "user", "content": "Prev Q"},
+        {"role": "assistant", "content": "Prev A"},
+    ]
+
+    with patch(
+        "ai_core.graphs.technical.retrieval_augmented_generation.ThreadAwareCheckpointer"
+    ) as mock_checkpointer, patch(
+        "ai_core.graphs.technical.retrieval_augmented_generation._build_compiled_graph"
+    ) as mock_build:
+        mock_checkpointer.return_value.load.return_value = {"chat_history": history}
+        mock_graph = MagicMock()
+        mock_graph.invoke.return_value = {
+            "state": {
+                "question": "Next Q",
+                "chat_history": list(history),
+            },
+            "result": {
+                "answer": "Next A",
+                "prompt_version": "v-test",
+                "retrieval": {},
+                "snippets": [],
+            },
+        }
+        mock_build.return_value = mock_graph
+
+        graph = retrieval_augmented_generation.RetrievalAugmentedGenerationGraph()
+        graph.run({"question": "Next Q"}, meta)
+
+        mock_checkpointer.return_value.load.assert_called_once()
+        mock_graph.invoke.assert_called_once()
+        saved_state = mock_checkpointer.return_value.save.call_args[0][1]
+        saved_history = saved_state["chat_history"]
+
+        assert len(saved_history) == 4
+        assert saved_history[-2]["content"] == "Next Q"
+        assert saved_history[-1]["content"] == "Next A"
 
 
 def test_graph_runs_retrieve_then_compose() -> None:

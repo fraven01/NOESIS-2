@@ -12,12 +12,9 @@ from ai_core.graph.core import GraphContext, ThreadAwareCheckpointer
 from ai_core.tool_contracts import ContextError
 from ai_core.services.rag_query import RagQueryService
 from theme.chat_utils import (
-    append_history,
     build_hybrid_config_from_payload,
     build_snippet_items,
     load_history,
-    resolve_history_limit,
-    trim_history,
 )
 from theme.websocket_payloads import RagChatPayload
 from theme.helpers.context import prepare_workbench_context
@@ -77,7 +74,6 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
             graph_version="v0",
         )
 
-        history_limit = resolve_history_limit()
         history = []
         try:
             stored = await sync_to_async(CHECKPOINTER.load)(graph_context)
@@ -118,19 +114,6 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
         snippet_items = build_snippet_items(snippets)
-
-        append_history(history, role="user", content=message)
-        append_history(history, role="assistant", content=answer)
-        history = trim_history(history, limit=history_limit)
-        try:
-            await sync_to_async(CHECKPOINTER.save)(
-                graph_context, {"chat_history": history}
-            )
-        except Exception:
-            logger.exception(
-                "rag_chat.checkpoint_save_failed",
-                extra={"thread_id": thread_id},
-            )
 
         await self.send_json(
             {

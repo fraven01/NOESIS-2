@@ -265,7 +265,6 @@ def web_search(request):
 
         input_payload = {
             "query": query,
-            "mode": data.get("mode", "search_only"),
             "search_config": {
                 "top_n": top_n,
                 "prefer_pdf": True,

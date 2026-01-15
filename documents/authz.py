@@ -45,6 +45,18 @@ def _user_has_tenant_wide_access(profile: UserProfile, tenant: Tenant | None) ->
     return False
 
 
+def user_has_tenant_wide_access(*, user, tenant: Tenant | None) -> bool:
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    try:
+        profile = user.userprofile
+    except UserProfile.DoesNotExist:
+        return False
+    if not profile.is_active:
+        return False
+    return _user_has_tenant_wide_access(profile, tenant)
+
+
 class DocumentAuthzService:
     """Document-level authorization."""
 

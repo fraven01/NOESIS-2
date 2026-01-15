@@ -37,6 +37,9 @@ from common.constants import (
     X_TENANT_ID_HEADER,
     X_TRACE_ID_HEADER,
 )
+from cases.models import Case, CaseMembership
+from customers.tenant_context import TenantContext
+from documents.models import DocumentCollection
 from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import FetchMetadata, FetchResult, FetchStatus, FetchTelemetry
 from crawler.frontier import FrontierAction
@@ -124,7 +127,112 @@ def test_v1_ping_does_not_require_authorization(
 
 
 @pytest.mark.django_db
-def test_missing_case_header_defaults_case_id(
+def test_collections_listing_endpoint_filters_by_case_membership(
+    authenticated_client, test_tenant_schema_name
+):
+    user = UserFactory()
+    authenticated_client.force_login(user)
+
+    tenant = TenantContext.resolve_identifier(test_tenant_schema_name, allow_pk=True)
+    case_allowed = Case.objects.create(
+        tenant=tenant, external_id="case-allowed", title="Allowed"
+    )
+    case_denied = Case.objects.create(
+        tenant=tenant, external_id="case-denied", title="Denied"
+    )
+    CaseMembership.objects.create(case=case_allowed, user=user, granted_by=user)
+
+    DocumentCollection.objects.create(
+        tenant=tenant,
+        case=case_allowed,
+        name="Allowed Collection",
+        key="allowed",
+        collection_id=uuid.uuid4(),
+    )
+    DocumentCollection.objects.create(
+        tenant=tenant,
+        case=case_denied,
+        name="Denied Collection",
+        key="denied",
+        collection_id=uuid.uuid4(),
+    )
+
+    response = authenticated_client.get(
+        "/v1/collections/",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["case"]["external_id"] == "case-allowed"
+
+    response = authenticated_client.get(
+        "/v1/collections/?case_id=case-allowed",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["case"]["external_id"] == "case-allowed"
+
+
+@pytest.mark.django_db
+def test_cases_listing_endpoint(authenticated_client, test_tenant_schema_name):
+    user = UserFactory()
+    authenticated_client.force_login(user)
+
+    tenant = TenantContext.resolve_identifier(test_tenant_schema_name, allow_pk=True)
+    case_open = Case.objects.create(
+        tenant=tenant,
+        external_id="case-open",
+        title="Open Case",
+        status=Case.Status.OPEN,
+    )
+    case_closed = Case.objects.create(
+        tenant=tenant,
+        external_id="case-closed",
+        title="Closed Case",
+        status=Case.Status.CLOSED,
+    )
+    CaseMembership.objects.create(case=case_open, user=user, granted_by=user)
+    CaseMembership.objects.create(case=case_closed, user=user, granted_by=user)
+
+    response = authenticated_client.get(
+        "/cases/",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    external_ids = {entry["external_id"] for entry in payload}
+    assert external_ids == {"case-open", "case-closed"}
+
+    response = authenticated_client.get(
+        "/cases/?status=open",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [entry["external_id"] for entry in payload] == ["case-open"]
+
+
+@pytest.mark.django_db
+def test_missing_case_header_allows_null_case_id(
     authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
@@ -137,7 +245,7 @@ def test_missing_case_header_defaults_case_id(
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["tenant_id"] == test_tenant_schema_name
-    assert payload["case_id"] == "general"
+    assert payload["case_id"] is None
 
 
 @pytest.mark.django_db
@@ -1092,6 +1200,228 @@ def test_rag_query_endpoint_uses_service_scope_data(
     tool_context = captured["tool_context"]
     assert isinstance(tool_context, ToolContext)
     assert tool_context.business.case_id == "scope-test-case"
+
+
+@pytest.mark.django_db
+def test_rag_query_endpoint_allows_global_scope_without_case(
+    authenticated_client,
+    monkeypatch,
+    test_tenant_schema_name,
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            return None
+
+    monkeypatch.setattr(views, "CHECKPOINTER", DummyCheckpointer())
+
+    captured: dict[str, object] = {}
+
+    def fake_execute(
+        self,
+        *,
+        tool_context,
+        question,
+        hybrid=None,
+        chat_history=None,
+        graph_state=None,
+    ):
+        captured["tool_context"] = tool_context
+        return (
+            dict(graph_state or {}),
+            {
+                "answer": "ok",
+                "prompt_version": "v1",
+                "retrieval": {
+                    "alpha": 0.5,
+                    "min_sim": 0.1,
+                    "top_k_effective": 1,
+                    "matches_returned": 0,
+                    "max_candidates_effective": 1,
+                    "vector_candidates": 0,
+                    "lexical_candidates": 0,
+                    "deleted_matches_blocked": 0,
+                    "visibility_effective": "active",
+                    "took_ms": 1,
+                    "routing": {
+                        "profile": "standard",
+                        "vector_space_id": "rag/standard@v1",
+                    },
+                },
+                "snippets": [],
+            },
+        )
+
+    monkeypatch.setattr(RagQueryService, "execute", fake_execute)
+
+    response = authenticated_client.post(
+        "/v1/ai/rag/query/",
+        data={"question": "global scope", "hybrid": {"alpha": 0.9}},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+        },
+    )
+
+    assert response.status_code == 200
+    tool_context = captured["tool_context"]
+    assert isinstance(tool_context, ToolContext)
+    assert tool_context.business.case_id is None
+
+
+@pytest.mark.django_db
+def test_rag_query_api_case_scope(
+    authenticated_client,
+    monkeypatch,
+    test_tenant_schema_name,
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            return None
+
+    monkeypatch.setattr(views, "CHECKPOINTER", DummyCheckpointer())
+
+    captured: dict[str, object] = {}
+
+    def fake_execute(
+        self,
+        *,
+        tool_context,
+        question,
+        hybrid=None,
+        chat_history=None,
+        graph_state=None,
+    ):
+        captured["tool_context"] = tool_context
+        return (
+            dict(graph_state or {}),
+            {
+                "answer": "ok",
+                "prompt_version": "v1",
+                "retrieval": {
+                    "alpha": 0.5,
+                    "min_sim": 0.1,
+                    "top_k_effective": 1,
+                    "matches_returned": 0,
+                    "max_candidates_effective": 1,
+                    "vector_candidates": 0,
+                    "lexical_candidates": 0,
+                    "deleted_matches_blocked": 0,
+                    "visibility_effective": "active",
+                    "took_ms": 1,
+                    "routing": {
+                        "profile": "standard",
+                        "vector_space_id": "rag/standard@v1",
+                    },
+                },
+                "snippets": [],
+            },
+        )
+
+    monkeypatch.setattr(RagQueryService, "execute", fake_execute)
+
+    response = authenticated_client.post(
+        "/v1/ai/rag/query/",
+        data={"question": "case scope", "hybrid": {"alpha": 0.5}},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-scope",
+        },
+    )
+
+    assert response.status_code == 200
+    tool_context = captured["tool_context"]
+    assert tool_context.business.case_id == "case-scope"
+    assert tool_context.business.collection_id is None
+
+
+@pytest.mark.django_db
+def test_rag_query_api_collection_scope(
+    authenticated_client,
+    monkeypatch,
+    test_tenant_schema_name,
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            return None
+
+    monkeypatch.setattr(views, "CHECKPOINTER", DummyCheckpointer())
+
+    captured: dict[str, object] = {}
+
+    def fake_execute(
+        self,
+        *,
+        tool_context,
+        question,
+        hybrid=None,
+        chat_history=None,
+        graph_state=None,
+    ):
+        captured["tool_context"] = tool_context
+        return (
+            dict(graph_state or {}),
+            {
+                "answer": "ok",
+                "prompt_version": "v1",
+                "retrieval": {
+                    "alpha": 0.5,
+                    "min_sim": 0.1,
+                    "top_k_effective": 1,
+                    "matches_returned": 0,
+                    "max_candidates_effective": 1,
+                    "vector_candidates": 0,
+                    "lexical_candidates": 0,
+                    "deleted_matches_blocked": 0,
+                    "visibility_effective": "active",
+                    "took_ms": 1,
+                    "routing": {
+                        "profile": "standard",
+                        "vector_space_id": "rag/standard@v1",
+                    },
+                },
+                "snippets": [],
+            },
+        )
+
+    monkeypatch.setattr(RagQueryService, "execute", fake_execute)
+
+    collection_id = str(uuid.uuid4())
+    response = authenticated_client.post(
+        "/v1/ai/rag/query/",
+        data={"question": "collection scope", "hybrid": {"alpha": 0.5}},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_COLLECTION_ID_KEY: collection_id,
+        },
+    )
+
+    assert response.status_code == 200
+    tool_context = captured["tool_context"]
+    assert tool_context.business.collection_id == collection_id
+    assert tool_context.business.case_id is None
 
 
 @pytest.mark.django_db

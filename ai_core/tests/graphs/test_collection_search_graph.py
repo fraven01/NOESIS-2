@@ -564,6 +564,91 @@ class TestCollectionSearchGraph:
         assert "https://added.com" in urls
         assert "https://docs.acme.test/admin" in urls
 
+    def test_auto_ingest_triggers_crawler(self, cs_module) -> None:
+        """Test that auto_ingest triggers crawler without HITL approval."""
+        cs_module.cosine_similarity.return_value = 0.8
+        cs_module.calculate_generic_heuristics.return_value = 0.5
+
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+            SearchResult,
+        )
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request):
+                return cs_module.SearchStrategy(
+                    queries=["q"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class StubWebSearchWorker:
+            def run(self, *, query, context) -> WebSearchResponse:
+                results = [
+                    SearchResult(
+                        url="https://docs.acme.test/admin",
+                        title="Admin Guide",
+                        snippet="How to administer the platform",
+                        source="acme",
+                        score=0.9,
+                        is_pdf=False,
+                    ),
+                ]
+                return WebSearchResponse(
+                    results=results,
+                    outcome=ToolOutcome(decision="ok", rationale="none", meta={}),
+                )
+
+        class AutoIngestHybridExecutor:
+            def run(self, *, scoring_context, candidates, tenant_context):
+                result = MagicMock()
+                ranked = [
+                    {"url": "https://docs.acme.test/admin", "score": 95.0},
+                    {"url": "https://docs.acme.test/ignore", "score": 40.0},
+                ]
+                result.model_dump.return_value = {"ranked": ranked}
+                return result
+
+        class LocalStubHitlGateway:
+            def present(self, payload):
+                return None
+
+        cs_module.select_auto_ingest_urls.return_value = [
+            "https://docs.acme.test/admin"
+        ]
+
+        mock_crawler_manager = MagicMock()
+        mock_crawler_manager.dispatch_crawl_request.return_value = {
+            "count": 1,
+            "run_id": "auto-ingest-run",
+        }
+
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": StubWebSearchWorker(),
+            "runtime_hybrid_executor": AutoIngestHybridExecutor(),
+            "runtime_hitl_gateway": LocalStubHitlGateway(),
+            "runtime_coverage_verifier": MagicMock(),
+            "runtime_crawler_manager": mock_crawler_manager,
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        initial_state = self._initial_state()
+        initial_state["input"]["auto_ingest"] = True
+        initial_state["input"]["auto_ingest_top_k"] = 1
+        initial_state["input"]["auto_ingest_min_score"] = 60.0
+
+        meta = self._tool_context_meta()
+        _, result = graph_adapter.run(initial_state, meta=meta)
+
+        assert result["ingestion"]["status"] == "triggered"
+        assert result["ingestion"]["task_info"]["run_id"] == "auto-ingest-run"
+        mock_crawler_manager.dispatch_crawl_request.assert_called_once()
+
     def test_boundary_validation_rejects_missing_schema_id(self, cs_module) -> None:
         """Test that missing schema_id raises InvalidGraphInput."""
         CollectionSearchAdapter = cs_module.CollectionSearchAdapter

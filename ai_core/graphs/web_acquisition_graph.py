@@ -22,7 +22,6 @@ from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import observe_span
 from ai_core.tools.shared_workers import get_web_search_worker
 from ai_core.tool_contracts import ToolContext
-from ai_core.services.web_acquisition_selection import select_search_candidates
 from ai_core.tools.web_search import (
     SearchProviderError,
     WebSearchResponse,
@@ -45,7 +44,6 @@ class WebAcquisitionInputModel(BaseModel):
     query: str | None = None
     search_config: dict[str, Any] | None = None
     preselected_results: list[dict[str, Any]] | None = None
-    mode: Literal["search_only", "select_best"] | None = None
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -96,8 +94,6 @@ class WebAcquisitionInput(TypedDict):
     search_config: dict[str, Any] | None
     # Optional preselected results to bypass search (e.g. from UI)
     preselected_results: list[dict[str, Any]] | None
-    # Mode: 'search_only' (default) or 'select_best'
-    mode: Literal["search_only", "select_best"] | None
 
 
 class WebAcquisitionOutput(TypedDict):
@@ -296,23 +292,6 @@ def search_node(state: WebAcquisitionState, config: RunnableConfig) -> dict[str,
     return {"search_results": results}
 
 
-@observe_span(name="node.select")
-def select_node(state: WebAcquisitionState) -> dict[str, Any]:
-    """Filter and select best candidate."""
-    if state.get("error"):
-        return {}
-
-    results = state.get("search_results", [])
-    inp = state.get("input", {})
-    shortlisted, selected = select_search_candidates(
-        results=results,
-        preselected_results=inp.get("preselected_results"),
-        search_config=inp.get("search_config"),
-    )
-
-    return {"selected_result": selected, "search_results": shortlisted}
-
-
 @observe_span(name="node.finalize")
 def finalize_node(state: WebAcquisitionState) -> dict[str, Any]:
     """Build final output."""
@@ -363,7 +342,6 @@ def build_web_acquisition_graph() -> StateGraph:
 
     workflow.add_node("validate_input", validate_input_node)
     workflow.add_node("search", search_node)
-    workflow.add_node("select", select_node)
     workflow.add_node("finalize", finalize_node)
 
     workflow.add_edge(START, "validate_input")
@@ -375,16 +353,7 @@ def build_web_acquisition_graph() -> StateGraph:
 
     workflow.add_conditional_edges("validate_input", check_error)
 
-    def check_mode(state: WebAcquisitionState) -> str:
-        if state.get("error"):
-            return "finalize"
-        mode = state.get("input", {}).get("mode", "search_only")
-        if mode == "select_best":
-            return "select"
-        return "finalize"
-
-    workflow.add_conditional_edges("search", check_mode)
-    workflow.add_edge("select", "finalize")
+    workflow.add_edge("search", "finalize")
     workflow.add_edge("finalize", END)
 
     graph = workflow.compile()
