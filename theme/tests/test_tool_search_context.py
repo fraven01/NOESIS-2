@@ -2,16 +2,20 @@ import pytest
 import uuid
 from django.urls import reverse
 
+from cases.models import CaseMembership
 from cases.tests.factories import CaseFactory
 from customers.models import Tenant
 from documents.models import DocumentCollection
 
 
 @pytest.mark.django_db
-def test_tool_chat_context_includes_collections(auth_client, test_tenant_schema_name):
+def test_tool_chat_context_includes_collections(
+    auth_client, test_tenant_schema_name, user
+):
     """Verify tool_chat view provides collection_options and active_collection context."""
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
     case = CaseFactory(title="Chat Case", tenant=tenant)
+    CaseMembership.objects.create(case=case, user=user, granted_by=user)
     col1 = DocumentCollection.objects.create(
         name="Chat Collection",
         case=case,
@@ -22,7 +26,7 @@ def test_tool_chat_context_includes_collections(auth_client, test_tenant_schema_
 
     session = auth_client.session
     session["rag_active_collection_id"] = str(col1.collection_id)
-    session["rag_active_case_id"] = str(case.id)
+    session["rag_active_case_id"] = str(case.external_id)
     session.save()
 
     url = reverse("tool-chat")
@@ -36,11 +40,14 @@ def test_tool_chat_context_includes_collections(auth_client, test_tenant_schema_
         for o in response.context["collection_options"]
     )
     assert response.context["active_collection_id"] == str(col1.collection_id)
-    assert response.context["case_id"] == str(case.id)
+    assert response.context["case_id"] == str(case.external_id)
+    assert any(
+        c["id"] == str(case.external_id) for c in response.context["case_options"]
+    )
 
     content = response.content.decode()
     assert "Chat Collection" in content
-    assert f'value="{str(case.id)}"' in content
+    assert f'value="{str(case.external_id)}"' in content
     assert 'name="chat_scope"' in content
 
 

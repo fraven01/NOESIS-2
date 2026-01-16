@@ -483,11 +483,14 @@ def tool_chat(request):
         tenant_schema = scope.tenant_schema or tenant_id
 
     collection_options: list[dict[str, str]] = []
+    case_options: list[dict[str, str]] = []
     if tenant_schema:
         try:
+            from customers.tenant_context import TenantContext
             from django_tenants.utils import schema_context
             from documents.models import DocumentCollection
 
+            tenant_obj = TenantContext.resolve_identifier(tenant_schema, allow_pk=True)
             with schema_context(tenant_schema):
                 collections = (
                     DocumentCollection.objects.select_related("case")
@@ -509,6 +512,25 @@ def tool_chat(request):
                             "label": label,
                         }
                     )
+
+                if tenant_obj is not None:
+                    from cases.authz import get_accessible_cases_queryset
+
+                    cases = (
+                        get_accessible_cases_queryset(request.user, tenant_obj)
+                        .order_by("created_at")
+                        .all()
+                    )
+                    for case in cases:
+                        label = case.title or case.external_id
+                        if case.external_id and case.title:
+                            label = f"{case.title} ({case.external_id})"
+                        case_options.append(
+                            {
+                                "id": str(case.external_id),
+                                "label": label,
+                            }
+                        )
         except Exception:
             logger.exception("tool_chat.collection_options_failed")
 
@@ -530,5 +552,6 @@ def tool_chat(request):
             "collection_options": collection_options,
             "active_collection_id": active_collection_id,
             "chat_scope": chat_scope,
+            "case_options": case_options,
         },
     )

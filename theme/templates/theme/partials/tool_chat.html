@@ -83,26 +83,16 @@
 
                                 <span class="text-slate-300">|</span>
 
-                                <!-- Case Select (Simplified, assumes we only have ID context or Global) -->
-                                <div class="relative">
-                                    <!-- Note: Full Case options are not currently passed to tool_chat to save query overhead. 
-                                          If needed, we can fetch them. For now, showing current ID or All. 
-                                          We'll use a simple input/display or a select if options were available. 
-                                          Given user request, let's allow entering a case ID or clearing it, essentially. 
-                                          Or rely on global context for Case switching and local for Collection.
-                                          Wait, user asked for "selecting created Collections OR Cases".
-                                          We have collection_options. We don't have case_options here yet.
-                                          Using a text input for Case ID fallback or just displaying it if set.
-                                          Ideally we'd have case_options too. Let's stick to Collection dropdown + Case ID display for now 
-                                          unless I fetch case options too.
-                                          Actually, let's keep Case ID as hidden/display for now to avoid perf hit, 
-                                          but Collection is the main request. 
-                                     -->
-                                    <input type="text" name="case_id" value="{{ case_id|default:'' }}"
-                                        placeholder="All Cases"
-                                        class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500 py-1 px-2 w-24"
-                                        title="Case ID (Leave empty for Global)">
-                                </div>
+                                <!-- Case Select -->
+                                <select name="case_id"
+                                    class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500 py-1 pl-2 pr-8 max-w-[150px]">
+                                    <option value="">All Cases</option>
+                                    {% for c in case_options %}
+                                    <option value="{{ c.id }}" {% if c.id == active_case_id %}selected{% endif %}>
+                                        {{ c.label|truncatechars:20 }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
                             </div>
                         </div>
                         <p class="text-xs text-slate-400">Press Enter to send, Shift + Enter for new line</p>
