@@ -5,12 +5,13 @@ from typing import Any, Dict, List
 
 import pytest
 
-from ai_core import tasks
+from ai_core.tasks import ingestion_tasks as tasks
+from ai_core.tasks.helpers import embedding as embedding_helpers
 from ai_core.rag.embeddings import EmbeddingBatchResult
 
 
 def _wrap_observed_span(monkeypatch, calls: List[str]) -> None:
-    metrics_cls = tasks._EmbedSpanMetrics
+    metrics_cls = embedding_helpers._EmbedSpanMetrics
 
     def recorder(name: str):  # noqa: D401 - simple proxy to record span names
         calls.append(name)
@@ -92,6 +93,9 @@ def test_embed_emits_span_metadata(monkeypatch):
         metadata_calls.append(kwargs)
 
     monkeypatch.setattr(tasks, "update_observation", fake_update_observation)
+    monkeypatch.setattr(
+        embedding_helpers, "update_observation", fake_update_observation
+    )
 
     cost_calls: List[tuple[str, int]] = []
 
@@ -103,7 +107,7 @@ def test_embed_emits_span_metadata(monkeypatch):
 
     monkeypatch.setattr("ai_core.infra.observability.tracing_enabled", lambda: False)
 
-    result = tasks.embed(meta, "chunks.json")
+    result = tasks.embed(meta, "chunks.json")["data"]
 
     assert "vectors-" in result["path"] and result["path"].endswith(".json")
     assert written["payload"]["chunks"]
@@ -197,6 +201,9 @@ def test_embed_error_updates_observation(monkeypatch):
         metadata_calls.append(kwargs)
 
     monkeypatch.setattr(tasks, "update_observation", fake_update_observation)
+    monkeypatch.setattr(
+        embedding_helpers, "update_observation", fake_update_observation
+    )
 
     monkeypatch.setattr("ai_core.infra.observability.tracing_enabled", lambda: False)
 

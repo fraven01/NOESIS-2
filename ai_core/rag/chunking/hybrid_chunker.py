@@ -42,6 +42,9 @@ class ChunkerConfig:
     agentic_chunk_model: str = "agentic-chunk"  # MODEL_ROUTING.yaml label
     enable_quality_metrics: bool = True
     quality_model: str = "quality-eval"  # MODEL_ROUTING.yaml label
+    quality_max_workers: int = 8  # Parallel workers for quality evaluation
+    quality_sample_rate: float = 1.0  # Evaluate all chunks (0.0-1.0)
+    quality_timeout: int = 60  # Timeout per chunk evaluation (seconds)
     max_chunk_tokens: int = 450
     overlap_tokens: int = 80
     similarity_threshold: float = 0.7
@@ -68,6 +71,9 @@ def get_default_chunker_config() -> ChunkerConfig:
         ),
         enable_quality_metrics=getattr(settings, "RAG_ENABLE_QUALITY_METRICS", True),
         quality_model=getattr(settings, "RAG_QUALITY_EVAL_MODEL", "quality-eval"),
+        quality_max_workers=getattr(settings, "RAG_QUALITY_MAX_WORKERS", 8),
+        quality_sample_rate=getattr(settings, "RAG_QUALITY_SAMPLE_RATE", 1.0),
+        quality_timeout=getattr(settings, "RAG_QUALITY_TIMEOUT", 60),
         max_chunk_tokens=getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450),
         overlap_tokens=getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 80),
         # Phase 2: SOTA Embedding-based Similarity
@@ -207,6 +213,9 @@ class HybridChunker:
 
             self.quality_evaluator = ChunkQualityEvaluator(
                 model=config.quality_model,
+                max_workers=config.quality_max_workers,
+                sample_rate=config.quality_sample_rate,
+                timeout=config.quality_timeout,
             )
         else:
             self.quality_evaluator = None

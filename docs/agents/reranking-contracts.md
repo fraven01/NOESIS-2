@@ -6,7 +6,7 @@ ergänzen die bestehenden Tool-Kontexte.
 ## ScoringContext Transport
 
 `ScoringContext` wird vom Web-Service oder dem aufrufenden Agenten als
-JSON-kodiertes Objekt über `ToolContext.meta["scoring_context"]` an den Worker
+JSON-kodiertes Objekt über `ToolContext.metadata["scoring_context"]` an den Worker
 übergeben. Dadurch bleibt `ToolContext` selbst unverändert, während die
 Reranking-spezifischen Signale typisiert vorliegen.
 

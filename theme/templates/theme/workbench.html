@@ -20,7 +20,7 @@
         this.activeTab = tab;
         window.location.hash = tab;
     }
-}">
+}" hx-headers='{"X-Tenant-ID": "{{ tenant_id }}", "X-Tenant-Schema": "{{ tenant_schema }}", "X-Case-ID": "{{ case_id|default:'' }}"}'>
 
     <!-- Sidebar Navigation -->
     <aside class="w-72 bg-white border-r border-slate-200 flex flex-col shadow-xl z-20 relative">
@@ -33,7 +33,7 @@
                     </svg>
                 </div>
                 <span
-                    class="bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">Workbench</span>
+                    class="bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">RAG Developer Workbench</span>
             </h2>
             <p class="text-xs font-medium text-slate-400 mt-2 ml-1 uppercase tracking-wider">RAG Command Center</p>
         </div>
@@ -148,20 +148,51 @@
 
         <!-- Context Info -->
         <div class="p-4 border-t border-slate-200 bg-slate-50/50 backdrop-blur-sm">
-            <div class="bg-white rounded-lg border border-slate-200 p-3 shadow-sm space-y-2">
-                <div class="flex justify-between items-center text-xs">
+            <div class="bg-white rounded-lg border border-slate-200 p-3 shadow-sm space-y-3">
+                <div class="flex justify-between items-center text-xs border-b border-slate-100 pb-2">
                     <span class="text-slate-500 font-medium">Tenant</span>
                     <span class="font-mono text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">{{ tenant_id }}</span>
                 </div>
-                <div class="flex justify-between items-center text-xs">
-                    <span class="text-slate-500 font-medium">Schema</span>
-                    <span class="font-mono text-slate-700">{{ tenant_schema }}</span>
-                </div>
-                <div class="flex justify-between items-center text-xs">
-                    <span class="text-slate-500 font-medium">Case ID</span>
-                    <span class="font-mono text-slate-700 truncate max-w-[100px]" title="{{ case_id }}">{{
-                        case_id|default:"-" }}</span>
-                </div>
+
+                <!-- Global Context Form -->
+                <form hx-post="{% url 'rag_tools_set_context' %}" hx-trigger="change" class="space-y-3">
+                    {% csrf_token %}
+
+                    <!-- Active Case -->
+                    <div class="space-y-1">
+                        <label for="ctx-case"
+                            class="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Active
+                            Case</label>
+                        <select id="ctx-case" name="case_id"
+                            class="block w-full rounded border-slate-300 py-1 pl-2 pr-8 text-xs focus:border-indigo-500 focus:ring-indigo-500 text-slate-700">
+                            <option value="">-- All Cases / Global --</option>
+                            {% for c in case_options %}
+                            <option value="{{ c.id }}" {% if c.id == active_case_id %}selected{% endif %}>
+                                {{ c.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- Active Collection -->
+                    <div class="space-y-1">
+                        <label for="ctx-col"
+                            class="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Active
+                            Collection</label>
+                        <div class="flex gap-1">
+                            <select id="ctx-col" name="collection_id"
+                                class="block w-full rounded border-slate-300 py-1 pl-2 pr-8 text-xs focus:border-indigo-500 focus:ring-indigo-500 text-slate-700">
+                                <option value="">-- All Collections --</option>
+                                {% for col in collection_options %}
+                                <option value="{{ col }}" {% if col == active_collection_id %}selected{% endif %}>
+                                    {{ col }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                </form>
+
             </div>
         </div>
     </aside>
@@ -169,6 +200,7 @@
     <!-- Main Content Area -->
     <main class="flex-1 flex flex-col overflow-hidden bg-slate-50 relative">
         <!-- Top Header -->
+
         <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shadow-sm z-10">
             <div class="flex items-center gap-4">
                 <nav class="flex" aria-label="Breadcrumb">
@@ -211,12 +243,17 @@
                 <form action="{% url 'rag_tools_identity_switch' %}" method="post" class="flex items-center gap-2">
                     {% csrf_token %}
                     <input type="hidden" name="active_tab" :value="activeTab">
-                    <label for="identity-switch" class="text-xs font-medium text-slate-500">Acting As:</label>
+                    <!-- Persist context on reload -->
+                    <input type="hidden" name="collection_id" value="{{ active_collection_id|default:'' }}">
+                    <input type="hidden" name="case_id" value="{{ active_case_id|default:'' }}">
+                    <label for="identity-switch" class="text-xs font-medium text-slate-500">Acting
+                        As:</label>
                     <div class="flex flex-col">
                         <select name="user_id" id="identity-switch" onchange="this.form.submit()"
                             class="block w-40 rounded border-slate-300 py-1 pl-2 pr-8 text-xs focus:border-indigo-500 focus:ring-indigo-500 {% if request.is_simulated_user %}bg-amber-50 text-amber-900 border-amber-300 font-semibold{% endif %}">
                             <option value="">-- Real User --</option>
-                            <option value="anonymous" {% if not request.user.is_authenticated and not request.is_simulated_user %}selected{% endif %}>Anonymous</option>
+                            <option value="anonymous"
+                                {% if not request.user.is_authenticated and not request.is_simulated_user %}selected{% endif %}>Anonymous</option>
                             <optgroup label="Simulated Persons">
                                 {% for u in simulated_users %}
                                 <option value="{{ u.pk }}" {% if u.pk|stringformat:"s" == current_simulated_user_id|stringformat:"s" %}selected{% endif %}>
@@ -226,7 +263,8 @@
                             </optgroup>
                         </select>
                         {% if request.is_simulated_user %}
-                        <span class="text-[10px] text-amber-700 text-right font-medium leading-none mt-0.5">Role: {{
+                        <span class="text-[10px] text-amber-700 text-right font-medium leading-none mt-0.5">Role:
+                            {{
                             request.user.profile.role|default:"User" }}</span>
                         {% endif %}
                     </div>
@@ -262,4 +300,281 @@
     </main>
 
 </div>
+<script>
+    (() => {
+        const initRagChat = (root) => {
+            const container = (root || document).querySelector("[data-rag-chat-root]");
+            if (!container) return;
+            if (container.dataset.ragChatInit === "true") return;
+            container.dataset.ragChatInit = "true";
+
+            const form = container.querySelector("[data-rag-chat-form]");
+            if (!form) return;
+            const chatHistory = container.querySelector("#chat-history");
+            const messageInput = form.querySelector("textarea[name='message']");
+            const caseInput = form.querySelector("input[name='case_id']");
+            const threadInput = form.querySelector("input[name='thread_id']");
+            const tenantInput = form.querySelector("input[name='tenant_id']");
+            const tenantSchemaInput = form.querySelector("input[name='tenant_schema']");
+            const collectionSelect = form.querySelector("select[name='collection_id']");
+            const globalSearchInput = form.querySelector("input[name='global_search']");
+            const submitButton = form.querySelector("button[type='submit']");
+            const threadReset = container.querySelector("#chat-thread-reset");
+
+            const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+            const tenantHint = (tenantSchemaInput && tenantSchemaInput.value)
+                ? tenantSchemaInput.value
+                : (tenantInput ? tenantInput.value : "");
+            const tenantQuery = tenantHint
+                ? `?tenant_schema=${encodeURIComponent(tenantHint)}`
+                : "";
+            const wsUrl = `${scheme}://${window.location.host}/ws/rag-tools/chat/${tenantQuery}`;
+
+            if (window.__ragChatSocket) {
+                try {
+                    window.__ragChatSocket.close();
+                } catch (err) {
+                    // ignore
+                }
+            }
+            const setHtmxDisabled = (disabled) => {
+                if (!form) return;
+                if (disabled) {
+                    form.setAttribute("hx-disable", "true");
+                } else {
+                    form.removeAttribute("hx-disable");
+                }
+            };
+
+            const socket = new WebSocket(wsUrl);
+            window.__ragChatSocket = socket;
+
+            let activeAssistant = null;
+
+            const scrollToBottom = () => {
+                if (!chatHistory) return;
+                chatHistory.scrollTop = chatHistory.scrollHeight;
+            };
+
+            const setPending = (pending) => {
+                if (!submitButton || !messageInput) return;
+                submitButton.disabled = pending;
+                messageInput.disabled = pending;
+            };
+
+            const appendUserMessage = (text) => {
+                const wrapper = document.createElement("div");
+                wrapper.className = "flex items-start gap-4 justify-end";
+                wrapper.innerHTML = `
+                    <div class="bg-indigo-600 p-4 rounded-2xl rounded-tr-none shadow-sm text-sm text-white max-w-[80%]">
+                        <p></p>
+                    </div>
+                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold text-xs">You</div>
+                `;
+                const textNode = wrapper.querySelector("p");
+                if (textNode) textNode.textContent = text;
+                chatHistory.appendChild(wrapper);
+                scrollToBottom();
+            };
+
+            const appendAssistantMessage = () => {
+                const wrapper = document.createElement("div");
+                wrapper.className = "flex items-start gap-4";
+                wrapper.innerHTML = `
+                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">AI</div>
+                    <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100 text-sm text-slate-700 max-w-[80%] space-y-2">
+                        <div class="prose prose-sm max-w-none text-slate-700">
+                            <span class="rag-answer"></span>
+                        </div>
+                        <div class="rag-snippets hidden mt-2 pt-2 border-t border-slate-100">
+                            <p class="text-xs font-semibold text-slate-500 mb-1">Sources:</p>
+                            <ul class="space-y-1"></ul>
+                        </div>
+                    </div>
+                `;
+                chatHistory.appendChild(wrapper);
+                scrollToBottom();
+                return {
+                    wrapper,
+                    answer: wrapper.querySelector(".rag-answer"),
+                    snippets: wrapper.querySelector(".rag-snippets"),
+                };
+            };
+
+            const appendErrorMessage = (text) => {
+                const wrapper = document.createElement("div");
+                wrapper.className = "flex items-start gap-4";
+                wrapper.innerHTML = `
+                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-red-100 flex items-center justify-center text-red-700 font-bold text-xs">ERR</div>
+                    <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-red-100 text-sm text-red-600 max-w-[80%]">
+                        <p></p>
+                    </div>
+                `;
+                const textNode = wrapper.querySelector("p");
+                if (textNode) textNode.textContent = text;
+                chatHistory.appendChild(wrapper);
+                scrollToBottom();
+            };
+
+            const resetChatHistory = () => {
+                if (!chatHistory) return;
+                chatHistory.innerHTML = "";
+                const welcome = document.createElement("div");
+                welcome.className = "flex items-start gap-4";
+                welcome.innerHTML = `
+                    <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">AI</div>
+                    <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100 text-sm text-slate-700 max-w-[80%]">
+                        <p>Hello! I'm your RAG assistant. How can I help you analyze your documents today?</p>
+                    </div>
+                `;
+                chatHistory.appendChild(welcome);
+                scrollToBottom();
+            };
+
+            const newThreadId = () => {
+                if (crypto?.randomUUID) {
+                    return crypto.randomUUID();
+                }
+                const random = Math.random().toString(16).slice(2);
+                return `thread-${Date.now().toString(16)}-${random}`;
+            };
+
+            if (threadReset) {
+                threadReset.addEventListener("click", () => {
+                    if (threadInput) {
+                        threadInput.value = newThreadId();
+                    }
+                    resetChatHistory();
+                });
+            }
+
+            const renderSnippets = (snippetsContainer, snippets) => {
+                if (!snippetsContainer) return;
+                const list = snippetsContainer.querySelector("ul");
+                if (!list) return;
+                list.innerHTML = "";
+                if (!Array.isArray(snippets) || snippets.length === 0) {
+                    snippetsContainer.classList.add("hidden");
+                    return;
+                }
+                snippetsContainer.classList.remove("hidden");
+                snippets.forEach((snippet) => {
+                    const item = document.createElement("li");
+                    item.className = "text-xs text-slate-400 truncate";
+                    const source = snippet.source || "Unknown";
+                    const score = snippet.score_percent ?? 0;
+                    item.title = snippet.title || source;
+                    if (snippet.download_url) {
+                        const link = document.createElement("a");
+                        link.className = "hover:text-indigo-600 underline";
+                        link.href = snippet.download_url;
+                        link.target = "_blank";
+                        link.textContent = source;
+                        item.textContent = "- ";
+                        item.appendChild(link);
+                        item.appendChild(
+                            document.createTextNode(` (${score}%)`)
+                        );
+                    } else {
+                        item.textContent = `- ${source} (${score}%)`;
+                    }
+                    list.appendChild(item);
+                });
+            };
+
+            socket.addEventListener("open", () => {
+                setHtmxDisabled(true);
+            });
+
+            socket.addEventListener("close", () => {
+                setHtmxDisabled(false);
+            });
+
+            socket.addEventListener("error", () => {
+                setHtmxDisabled(false);
+            });
+
+            socket.addEventListener("message", (event) => {
+                let payload = null;
+                try {
+                    payload = JSON.parse(event.data);
+                } catch (err) {
+                    return;
+                }
+                if (!payload || !payload.event) return;
+
+                if (payload.event === "delta") {
+                    if (!activeAssistant) {
+                        activeAssistant = appendAssistantMessage();
+                    }
+                    if (activeAssistant.answer) {
+                        activeAssistant.answer.textContent += payload.text || "";
+                    }
+                    scrollToBottom();
+                    return;
+                }
+
+                if (payload.event === "final") {
+                    if (!activeAssistant) {
+                        activeAssistant = appendAssistantMessage();
+                    }
+                    if (activeAssistant.answer) {
+                        activeAssistant.answer.textContent = payload.answer || "";
+                    }
+                    renderSnippets(activeAssistant.snippets, payload.snippets);
+                    if (threadInput && payload.thread_id) {
+                        threadInput.value = payload.thread_id;
+                    }
+                    activeAssistant = null;
+                    setPending(false);
+                    scrollToBottom();
+                    return;
+                }
+
+                if (payload.event === "error") {
+                    appendErrorMessage(payload.error || "Streaming error.");
+                    activeAssistant = null;
+                    setPending(false);
+                }
+            });
+
+            form.addEventListener("submit", (event) => {
+                if (socket.readyState !== WebSocket.OPEN) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                const text = messageInput?.value?.trim();
+                if (!text) {
+                    appendErrorMessage("Message is required.");
+                    return;
+                }
+
+                appendUserMessage(text);
+                activeAssistant = appendAssistantMessage();
+                setPending(true);
+
+                socket.send(JSON.stringify({
+                    message: text,
+                    case_id: caseInput ? caseInput.value : null,
+                    collection_id: collectionSelect ? collectionSelect.value : null,
+                    global_search: globalSearchInput ? globalSearchInput.checked : false,
+                    thread_id: threadInput ? threadInput.value : null,
+                    tenant_id: tenantInput ? tenantInput.value : null,
+                    tenant_schema: tenantSchemaInput ? tenantSchemaInput.value : null,
+                }));
+
+                if (messageInput) {
+                    messageInput.value = "";
+                }
+            });
+        };
+
+        window.initRagChat = initRagChat;
+        document.addEventListener("DOMContentLoaded", () => initRagChat(document));
+        document.addEventListener("htmx:afterSwap", (event) => {
+            initRagChat(event.target);
+        });
+    })();
+</script>
 {% endblock %}

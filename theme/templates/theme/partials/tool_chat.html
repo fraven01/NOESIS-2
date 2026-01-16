@@ -1,4 +1,4 @@
-<div class="h-[calc(100vh-12rem)] max-w-5xl mx-auto">
+<div class="h-[calc(100vh-12rem)] max-w-5xl mx-auto" data-rag-chat-root>
     <!-- Chat Area (Full Width) -->
     <div class="flex flex-col h-full">
         <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden">
@@ -19,9 +19,12 @@
 
             <!-- Input Area -->
             <div class="p-4 bg-white border-t border-slate-200">
-                <form hx-post="{% url 'chat-submit' %}" hx-target="#chat-history" hx-swap="beforeend" class="relative">
+                <form hx-post="{% url 'chat-submit' %}" hx-target="#chat-history" hx-swap="beforeend" class="relative"
+                    data-rag-chat-form>
                     {% csrf_token %}
-                    <input type="hidden" name="case_id" value="{{ case_id }}">
+                    <!-- Hidden inputs handled below/dynamically -->
+                    <input type="hidden" name="tenant_id" value="{{ tenant_id }}">
+                    <input type="hidden" name="tenant_schema" value="{{ tenant_schema }}">
 
                     <div class="relative rounded-md shadow-sm">
                         <textarea name="message" rows="1"
@@ -37,12 +40,60 @@
                             </svg>
                         </button>
                     </div>
-                    <div class="flex items-center justify-between mt-2 px-1">
-                        <div class="flex items-center">
-                            <input id="chat-global-search" name="global_search" type="checkbox"
-                                class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
-                            <label for="chat-global-search" class="ml-2 block text-xs text-slate-500">Global
-                                Search</label>
+                    <!-- Unified Context managed globally -->
+                    <div class="mt-2 space-y-2 px-1">
+                        <div class="flex flex-wrap items-center gap-3">
+                            <div class="flex items-center gap-2">
+                                <label for="chat-thread" class="text-xs text-slate-500">Thread</label>
+                                <input id="chat-thread" name="thread_id" value="{{ thread_id }}"
+                                    class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500">
+                                <button type="button" id="chat-thread-reset"
+                                    class="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
+                                    New
+                                </button>
+                            </div>
+
+                            <!-- Local Context Overrides -->
+                            <div class="flex items-center gap-2">
+                                <!-- Collection Select -->
+                                <div class="flex items-center gap-2">
+                                    <label class="text-[10px] text-slate-400 uppercase tracking-wider">Scope</label>
+                                    <select name="chat_scope"
+                                        class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500 py-1 pl-2 pr-8 max-w-[150px]">
+                                        <option value="collection" {% if chat_scope == "collection" %}selected{% endif %}>
+                                            Collections only
+                                        </option>
+                                        <option value="case" {% if chat_scope == "case" %}selected{% endif %}>
+                                            Cases only
+                                        </option>
+                                        <option value="global" {% if chat_scope == "global" %}selected{% endif %}>
+                                            All Collections & Cases
+                                        </option>
+                                    </select>
+                                </div>
+                                <select name="collection_id"
+                                    class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500 py-1 pl-2 pr-8 max-w-[150px]">
+                                    <option value="">All Collections</option>
+                                    {% for c in collection_options %}
+                                    <option value="{{ c.id }}" {% if c.id == active_collection_id %}selected{% endif %}>
+                                        {{ c.label|truncatechars:20 }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+
+                                <span class="text-slate-300">|</span>
+
+                                <!-- Case Select -->
+                                <select name="case_id"
+                                    class="rounded border-slate-300 text-xs text-slate-600 focus:border-indigo-500 focus:ring-indigo-500 py-1 pl-2 pr-8 max-w-[150px]">
+                                    <option value="">All Cases</option>
+                                    {% for c in case_options %}
+                                    <option value="{{ c.id }}" {% if c.id == active_case_id %}selected{% endif %}>
+                                        {{ c.label|truncatechars:20 }}
+                                    </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
                         </div>
                         <p class="text-xs text-slate-400">Press Enter to send, Shift + Enter for new line</p>
                     </div>

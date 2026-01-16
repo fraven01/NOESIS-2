@@ -16,6 +16,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from structlog.stdlib import get_logger
 
+from common.task_result import TaskResult
 from llm_worker.runner import submit_worker_task
 from llm_worker.schemas import WorkerTask
 from noesis2.api import default_extend_schema, JSON_ERROR_STATUSES
@@ -237,6 +238,38 @@ def task_status(request, task_id: str) -> JsonResponse:
         try:
             result_payload = async_result.result
             if isinstance(result_payload, dict):
+                task_result = None
+                try:
+                    task_result = TaskResult.model_validate(result_payload)
+                except ValidationError:
+                    task_result = None
+                if task_result is not None:
+                    if task_result.status == "error":
+                        return JsonResponse(
+                            {
+                                "status": "failed",
+                                "task_id": task_id,
+                                "error": {
+                                    "type": "task_result_error",
+                                    "message": task_result.error or "Task failed",
+                                    "data": task_result.data,
+                                },
+                            },
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        )
+                    response_data: dict[str, Any] = {
+                        "status": "succeeded",
+                        "task_id": task_id,
+                    }
+                    data_payload = dict(task_result.data or {})
+                    if "status" in data_payload:
+                        response_data["result_status"] = data_payload.pop("status")
+                    data_payload.pop("task_id", None)
+                    response_data.update(data_payload)
+                    if task_result.status == "partial":
+                        response_data["result_status"] = "partial"
+                    return JsonResponse(response_data, status=status.HTTP_200_OK)
+
                 # Merge result payload into response
                 response_data: dict[str, Any] = {
                     "status": "succeeded",

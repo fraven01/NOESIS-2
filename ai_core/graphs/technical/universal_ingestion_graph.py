@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Literal, TypedDict
+from uuid import UUID, uuid4
 
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables import RunnableConfig
@@ -24,6 +25,9 @@ from documents.contracts import NormalizedDocument
 from documents.pipeline import DocumentProcessingContext, DocumentPipelineConfig
 from documents.processing_graph import build_document_processing_graph
 from ai_core.services import _get_documents_repository
+from ai_core.services.document_processing_factory import (
+    build_document_processing_bundle,
+)
 from ai_core.tool_contracts import ToolContext
 
 # --------------------------------------------------------------------- I/O Contracts
@@ -58,9 +62,6 @@ class UniversalIngestionOutput(TypedDict):
     document_id: str | None
     ingestion_run_id: str | None
     telemetry: dict[str, Any]
-
-    # Legacy compatibility fields (can be deprecated later)
-    formatted_status: str | None
 
 
 class UniversalIngestionInputModel(BaseModel):
@@ -102,7 +103,6 @@ class UniversalIngestionGraphOutput(BaseModel):
     document_id: str | None
     ingestion_run_id: str | None
     telemetry: dict[str, Any]
-    formatted_status: str | None
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -241,6 +241,30 @@ def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
         tool_context.metadata.get("runtime_repository") or _get_documents_repository()
     )
 
+    raw_version_id = tool_context.business.document_version_id
+    resolved_version_id: UUID | None = None
+    if raw_version_id:
+        try:
+            resolved_version_id = (
+                raw_version_id
+                if isinstance(raw_version_id, UUID)
+                else UUID(str(raw_version_id))
+            )
+        except (TypeError, ValueError, AttributeError):
+            resolved_version_id = None
+    if resolved_version_id is None:
+        resolved_version_id = uuid4()
+
+    norm_doc = norm_doc.model_copy(
+        update={
+            "ref": norm_doc.ref.model_copy(
+                update={"document_version_id": resolved_version_id},
+                deep=True,
+            )
+        },
+        deep=True,
+    )
+
     try:
         # Business ID Propagation happens via Scope/Business contexts
         # The Repository service handles the actual DB writing.
@@ -308,28 +332,18 @@ def process_node(
         pipeline_config = DocumentPipelineConfig(**filtered_conf)
 
         # 3. Resolve Dependencies
-        from documents.storage import ObjectStoreStorage
-        from documents.captioning import DeterministicCaptioner
-        from documents.parsers import create_default_parser_dispatcher
-        from ai_core.rag.chunking import RoutingAwareChunker
         from ai_core.api import trigger_embedding
 
-        storage = ObjectStoreStorage()
-        captioner = DeterministicCaptioner()
         repository = _get_documents_repository()
-        parser = create_default_parser_dispatcher()
-        chunker = RoutingAwareChunker()
 
         # 4. Invoke Processing Graph
         # Inject all required dependencies into the factory
-        processing_workflow = build_document_processing_graph(
-            parser=parser,
+        processing_workflow, dependencies = build_document_processing_bundle(
             repository=repository,
-            storage=storage,
-            captioner=captioner,
-            chunker=chunker,
-            embedder=trigger_embedding,  # ✅ Fixed: Pass embedder for RAG indexing
+            embedder=trigger_embedding,  # Fixed: Pass embedder for RAG indexing
+            build_graph=build_document_processing_graph,
         )
+        storage = dependencies.storage
 
         sub_input = {
             "document": norm_doc,
@@ -407,7 +421,6 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
         document_id=doc_id,
         ingestion_run_id=ingestion_run_id,
         telemetry=telemetry,
-        formatted_status=decision.upper(),  # Legacy compat
     )
     return {"output": output.model_dump(mode="json")}
 

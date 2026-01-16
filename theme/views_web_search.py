@@ -15,8 +15,8 @@ from structlog.stdlib import get_logger
 from ai_core.contracts import BusinessContext, ScopeContext
 from ai_core.graphs.technical.collection_search import (
     GraphInput as CollectionSearchGraphInput,
-    build_graph as build_collection_search_graph,
 )
+from theme.helpers.tasks import submit_business_graph
 from ai_core.schemas import CrawlerRunRequest
 from common.logging import bind_log_context
 from crawler.manager import CrawlerManager
@@ -65,9 +65,11 @@ def web_search(request):
         )
 
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError as exc:
         return views._tenant_required_response(exc)
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
     case_id = str(data.get("case_id") or "").strip() or None
     user = getattr(request, "user", None)
     user_id = (
@@ -201,13 +203,37 @@ def web_search(request):
         )
 
         col_tool_context = col_scope.to_tool_context(business=col_business)
-        col_context_payload = {
-            "tool_context": col_tool_context.model_dump(mode="json", exclude_none=True)
+
+        # Build GraphIOSpec-compliant request (Hard Enforcement)
+        boundary_request = {
+            "schema_id": "noesis.graphs.collection_search",
+            "schema_version": "1.0.0",
+            "input": graph_input,
+            "tool_context": col_tool_context.model_dump(mode="json"),
         }
 
-        col_graph = build_collection_search_graph()
-        # CollectionSearchGraph.run returns (state, result)
-        final_state, result = col_graph.run(state=graph_input, meta=col_context_payload)
+        response_payload, completed = submit_business_graph(
+            graph_name="collection_search",
+            tool_context=col_tool_context,
+            state=boundary_request,
+            timeout_s=60,
+        )
+        if not completed:
+            return views._json_error_response(
+                "Search timed out.", status_code=504, code="timeout"
+            )
+
+        if response_payload.get("status") == "error":
+            return views._json_error_response(
+                f"Worker Error: {response_payload.get('error')}",
+                status_code=500,
+                code="internal_error",
+            )
+
+        data_res = response_payload.get("data", {})
+        # Correctly treat 'data' as the state itself
+        final_state = data_res
+        result = data_res.get("result", {})
 
         search_payload = final_state.get("search", {})
         results = search_payload.get("results", [])
@@ -227,7 +253,6 @@ def web_search(request):
 
     else:
         # Web Acquisition Graph (Search Only)
-        from ai_core.graphs.web_acquisition_graph import build_web_acquisition_graph
         from ai_core.tool_contracts import ToolContext
 
         # Parse configurable parameters from request
@@ -240,7 +265,6 @@ def web_search(request):
 
         input_payload = {
             "query": query,
-            "mode": data.get("mode", "search_only"),
             "search_config": {
                 "top_n": top_n,
                 "prefer_pdf": True,
@@ -270,16 +294,32 @@ def web_search(request):
         # Acquisition State
         graph_state = {
             "input": input_payload,
-            "tool_context": tool_context,
+            "tool_context": tool_context.model_dump(mode="json"),
         }
 
-        web_graph = build_web_acquisition_graph()
-        result_state = web_graph.invoke(graph_state)
+        # M-2: Async Worker
+        response_payload, completed = submit_business_graph(
+            graph_name="web_acquisition",
+            tool_context=tool_context,
+            state=graph_state,
+            timeout_s=60,
+        )
+        if not completed:
+            return views._json_error_response(
+                "Acquisition timed out.", status_code=504, code="timeout"
+            )
+
+        if response_payload.get("status") == "error":
+            # Treat as graph execution error
+            result_state = {
+                "output": {"decision": "error", "error": response_payload.get("error")}
+            }
+        else:
+            result_state = response_payload.get("data", {})
 
         output = result_state.get("output", {})
         decision = output.get("decision", "error")
         error_msg = output.get("error")
-        # Legacy UI expects "search.results" structure
         search_results = output.get("search_results") or []
 
         response_data = {
@@ -288,7 +328,6 @@ def web_search(request):
                 "completed" if decision in ("acquired", "no_results") else "error"
             ),
             "results": search_results,
-            "search": {"results": search_results},
             "telemetry": {},
             "trace_id": trace_id,
         }
@@ -303,9 +342,19 @@ def web_search(request):
                 )
 
     # Common Logic
-    results = response_data.get("results", [])
+    # P2 Fix: Backend result key is 'search_results' (from line 325) while view logic expects 'results'
+    # 'search_results' variable is already extracted at line 325, so we prioritize that.
+    results = response_data.get("results") or search_results
     search_payload = response_data.get("search", {})
     trace_id = response_data.get("trace_id")
+
+    logger.info(
+        "web_search.rendering",
+        result_count=len(results),
+        response_keys=list(response_data.keys()),
+        search_type=search_type,
+        hx_request=bool(request.headers.get("HX-Request")),
+    )
 
     if data.get("rerank"):
         try:
@@ -317,6 +366,7 @@ def web_search(request):
                 tenant_id=tenant_id,
                 case_id=case_id,
                 trace_id=trace_id,
+                run_id=run_id,
                 user_id=user_id,
             )
         except Exception:  # pragma: no cover - defensive
@@ -391,9 +441,11 @@ def web_search_ingest_selected(request):
             )
 
         try:
-            tenant_id, tenant_schema = views._tenant_context_from_request(request)
+            scope = views._scope_context_from_request(request)
         except TenantRequiredError as exc:
             return views._tenant_required_response(exc)
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
         manual_collection_id, collection_id = views._resolve_manual_collection(
             tenant_id, data.get("collection_id"), ensure=True
         )

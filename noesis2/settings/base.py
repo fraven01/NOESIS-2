@@ -264,6 +264,7 @@ TENANT_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "channels",
     "rest_framework",
     "drf_spectacular",
     "crawler",
@@ -320,6 +321,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "noesis2.wsgi.application"
+ASGI_APPLICATION = "noesis2.asgi.application"
 
 
 # Database
@@ -385,6 +387,16 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "users.User"
 
 REDIS_URL = env.str("REDIS_URL")
+
+if TESTING:
+    CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [REDIS_URL]},
+        }
+    }
 
 # Celery Configuration
 # CELERY_RESULT_BACKEND is required for synchronous task result retrieval (async_result.get())
@@ -471,6 +483,11 @@ CELERY_BEAT_SCHEDULE = {
     "rag-embedding-drift": {
         "task": "ai_core.tasks.embedding_drift_check",
         "schedule": crontab(day_of_month=1, hour=2, minute=0),
+        "options": {"queue": "default"},
+    },
+    "document-version-cleanup": {
+        "task": "documents.tasks.cleanup_document_versions",
+        "schedule": crontab(hour=3, minute=0),
         "options": {"queue": "default"},
     },
 }
@@ -633,7 +650,7 @@ LITELLM_CIRCUIT_MAX_BACKOFF_S = env.float(
     "LITELLM_CIRCUIT_MAX_BACKOFF_S", default=600.0
 )
 
-# Google Custom Search (for ExternalKnowledgeGraph)
+# Google Custom Search (for web_acquisition_graph and collection_search)
 GOOGLE_CUSTOM_SEARCH_API_KEY = env("GOOGLE_CUSTOM_SEARCH_API_KEY", default=None)
 _search_engine_id = env("GOOGLE_CUSTOM_SEARCH_ENGINE_ID", default=None)
 GOOGLE_CUSTOM_SEARCH_ENGINE_ID = (

@@ -4,7 +4,7 @@ from rest_framework import serializers
 
 
 class PingResponseSerializer(serializers.Serializer):
-    """Response returned by the `/ai/ping/` endpoint."""
+    """Response returned by the `/v1/ai/ping/` endpoint."""
 
     ok = serializers.BooleanField()
 

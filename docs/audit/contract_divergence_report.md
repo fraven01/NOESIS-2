@@ -133,7 +133,7 @@ class Chunk(BaseModel):
 - `tenant_id` (Pflicht)
 - `trace_id` (Pflicht)
 - `invocation_id` (Pflicht für Tools)
-- Genau eine Laufzeit-ID: `run_id` XOR `ingestion_run_id`
+- **Mindestens eine** Laufzeit-ID: `run_id` und/oder `ingestion_run_id` (beide können koexistieren, z.B. wenn Workflow Ingestion triggert)
 
 ### Universal Ingestion Graph (Current)
 
@@ -173,7 +173,7 @@ context: dict[str, Any]  # Tenant ID, Trace ID, etc.
 - `ai_core/contracts/scope.py:ScopeContext`
 - `ai_core/contracts/business.py:BusinessContext`
 - `ai_core/tool_contracts/base.py:tool_context_from_meta`
-- `ai_core/graphs/README.md` (Context & Identity)
+- `ai_core/graph/README.md` (Context & Identity)
 
 ---
 
@@ -224,7 +224,7 @@ Docs describe:
 
 **Status**: Code not read in this audit (identified via docs/README references)
 
-**From** [`ai_core/graphs/README.md:28-47`](../../ai_core/graphs/README.md:28-47):
+**From** [`ai_core/graph/README.md:28-47`](../../ai_core/graph/README.md:28-47):
 > Der `crawler_ingestion_graph` orchestriert den Crawler-Workflow in der
 > deterministischen Sequenz
 > `update_status_normalized → enforce_guardrails → document_pipeline → ingest_decision → ingest → finish`.

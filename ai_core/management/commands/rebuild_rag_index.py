@@ -298,6 +298,25 @@ class Command(BaseCommand):
         cur.execute(
             sql.SQL(
                 """
+                CREATE INDEX IF NOT EXISTS chunks_metadata_document_version_idx
+                    ON {chunks} ((metadata->>'document_version_id'))
+                """
+            ).format(chunks=chunks)
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS chunks_metadata_is_latest_idx
+                    ON {chunks} ((metadata->>'is_latest'))
+                    WHERE metadata ? 'is_latest'
+                """
+            ).format(chunks=chunks)
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
                 CREATE UNIQUE INDEX IF NOT EXISTS embeddings_chunk_idx
                     ON {embeddings} (chunk_id)
                 """

@@ -28,6 +28,9 @@ def test_ingestion_submit_happy_path(settings, tenant_pool):
         format="multipart",  # RequestFactory handles this slightly differently than Client
     )
     request.tenant = tenant
+    from django.contrib.sessions.backends.db import SessionStore
+
+    request.session = SessionStore()
 
     # We mock handle_document_upload to isolate view logic first
     # If the view logic itself wraps/extracts wrongly, this might fail or we might see
@@ -81,6 +84,9 @@ def test_ingestion_submit_real_service_call(settings, tenant_pool):
         data={"file": uploaded_file},
     )
     request.tenant = tenant
+    from django.contrib.sessions.backends.db import SessionStore
+
+    request.session = SessionStore()
 
     # We DO NOT mock handle_document_upload here.
     # We DO mock the async dispatch to avoid running Celery/worker side effects.

@@ -30,29 +30,34 @@ Google Custom Search JSON API
 
 ## Verträge
 
-### WebSearchContext
+### ToolContext
 
-Laufzeit-Metadaten für jeden Web-Search-Aufruf (Pydantic-Model).
+Runtime metadata for each web search invocation (ToolContext).
 
-| Feld | Typ | Pflicht | Beschreibung |
-|------|-----|---------|--------------|
-| `tenant_id` | `str` | ja | Mandanten-ID |
-| `trace_id` | `str` | ja | Korrelations-ID für Langfuse-Traces |
-| `workflow_id` | `str` | ja | Graph-/Workflow-ID |
-| `case_id` | `str` | ja | Business-Kontext (z. B. CRM-ID) |
-| `run_id` | `str` | ja | Graph-Lauf-ID |
-| `worker_call_id` | `str \| None` | optional | Worker-Aufruf-ID (wird generiert, falls fehlt) |
+Required fields:
+- scope.tenant_id
+- scope.trace_id
+- scope.invocation_id
+- run_id and/or ingestion_run_id
 
-**Beispiel**:
+Optional fields:
+- business.workflow_id, business.case_id
+- metadata.worker_call_id (generated if missing)
+
+Example:
 
 ```python
-context = WebSearchContext(
+from ai_core.contracts import BusinessContext, ScopeContext
+from ai_core.tool_contracts import ToolContext
+
+scope = ScopeContext(
     tenant_id="acme",
     trace_id="trace-a1b2c3",
-    workflow_id="universal_ingestion",
-    case_id="crm-7421",
+    invocation_id="123e4567-e89b-12d3-a456-426614174000",
     run_id="run_def456",
 )
+business = BusinessContext(workflow_id="universal_ingestion", case_id="crm-7421")
+context = ToolContext(scope=scope, business=business)
 ```
 
 ### WebSearchInput
@@ -301,7 +306,9 @@ class ProviderSearchResult:
 ### Standalone
 
 ```python
-from ai_core.tools.web_search import WebSearchWorker, WebSearchContext
+from ai_core.contracts import BusinessContext, ScopeContext
+from ai_core.tool_contracts import ToolContext
+from ai_core.tools.web_search import WebSearchWorker
 from ai_core.tools.search_adapters.google import GoogleSearchAdapter
 
 # Setup
@@ -316,13 +323,17 @@ worker = WebSearchWorker(
 )
 
 # Execute
-context = WebSearchContext(
+scope = ScopeContext(
     tenant_id="acme",
     trace_id="trace-123",
-    workflow_id="universal_ingestion",
-    case_id="crm-7421",
+    invocation_id="123e4567-e89b-12d3-a456-426614174000",
     run_id="run_abc",
 )
+business = BusinessContext(
+    workflow_id="universal_ingestion",
+    case_id="crm-7421",
+)
+context = ToolContext(scope=scope, business=business)
 response = worker.run(
     query="aktuelle KI-Regulierung EU",
     context=context,
@@ -514,7 +525,7 @@ class FakeSearchAdapter:
 
 ### 1. Context-Propagation
 
-Immer vollständigen `WebSearchContext` übergeben:
+Immer vollständigen `ToolContext` übergeben:
 
 ```python
 # ✅ Good
@@ -670,7 +681,7 @@ Der Worker erkennt dies automatisch via `getattr(adapter, "provider", None)`.
 ## Verwandte Dokumentation
 
 - [Tool Contracts](./tool-contracts.md) - Generische Tool-Schnittstellen
-- [Universal Ingestion Graph](../ai_core/graphs/README.md) - LangGraph-Integration
+- [Universal Ingestion Graph](../../ai_core/graph/README.md) - LangGraph-Integration
 - [Google Custom Search API](https://developers.google.com/custom-search/v1/overview) - Provider-Doku
 - [Observability: Langfuse](../observability/langfuse.md) - Tracing-Instrumentation
 

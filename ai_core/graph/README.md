@@ -4,12 +4,12 @@ This package hosts the lightweight runtime shim that bridges the legacy `run(sta
 modules to a consistent execution contract.
 
 ## Components
-- **Registry** – `register(name, runner)` and `get(name)` store `GraphRunner` instances in
-  memory. `get_graph()` inside the views lazily registers module-based runners on first use,
-  so patched runners in tests can still be injected.
-- **GraphRunner protocol** – every runner exposes `run(state: dict, meta: dict) -> (dict, dict)`
+- **Registry** - `register(name, runner)` and `get(name)` store `GraphRunner` instances in
+  memory. Graphs are registered at startup via `graph.bootstrap.bootstrap()`, and tests can
+  patch the registry directly when they need custom runners.
+- **GraphRunner protocol** - every runner exposes `run(state: dict, meta: dict) -> (dict, dict)`
   and must return the next persisted state alongside the HTTP payload.
-- **Checkpointer** – the default `FileCheckpointer` persists JSON snapshots under
+- **Checkpointer** - the default `FileCheckpointer` persists JSON snapshots under
   `.ai_core_store/<tenant>/<case>/state.json` using `sanitize_identifier`.
 
 ## State & Meta Contract
@@ -24,6 +24,6 @@ modules to a consistent execution contract.
 1. `apps.AiCoreConfig.ready()` imports and executes `graph.bootstrap.bootstrap()`.
 2. `bootstrap()` wraps the remaining legacy module (`info_intake`) with
    `module_runner` und registriert die produktiven Graphen
-   (`retrieval_augmented_generation`, `crawler_ingestion_graph`).
-3. If a runner is absent (e.g. in tests), `_GraphView.get_graph()` performs
-   on-demand registration before executing the request.
+   (`retrieval_augmented_generation`, `crawler.ingestion`).
+3. If a runner is absent (e.g. in tests), register a stub runner in the registry
+   or override the executor in the test harness.

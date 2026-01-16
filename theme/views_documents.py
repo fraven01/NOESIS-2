@@ -27,9 +27,11 @@ def document_space(request):
     """Expose a developer workbench for inspecting document collections."""
     views = _views()
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError as exc:
         return views._tenant_required_response(exc)
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
 
     tenant_obj = getattr(request, "tenant", None)
     if tenant_obj is None:
@@ -103,9 +105,11 @@ def document_explorer(request):
     views = _views()
     try:
         try:
-            tenant_id, tenant_schema = views._tenant_context_from_request(request)
+            scope = views._scope_context_from_request(request)
         except TenantRequiredError as exc:
             return views._tenant_required_response(exc)
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
 
         tenant_obj = getattr(request, "tenant", None)
         if tenant_obj is None:
@@ -202,12 +206,14 @@ def document_reingest(request):
         )
 
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError as exc:
         return HttpResponse(
             f'<div class="text-xs text-red-600">{exc}</div>',
             status=400,
         )
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
 
     case_id = (
         request.POST.get("case_id")
@@ -309,11 +315,13 @@ def document_delete(request):
 
     views = _views()
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError as exc:
         return HttpResponse(
             f'<div class="p-4 text-red-600 text-sm">{exc}</div>', status=400
         )
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
 
     try:
         from django_tenants.utils import schema_context
@@ -429,11 +437,13 @@ def document_restore(request):
 
     views = _views()
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError as exc:
         return HttpResponse(
             f'<div class="p-4 text-red-600 text-sm">{exc}</div>', status=400
         )
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
 
     try:
         from django_tenants.utils import schema_context

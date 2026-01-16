@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 CaseId = str | None
 CollectionId = str | None
 WorkflowId = str | None
+ThreadId = str | None
 DocumentId = str | None
 DocumentVersionId = str | None
 
@@ -65,6 +66,11 @@ class BusinessContext(BaseModel):
         description="Workflow identifier within a case. May span multiple runs.",
     )
 
+    thread_id: ThreadId = Field(
+        default=None,
+        description="Thread identifier for chat sessions within a case.",
+    )
+
     document_id: DocumentId = Field(
         default=None,
         description="Document identifier. Required for document operations.",
@@ -83,6 +89,7 @@ __all__ = [
     "CaseId",
     "CollectionId",
     "WorkflowId",
+    "ThreadId",
     "DocumentId",
     "DocumentVersionId",
 ]

@@ -111,7 +111,7 @@ zugehörigen Events und Spans anzuzeigen.
 - Abdeckung (out of the box):
   - Graph-Ausführung: `ai_core/services.py:execute_graph` (Span `graph.execute` + Tags `graph:<name>`, `version:<v>`)
   - LLM-Calls: `ai_core/llm/client.py:call` (Span `llm.call` + Tags `label:<label>`, `model:<id>`)
-  - Ingestion-Embeddings: `ai_core/tasks.py:embed` (Span `ingestion.embed`)
+  - Ingestion-Embeddings: `ai_core/tasks/ingestion_tasks.py:embed` (Span `ingestion.embed`)
 - Kontextfelder: `user_id=tenant_id`, `session_id=case_id`, `metadata.trace_id=<trace_id>`; keine PII-Payloads werden an Langfuse gesendet.
 - LangChain (bei Einsatz): Verwende `ai_core/infra/observability.get_langchain_callbacks()` um den Langfuse-Callback-Handler an LangChain-LLMs zu übergeben.
 - Fehlermeldung „Invalid environment variables: SALT“: Setze `SALT` (beliebige, aber starke Zeichenkette) und `ENCRYPTION_KEY` (64 Hex-Zeichen, z. B. via `openssl rand -hex 32`). In unserem Compose ist beides mit Dev-Defaults hinterlegt; überschreibe sie in deiner `.env`.

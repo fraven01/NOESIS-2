@@ -53,13 +53,17 @@ def _prevent_db_access():
 def cs_module():
     """Import collection_search module with isolation."""
     mock_modules = {
-        "ai_core.graphs.technical.universal_ingestion_graph": MagicMock(),
         "ai_core.rag.embeddings": MagicMock(),
         "ai_core.llm.client": MagicMock(),
         "django.urls": MagicMock(),
         "django.conf": MagicMock(),
-        # Also mock services to be safe if anything leaks
-        "ai_core.services": MagicMock(),
+        # Partially mock services but allow strategy (Pydantic models) to load
+        "ai_core.services.collection_search.auto_ingest": MagicMock(),
+        # "ai_core.services.collection_search.hitl": MagicMock(), # Safe to load real (simple helper)
+        "ai_core.services.collection_search.scoring": MagicMock(),
+        # "ai_core.services.collection_search.strategy": MagicMock(), # MUST be real for SearchStrategy model
+        "crawler": MagicMock(),
+        "crawler.manager": MagicMock(),
     }
 
     with patch(
@@ -84,13 +88,31 @@ class TestCollectionSearchGraph:
     """Tests for CollectionSearch using isolated module."""
 
     def _initial_state(self) -> dict[str, Any]:
+        """Build GraphIOSpec-compliant boundary request."""
+        from ai_core.contracts import BusinessContext, ScopeContext
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(
+            workflow_id="wf-1",
+            case_id="case-1",
+        )
+        tool_context = scope.to_tool_context(business=business)
+
         return {
+            "schema_id": "noesis.graphs.collection_search",
+            "schema_version": "1.0.0",
             "input": {
                 "question": "How do I configure telemetry?",
-                "collection_scope": "software_docs",
+                "collection_scope": "550e8400-e29b-41d4-a716-446655440000",
                 "quality_mode": "software_docs_strict",
                 "purpose": "docs-gap-analysis",
             },
+            "tool_context": tool_context,
         }
 
     def _tool_context_meta(self) -> dict[str, Any]:
@@ -121,6 +143,10 @@ class TestCollectionSearchGraph:
                 self.requests: list[Any] = []
 
             def __call__(self, request: Any) -> Any:
+                # Ensure scoring returns floats to avoid Mock sorting errors
+                cs_module.cosine_similarity.return_value = 0.8
+                cs_module.calculate_generic_heuristics.return_value = 0.5
+
                 self.requests.append(request)
                 return cs_module.SearchStrategy(
                     queries=[
@@ -224,6 +250,8 @@ class TestCollectionSearchGraph:
         meta = self._tool_context_meta()
         state, result = graph.run(initial_state, meta=meta)
 
+        if result["outcome"] != "completed":
+            print(f"DEBUG: Graph failed with result: {result}")
         assert result["outcome"] == "completed"
         assert result["search"] is not None
         assert "results" in result["search"]
@@ -288,6 +316,8 @@ class TestCollectionSearchGraph:
         meta = self._tool_context_meta()
         _, result = graph.run(initial_state, meta=meta)
 
+        if not result.get("search"):
+            print(f"DEBUG: Search failure test aborted graph: {result}")
         assert result["search"]["errors"]
         assert len(result["search"]["results"]) == 0
 
@@ -391,6 +421,8 @@ class TestCollectionSearchGraph:
             def run(self, **k):
                 m = MagicMock()
                 m.model_dump.return_value = {}
+                m.ranked = []
+                m.candidates = {}
                 return m
 
             def verify(self, **k):
@@ -413,8 +445,12 @@ class TestCollectionSearchGraph:
 
         assert result.get("ingestion", {}).get("status") == "planned_only"
 
-    def test_delegation_flow(self, cs_module) -> None:
-        """Test that approved plan delegates to Universal Ingestion Graph."""
+    def test_trigger_ingestion_flow(self, cs_module) -> None:
+        """Test that approved plan triggers ingestion via CrawlerManager."""
+        # Ensure scoring returns floats
+        cs_module.cosine_similarity.return_value = 0.8
+        cs_module.calculate_generic_heuristics.return_value = 0.5
+
         from ai_core.tools.web_search import (
             WebSearchResponse,
             ToolOutcome,
@@ -466,10 +502,10 @@ class TestCollectionSearchGraph:
                     "title": "Admin",
                     "score": 0.9,
                 }
-                # result.candidates is accessed by build_plan_node as model or dict?
-                # candidates = hybrid.get("candidates", {}).values() in code.
-                # hybrid_score_node: returns {"hybrid": result.model_dump()}
-                # So we need result.model_dump() to return the dictionary properly.
+
+                result.ranked = []
+                result.candidates = {"cand1": c1}
+                result.coverage_delta = "TECHNICAL"
 
                 def model_dump(**kwargs):
                     return {"candidates": {"cand1": c1}, "result": {"ranked": []}}
@@ -477,8 +513,11 @@ class TestCollectionSearchGraph:
                 result.model_dump = model_dump
                 return result
 
-        mock_ug = MagicMock()
-        mock_ug.invoke.return_value = {"output": {"decision": "ingested"}}
+        mock_crawler_manager = MagicMock()
+        mock_crawler_manager.dispatch_crawl_request.return_value = {
+            "count": 2,
+            "run_id": "test-crawl-run",
+        }
 
         # Inject factory to bypass import
         dependencies = {
@@ -487,7 +526,7 @@ class TestCollectionSearchGraph:
             "runtime_hybrid_executor": ValidCandidatesHybridExecutor(),
             "runtime_hitl_gateway": LocalStubHitlGateway(),
             "runtime_coverage_verifier": MagicMock(),
-            "runtime_universal_ingestion_factory": lambda: mock_ug,
+            "runtime_crawler_manager": mock_crawler_manager,
         }
 
         CollectionSearchAdapter = cs_module.CollectionSearchAdapter
@@ -499,14 +538,237 @@ class TestCollectionSearchGraph:
         meta = self._tool_context_meta()
         state, result = graph_adapter.run(initial_state, meta=meta)
 
+        if result.get("outcome") != "completed":
+            print(f"DEBUG: Graph failed with result: {result}")
+
         assert result.get("outcome") == "completed", f"Graph failed: {result}"
         assert result.get("hitl") is not None, "HITL state missing"
         assert (
             result["hitl"].get("decision") is not None
         ), f"HITL decision missing: {result['hitl']}"
-        assert result["plan"] is not None
+        assert result["plan"]["collection_id"] == "550e8400-e29b-41d4-a716-446655440000"
+        assert result["plan"]["execution_mode"] == "acquire_and_ingest"
         assert result["plan"]["hitl_required"] is False
         assert "https://added.com" in result["plan"]["selected_urls"]
         assert "https://docs.acme.test/admin" in result["plan"]["selected_urls"]
 
-        assert result["ingestion"]["status"] == "ingested"
+        assert result["ingestion"]["status"] == "triggered"
+        assert result["ingestion"]["task_info"]["run_id"] == "test-crawl-run"
+
+        # Verify CrawlerManager was called
+        mock_crawler_manager.dispatch_crawl_request.assert_called_once()
+        call_args = mock_crawler_manager.dispatch_crawl_request.call_args
+        crawl_req = call_args[0][0]
+        assert len(crawl_req.origins) == 2
+        urls = [o.url for o in crawl_req.origins]
+        assert "https://added.com" in urls
+        assert "https://docs.acme.test/admin" in urls
+
+    def test_auto_ingest_triggers_crawler(self, cs_module) -> None:
+        """Test that auto_ingest triggers crawler without HITL approval."""
+        cs_module.cosine_similarity.return_value = 0.8
+        cs_module.calculate_generic_heuristics.return_value = 0.5
+
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+            SearchResult,
+        )
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request):
+                return cs_module.SearchStrategy(
+                    queries=["q"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class StubWebSearchWorker:
+            def run(self, *, query, context) -> WebSearchResponse:
+                results = [
+                    SearchResult(
+                        url="https://docs.acme.test/admin",
+                        title="Admin Guide",
+                        snippet="How to administer the platform",
+                        source="acme",
+                        score=0.9,
+                        is_pdf=False,
+                    ),
+                ]
+                return WebSearchResponse(
+                    results=results,
+                    outcome=ToolOutcome(decision="ok", rationale="none", meta={}),
+                )
+
+        class AutoIngestHybridExecutor:
+            def run(self, *, scoring_context, candidates, tenant_context):
+                result = MagicMock()
+                ranked = [
+                    {"url": "https://docs.acme.test/admin", "score": 95.0},
+                    {"url": "https://docs.acme.test/ignore", "score": 40.0},
+                ]
+                result.model_dump.return_value = {"ranked": ranked}
+                return result
+
+        class LocalStubHitlGateway:
+            def present(self, payload):
+                return None
+
+        cs_module.select_auto_ingest_urls.return_value = [
+            "https://docs.acme.test/admin"
+        ]
+
+        mock_crawler_manager = MagicMock()
+        mock_crawler_manager.dispatch_crawl_request.return_value = {
+            "count": 1,
+            "run_id": "auto-ingest-run",
+        }
+
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": StubWebSearchWorker(),
+            "runtime_hybrid_executor": AutoIngestHybridExecutor(),
+            "runtime_hitl_gateway": LocalStubHitlGateway(),
+            "runtime_coverage_verifier": MagicMock(),
+            "runtime_crawler_manager": mock_crawler_manager,
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        initial_state = self._initial_state()
+        initial_state["input"]["auto_ingest"] = True
+        initial_state["input"]["auto_ingest_top_k"] = 1
+        initial_state["input"]["auto_ingest_min_score"] = 60.0
+
+        meta = self._tool_context_meta()
+        _, result = graph_adapter.run(initial_state, meta=meta)
+
+        assert result["ingestion"]["status"] == "triggered"
+        assert result["ingestion"]["task_info"]["run_id"] == "auto-ingest-run"
+        mock_crawler_manager.dispatch_crawl_request.assert_called_once()
+
+    def test_boundary_validation_rejects_missing_schema_id(self, cs_module) -> None:
+        """Test that missing schema_id raises InvalidGraphInput."""
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        InvalidGraphInput = cs_module.InvalidGraphInput
+
+        dependencies = {
+            "runtime_strategy_generator": MagicMock(),
+            "runtime_search_worker": MagicMock(),
+            "runtime_hybrid_executor": MagicMock(),
+            "runtime_hitl_gateway": MagicMock(),
+            "runtime_coverage_verifier": MagicMock(),
+        }
+
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        # Legacy state without schema_id/schema_version
+        legacy_state = {
+            "input": {
+                "question": "test",
+                "collection_scope": "docs",
+                "purpose": "test",
+            },
+        }
+
+        meta = self._tool_context_meta()
+
+        with pytest.raises(InvalidGraphInput) as exc_info:
+            graph_adapter.run(legacy_state, meta=meta)
+
+        assert "schema_id" in str(exc_info.value).lower()
+        assert "mandatory" in str(exc_info.value).lower()
+
+    def test_boundary_validation_rejects_invalid_schema_version(
+        self, cs_module
+    ) -> None:
+        """Test that invalid schema_version raises InvalidGraphInput."""
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        InvalidGraphInput = cs_module.InvalidGraphInput
+
+        dependencies = {
+            "runtime_strategy_generator": MagicMock(),
+            "runtime_search_worker": MagicMock(),
+            "runtime_hybrid_executor": MagicMock(),
+            "runtime_hitl_gateway": MagicMock(),
+            "runtime_coverage_verifier": MagicMock(),
+        }
+
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        invalid_state = self._initial_state()
+        invalid_state["schema_version"] = "99.99.99"  # Wrong version
+
+        meta = self._tool_context_meta()
+
+        with pytest.raises(InvalidGraphInput) as exc_info:
+            graph_adapter.run(invalid_state, meta=meta)
+
+        assert "schema_version" in str(exc_info.value).lower()
+
+    def test_boundary_validation_with_tool_context_in_meta(self, cs_module) -> None:
+        """Test that tool_context can be provided via meta fallback."""
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+        )
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request):
+                return cs_module.SearchStrategy(
+                    queries=["q"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class StubWebSearchWorker:
+            def run(self, *, query, context):
+                return WebSearchResponse(
+                    results=[],
+                    outcome=ToolOutcome(decision="ok", rationale="none", meta={}),
+                )
+
+        class MockObj:
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                m = MagicMock()
+                m.model_dump.return_value = {}
+                m.ranked = []
+                m.candidates = {}
+                return m
+
+            def verify(self, **k):
+                return {}
+
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": StubWebSearchWorker(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        # State without tool_context (should fallback to meta)
+        state = {
+            "schema_id": "noesis.graphs.collection_search",
+            "schema_version": "1.0.0",
+            "input": {
+                "question": "test",
+                "collection_scope": "docs",
+                "purpose": "test",
+            },
+            # tool_context is missing here
+        }
+
+        meta = self._tool_context_meta()
+        _, result = graph_adapter.run(state, meta=meta)
+
+        assert result["outcome"] == "completed"

@@ -3,11 +3,12 @@ import base64
 from contextlib import nullcontext
 from datetime import datetime
 from typing import List, Mapping, Optional, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 import logging
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
+from django.db.models import Max
 from django.utils import timezone
 from django_tenants.utils import schema_context
 
@@ -74,6 +75,11 @@ class DbDocumentsRepository(DocumentsRepository):
         scope: Optional[ScopeContext] = None,
         audit_meta: Optional[Mapping[str, object]] = None,
     ) -> NormalizedDocument:
+        """Persist a normalized document to the database.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this adapter remains the DB-backed sink.
+        """
         # 1. Handle Frozen Models & Materialization safely
         # We cannot mutate 'doc' if it is frozen. We create a modified copy.
         doc_copy = self._materialize_document_safe(doc)
@@ -98,6 +104,7 @@ class DbDocumentsRepository(DocumentsRepository):
         DocumentCollectionMembership = apps.get_model(
             "documents", "DocumentCollectionMembership"
         )
+        DocumentVersion = apps.get_model("documents", "DocumentVersion")
         User = apps.get_model("users", "User")
 
         with self._schema_ctx(scope, tenant):
@@ -116,6 +123,33 @@ class DbDocumentsRepository(DocumentsRepository):
                         },
                     )
 
+            def _ensure_document_version_id(
+                source_doc: NormalizedDocument,
+            ) -> tuple[NormalizedDocument, UUID]:
+                raw_version_id = getattr(source_doc.ref, "document_version_id", None)
+                resolved_version_id = None
+                if raw_version_id not in {None, ""}:
+                    try:
+                        resolved_version_id = (
+                            raw_version_id
+                            if isinstance(raw_version_id, UUID)
+                            else UUID(str(raw_version_id))
+                        )
+                    except (TypeError, ValueError, AttributeError):
+                        resolved_version_id = None
+                if resolved_version_id is None:
+                    resolved_version_id = uuid4()
+                updated_doc = source_doc.model_copy(
+                    update={
+                        "ref": source_doc.ref.model_copy(
+                            update={"document_version_id": resolved_version_id},
+                            deep=True,
+                        )
+                    },
+                    deep=True,
+                )
+                return updated_doc, resolved_version_id
+
             # Fail fast if collection is specified but missing (Logic Change)
             coll = None
             if collection_id:
@@ -128,6 +162,7 @@ class DbDocumentsRepository(DocumentsRepository):
                     raise ValueError(f"Collection not found: {collection_id}")
 
             document = None
+            document_version_id: UUID | None = None
 
             # Strategy 1: Find by business key (tenant, source, hash)
             try:
@@ -159,11 +194,18 @@ class DbDocumentsRepository(DocumentsRepository):
                     },
                     deep=True,
                 )
+                doc_copy, document_version_id = _ensure_document_version_id(doc_copy)
                 metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                 document = self._update_document_instance(
-                    document, doc_copy, metadata, scope=scope, workflow_id=workflow
+                    document,
+                    doc_copy,
+                    metadata,
+                    scope=scope,
+                    workflow_id=workflow,
+                    audit_meta=audit_meta,
                 )
             else:
+                doc_copy, document_version_id = _ensure_document_version_id(doc_copy)
                 metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                 # Create new - handle race condition
                 try:
@@ -175,20 +217,23 @@ class DbDocumentsRepository(DocumentsRepository):
                         # TODO: Accept BusinessContext parameter to extract case_id
                         ctx_case_id = None  # Was: scope.case_id if scope else None
 
-                        document = Document.objects.create(
-                            id=doc_copy.ref.document_id,  # Honor ID if creating new
-                            tenant=tenant,
-                            hash=doc_copy.checksum,
-                            source=doc_copy.source or "",
-                            metadata=metadata,
-                            workflow_id=ctx_workflow_id,
-                            trace_id=ctx_trace_id,
-                            case_id=ctx_case_id,
-                            lifecycle_state=doc_copy.lifecycle_state,
-                            lifecycle_updated_at=doc_copy.created_at,
-                            created_by=created_by_user,
-                            updated_by=created_by_user,
-                        )
+                        create_kwargs = {
+                            "id": doc_copy.ref.document_id,  # Honor ID if creating new
+                            "tenant": tenant,
+                            "hash": doc_copy.checksum,
+                            "source": doc_copy.source or "",
+                            "metadata": metadata,
+                            "workflow_id": ctx_workflow_id,
+                            "trace_id": ctx_trace_id,
+                            "case_id": ctx_case_id,
+                            "lifecycle_state": doc_copy.lifecycle_state,
+                            "lifecycle_updated_at": doc_copy.created_at,
+                            "created_by": created_by_user,
+                            "updated_by": created_by_user,
+                        }
+                        if audit_meta is not None:
+                            create_kwargs["audit_meta"] = dict(audit_meta)
+                        document = Document.objects.create(**create_kwargs)
                 except IntegrityError:
                     # Race condition or ID collision
                     # 1. Try finding by ID (if we forced one)
@@ -242,9 +287,17 @@ class DbDocumentsRepository(DocumentsRepository):
                         },
                         deep=True,
                     )
+                    doc_copy, document_version_id = _ensure_document_version_id(
+                        doc_copy
+                    )
                     metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                     document = self._update_document_instance(
-                        document, doc_copy, metadata, scope=scope, workflow_id=workflow
+                        document,
+                        doc_copy,
+                        metadata,
+                        scope=scope,
+                        workflow_id=workflow,
+                        audit_meta=audit_meta,
                     )
 
             if document and created_by_user and not getattr(document, "created_by_id"):
@@ -254,6 +307,66 @@ class DbDocumentsRepository(DocumentsRepository):
             if document and created_by_user:
                 document.updated_by = created_by_user
                 document.save(update_fields=["updated_by", "updated_at"])
+
+            if document and doc_copy:
+                version_label = doc_copy.ref.version or None
+                resolved_version_id = document_version_id or uuid4()
+                doc_snapshot = doc_copy.model_dump(mode="json")
+                with transaction.atomic():
+                    existing_version = DocumentVersion.objects.filter(
+                        id=resolved_version_id,
+                        document=document,
+                    ).first()
+                    if existing_version:
+                        update_fields = ["normalized_document"]
+                        existing_version.normalized_document = doc_snapshot
+                        if not existing_version.is_latest:
+                            now = timezone.now()
+                            DocumentVersion.objects.filter(
+                                document=document,
+                                is_latest=True,
+                            ).exclude(id=existing_version.id).update(
+                                is_latest=False,
+                                deleted_at=now,
+                            )
+                            existing_version.is_latest = True
+                            existing_version.deleted_at = None
+                            update_fields.extend(["is_latest", "deleted_at"])
+                        existing_version.save(update_fields=update_fields)
+                    else:
+                        now = timezone.now()
+                        max_seq = (
+                            DocumentVersion.objects.filter(document=document).aggregate(
+                                max_seq=Max("sequence")
+                            )["max_seq"]
+                            or 0
+                        )
+                        max_label_seq = (
+                            DocumentVersion.objects.filter(
+                                document=document,
+                                version_label=version_label,
+                            ).aggregate(max_seq=Max("label_sequence"))["max_seq"]
+                            or 0
+                        )
+                        DocumentVersion.objects.filter(
+                            document=document,
+                            is_latest=True,
+                        ).update(
+                            is_latest=False,
+                            deleted_at=now,
+                        )
+                        DocumentVersion.objects.create(
+                            id=resolved_version_id,
+                            document=document,
+                            version_label=version_label,
+                            sequence=max_seq + 1,
+                            label_sequence=max_label_seq + 1,
+                            is_latest=True,
+                            deleted_at=None,
+                            normalized_document=doc_snapshot,
+                            created_by=created_by_user,
+                            created_by_service_id=last_hop_service_id,
+                        )
 
             # 3. Memberships (Side Effects)
             if coll:
@@ -331,7 +444,13 @@ class DbDocumentsRepository(DocumentsRepository):
         return doc  # FileBlob, ExternalBlob: no change needed
 
     def _update_document_instance(
-        self, document, doc_copy, metadata, scope=None, workflow_id=None
+        self,
+        document,
+        doc_copy,
+        metadata,
+        scope=None,
+        workflow_id=None,
+        audit_meta: Optional[Mapping[str, object]] = None,
     ):
         """Update document instance with metadata and context fields."""
         document.metadata = metadata
@@ -340,6 +459,9 @@ class DbDocumentsRepository(DocumentsRepository):
 
         # Update context fields if provided
         update_fields = ["metadata", "lifecycle_state", "lifecycle_updated_at"]
+        if audit_meta is not None:
+            document.audit_meta = dict(audit_meta)
+            update_fields.append("audit_meta")
         if workflow_id:
             document.workflow_id = workflow_id
             update_fields.append("workflow_id")
@@ -650,6 +772,11 @@ class DbDocumentsRepository(DocumentsRepository):
         return _encode_cursor(parts)
 
     def add_asset(self, asset: Asset, workflow_id: Optional[str] = None) -> Asset:
+        """Persist an asset to the database.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this adapter remains the DB-backed sink.
+        """
         DocumentAsset = apps.get_model("documents", "DocumentAsset")
         Document = apps.get_model("documents", "Document")
 
@@ -753,6 +880,11 @@ class DbDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str] = None,
         hard: bool = False,
     ) -> bool:
+        """Delete an asset from the database.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this adapter remains the DB-backed sink.
+        """
         DocumentAsset = apps.get_model("documents", "DocumentAsset")
         tenant = self._resolve_tenant(tenant_id)
         with self._schema_ctx(None, tenant):
@@ -790,6 +922,11 @@ class DbDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str] = None,
         hard: bool = False,
     ) -> bool:
+        """Delete a document in the database.
+
+        Planned refactor: CRUD persistence will move into a LangGraph-based
+        technical document graph; this adapter remains the DB-backed sink.
+        """
         Document = apps.get_model("documents", "Document")
         tenant = self._resolve_tenant(tenant_id)
 

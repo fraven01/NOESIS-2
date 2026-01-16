@@ -57,7 +57,6 @@ All graphs declare versioned Pydantic input/output models and attach a `GraphIOS
 
 Legacy graphs without `io_spec` are tracked for migration in `roadmap/backlog.md`.
 
-
 ## DSL (business graphs)
 
 Diese DSL wird aktuell vom `framework_analysis_graph` verwendet; technische Graphen nutzen LangGraph.
@@ -69,9 +68,9 @@ class GraphNode:
     runner: Callable[[dict[str, Any]], tuple[GraphTransition, bool]]
 ```
 
-* Der Runner erhält ein `dict[str, Any]`, das den Crawl-/RAG-Kontext,
+- Der Runner erhält ein `dict[str, Any]`, das den Crawl-/RAG-Kontext,
   Zwischenartefakte und Kontrollflags kapselt.
-* Jeder Knoten darf das Mapping in-place erweitern und liefert gemeinsam mit dem
+- Jeder Knoten darf das Mapping in-place erweitern und liefert gemeinsam mit dem
   Transition-Objekt ein `bool`, das den Kontrollfluss steuert.
 
 Ein `GraphTransition` validiert seine Felder beim Erzeugen und erzwingt
@@ -118,15 +117,15 @@ Framework-Version.
 
 ### Architektur-Highlights
 
-* **AI-First-Ansatz**: Typ-Erkennung (KBV/GBV/BV/DV), Gremium-Extraktion und
+- **AI-First-Ansatz**: Typ-Erkennung (KBV/GBV/BV/DV), Gremium-Extraktion und
   Komponenten-Lokalisierung erfolgen vollständig LLM-gestützt
-* **Hybrid Search**: Nutzt `retrieve.run()` als Worker für semantische +
+- **Hybrid Search**: Nutzt `retrieve.run()` als Worker für semantische +
   lexikalische Suchen im bestehenden RAG-System
-* **HITL-Trigger**: Niedrige Konfidenz oder fehlgeschlagene Validierung
+- **HITL-Trigger**: Niedrige Konfidenz oder fehlgeschlagene Validierung
   triggert automatisch Human-in-the-Loop-Review
-* **Multi-Version-Support**: Incrementelle Versionierung mit `is_current`-Flag,
+- **Multi-Version-Support**: Incrementelle Versionierung mit `is_current`-Flag,
   alte Profile bleiben erhalten
-* **Transaktionale Persistierung**: Atomare DB-Operationen für
+- **Transaktionale Persistierung**: Atomare DB-Operationen für
   FrameworkProfile + FrameworkDocument
 
 ### Knotenfolge
@@ -193,14 +192,14 @@ position: int
 
 Alle Inputs/Outputs nutzen Pydantic mit `frozen=True`, `extra="forbid"`:
 
-* **FrameworkAnalysisInput**: `document_collection_id`, optional `document_id`,
+- **FrameworkAnalysisInput**: `document_collection_id`, optional `document_id`,
   `force_reanalysis`, `confidence_threshold` (default 0.70)
-* **FrameworkAnalysisOutput**: `profile_id`, `version`, `gremium_identifier`,
+- **FrameworkAnalysisOutput**: `profile_id`, `version`, `gremium_identifier`,
   `structure: FrameworkStructure`, `completeness_score`, `missing_components`,
   `hitl_required`, `hitl_reasons`, `analysis_metadata`
-* **ComponentLocation**: `location` (Literal), `outline_path`, `chunk_ids`,
+- **ComponentLocation**: `location` (Literal), `outline_path`, `chunk_ids`,
   `page_numbers`, `confidence` (0.0–1.0)
-* **AssembledComponentLocation**: Erweitert ComponentLocation um `validated`,
+- **AssembledComponentLocation**: Erweitert ComponentLocation um `validated`,
   `validation_notes`, `annex_root`, `subannexes`
 
 Confidenz-Bounds werden validiert, Location-Typen sind typsicher.
@@ -211,8 +210,8 @@ Confidenz-Bounds werden validiert, Location-Typen sind typsicher.
 
 Header:
 
-* `X-Tenant-ID` (required)
-* `X-Trace-ID` (optional, auto-generated)
+- `X-Tenant-ID` (required)
+- `X-Trace-ID` (optional, auto-generated)
 
 Request Body:
 
@@ -262,28 +261,28 @@ Response (200):
 
 Error-Codes:
 
-* **400**: Invalid input (Validierung fehlgeschlagen)
-* **403**: Tenant nicht gefunden
-* **404**: DocumentCollection nicht gefunden
-* **409**: Profil existiert bereits (force_reanalysis=true nötig)
-* **500**: Analyse fehlgeschlagen (LLM-Fehler, DB-Fehler)
+- **400**: Invalid input (Validierung fehlgeschlagen)
+- **403**: Tenant nicht gefunden
+- **404**: DocumentCollection nicht gefunden
+- **409**: Profil existiert bereits (force_reanalysis=true nötig)
+- **500**: Analyse fehlgeschlagen (LLM-Fehler, DB-Fehler)
 
 ### Observability
 
 **Langfuse-Spans** (via `@observe_span`):
 
-* `framework.detect_type_and_gremium`
-* `framework.extract_toc`
-* `framework.locate_components`
-* `framework.validate_components`
-* `framework.assemble_profile`
+- `framework.detect_type_and_gremium`
+- `framework.extract_toc`
+- `framework.locate_components`
+- `framework.validate_components`
+- `framework.assemble_profile`
 
 **Strukturierte Logs**:
 
-* `framework_graph_starting` (info): Start mit Input-Parametern
-* `framework_hitl_required` (warning): HITL-Trigger mit Gründen
-* `framework_profile_persisted` (info): Erfolgreiche Persistierung
-* `framework_graph_completed` (info): Abschluss mit Metriken
+- `framework_graph_starting` (info): Start mit Input-Parametern
+- `framework_hitl_required` (warning): HITL-Trigger mit Gründen
+- `framework_profile_persisted` (info): Erfolgreiche Persistierung
+- `framework_graph_completed` (info): Abschluss mit Metriken
 
 Alle Logs enthalten `tenant_id`, `trace_id`, `gremium_identifier` für
 korrelierte Auswertung in ELK + Langfuse.
@@ -292,22 +291,22 @@ korrelierte Auswertung in ELK + Langfuse.
 
 **Unit-Tests** (`ai_core/tests/test_framework_utils.py`):
 
-* Gremium-Normalisierung (Umlaute, Sonderzeichen, Leerzeichen)
-* ToC-Extraktion aus Parent-Metadaten (Hierarchie, Deduplication, Sorting)
+- Gremium-Normalisierung (Umlaute, Sonderzeichen, Leerzeichen)
+- ToC-Extraktion aus Parent-Metadaten (Hierarchie, Deduplication, Sorting)
 
 **Contract-Tests** (`ai_core/tests/tools/test_framework_contracts.py`):
 
-* Pydantic-Validierung für alle Input/Output-Modelle
-* Confidenz-Bounds (0.0–1.0)
-* Literal-Constraints für `agreement_type`, `location`
-* Immutability (frozen Models)
+- Pydantic-Validierung für alle Input/Output-Modelle
+- Confidenz-Bounds (0.0–1.0)
+- Literal-Constraints für `agreement_type`, `location`
+- Immutability (frozen Models)
 
 **Integrations-Tests** (`ai_core/tests/graphs/test_framework_analysis_graph.py`):
 
-* Graph-Builder (Knoten-Reihenfolge, Namen)
-* Assemble-Logik (completeness_score, HITL-Trigger)
-* End-to-End mit LLM-Mocks (retrieve.run, llm_client.call)
-* Error-Handling (Retrieve-Fehler, Validierungs-Fehler)
+- Graph-Builder (Knoten-Reihenfolge, Namen)
+- Assemble-Logik (completeness_score, HITL-Trigger)
+- End-to-End mit LLM-Mocks (retrieve.run, llm_client.call)
+- Error-Handling (Retrieve-Fehler, Validierungs-Fehler)
 
 ### Deployment-Hinweise
 
@@ -320,9 +319,9 @@ docker compose exec web python manage.py migrate
 
 **Prompt-Versions-Tracking**: Prompts liegen in `ai_core/prompts/framework/`:
 
-* `detect_type_gremium.v1.md`
-* `locate_components.v1.md`
-* `validate_component.v1.md`
+- `detect_type_gremium.v1.md`
+- `locate_components.v1.md`
+- `validate_component.v1.md`
 
 Bei Prompt-Updates neue Version anlegen (v2, v3, ...) und `load_prompt()`-Call
 in Graph aktualisieren.
@@ -346,22 +345,22 @@ Boundary models live in `ai_core/graphs/technical/universal_ingestion_graph.py`:
 
 **Input**: `UniversalIngestionGraphInput` (Pydantic)
 
-* `schema_id`: `noesis.graphs.universal_ingestion`
-* `schema_version`: `1.0.0`
-* `input.normalized_document`: required `NormalizedDocument` (dict or object)
-* `context`: serialized `ToolContext` (scope + business)
+- `schema_id`: `noesis.graphs.universal_ingestion`
+- `schema_version`: `1.0.0`
+- `input.normalized_document`: required `NormalizedDocument` (dict or object)
+- `context`: serialized `ToolContext` (scope + business)
 
 **Output**: `UniversalIngestionGraphOutput` (Pydantic)
 
-* `schema_id`: `noesis.graphs.universal_ingestion`
-* `schema_version`: `1.0.0`
-* `decision`: `processed` | `skipped` | `failed`
-* `reason_code`: `DUPLICATE` | `VALIDATION_ERROR` | `PERSISTENCE_ERROR` | `PROCESSING_ERROR` | null
-* `reason`: Mensch-lesbarer Grund
-* `document_id`: UUID des persistierten Dokuments
-* `ingestion_run_id`: Verknuepfung zum Run
-* `telemetry`: Trace- und Tenant-Kontext
-* `formatted_status`: Legacy kompatibles Feld
+- `schema_id`: `noesis.graphs.universal_ingestion`
+- `schema_version`: `1.0.0`
+- `decision`: `processed` | `skipped` | `failed`
+- `reason_code`: `DUPLICATE` | `VALIDATION_ERROR` | `PERSISTENCE_ERROR` | `PROCESSING_ERROR` | null
+- `reason`: Mensch-lesbarer Grund
+- `document_id`: UUID des persistierten Dokuments
+- `ingestion_run_id`: Verknuepfung zum Run
+- `telemetry`: Trace- und Tenant-Kontext
+- `formatted_status`: Legacy kompatibles Feld
 
 ### Knotenfolge
 
@@ -376,8 +375,8 @@ Boundary models live in `ai_core/graphs/technical/universal_ingestion_graph.py`:
 
 4. **process**
    Delegiert die inhaltliche Verarbeitung (Parsing, Chunking, Embedding) an den shared `document_processing_graph`.
-   * Injiziert `DocumentProcessingContext` und `DocumentPipelineConfig`.
-   * Injiziert `Storage`-Service fuer Blob-Zugriffe.
+   - Injiziert `DocumentProcessingContext` und `DocumentPipelineConfig`.
+   - Injiziert `Storage`-Service fuer Blob-Zugriffe.
 
 5. **finalize**
    Mappt das Ergebnis auf `UniversalIngestionGraphOutput` und sammelt Telemetrie.

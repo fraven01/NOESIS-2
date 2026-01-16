@@ -386,7 +386,7 @@ kopiert Defaults in jede Origin. Zusätzliche Felder werden ignoriert.
   ausgespielt; diese Metriken bilden die Grundlage für Guardrail-Dashboards.【F:ai_core/graphs/crawler_ingestion_graph.py†L704-L741】【F:documents/metrics.py†L167-L185】
 - `run_ingestion_graph` bereinigt nach dem Graph-Lauf den hinterlegten
   `raw_payload_path`, sodass Runbooks bei Fehlern gezielt nach dem Artefaktpfad
-  suchen können, bevor der Cleanup greift.【F:ai_core/tasks.py†L1712-L1774】
+  suchen können, bevor der Cleanup greift.【F:ai_core/tasks/graph_tasks.py†L1712-L1774】
 - Alle Stufen liefern `policy_events` und optionale `CrawlerError`-Payloads, die
   direkt in Langfuse-Traces und Dead-Letter-Events übernommen werden. Sie
   korrespondieren mit den Pflichtfeldern aus dem Observability-Leitfaden.【F:crawler/fetcher.py†L121-L152】【F:ai_core/api.py†L121-L195】

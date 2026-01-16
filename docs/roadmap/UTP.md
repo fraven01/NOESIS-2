@@ -440,7 +440,7 @@ Definiere einen UniversalIngestionState mit folgenden Gruppen
 
 * [x] universal_ingestion_graph kann lokal invokiert werden
 * [x] Test Suite enthält mindestens einen grünen Integration Test je source
-* [x] Dokumentation der Graph Inputs und Outputs ist in ai_core/graphs/README.md ergänzt
+* [x] Dokumentation der Graph Inputs und Outputs ist in ai_core/graph/README.md ergänzt
 
 ---
 

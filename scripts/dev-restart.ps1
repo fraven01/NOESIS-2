@@ -1,5 +1,6 @@
 Param(
-    [string[]]$Services = @('web', 'worker', 'agents-worker', 'ingestion-worker')
+    [switch]$IncludeInfrastructure,
+    [string[]]$Services = @()
 )
 
 Set-StrictMode -Version Latest
@@ -7,7 +8,22 @@ $ErrorActionPreference = 'Stop'
 
 $compose = 'docker compose -f docker-compose.yml -f docker-compose.dev.yml'
 
-$svcList = if ($Services -and $Services.Length -gt 0) { ($Services -join ' ') } else { 'web worker agents-worker ingestion-worker' }
+$defaultServices = @('web', 'worker', 'beat')
+$infrastructureServices = @('db', 'redis', 'litellm')
+
+if ($Services -and $Services.Length -gt 0) {
+    $serviceList = $Services
+}
+else {
+    $serviceList = $defaultServices
+}
+
+if ($IncludeInfrastructure.IsPresent) {
+    $serviceList += $infrastructureServices
+}
+
+$serviceList = $serviceList | Select-Object -Unique
+$svcList = if ($serviceList.Count -gt 0) { ($serviceList -join ' ') } else { ($defaultServices -join ' ') }
 Write-Host "[dev-restart] Restarting: $svcList"
 
 try {

@@ -59,6 +59,29 @@ class DocumentPersistenceService(Protocol):
         """Persist a normalized document and return the stored representation."""
 
 
+def normalize_raw_reference(
+    *,
+    raw_reference: Mapping[str, Any],
+    tenant_id: str,
+    case_id: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    source: Optional[str] = None,
+    object_store: ObjectStore | None = None,
+) -> NormalizedDocumentPayload:
+    """Normalize raw payloads into a canonical NormalizedDocumentPayload."""
+    contract = NormalizedDocumentInputV1.from_raw(
+        raw_reference=raw_reference,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        workflow_id=workflow_id,
+        source=source,
+    )
+    return documents_api.normalize_from_raw(
+        contract=contract,
+        object_store=object_store,
+    )
+
+
 def _resolve_default_repository() -> DocumentsRepository:
     """Return the configured documents repository, defaulting to DB."""
     try:
@@ -215,4 +238,5 @@ __all__ = [
     "DocumentsApiLifecycleService",
     "DocumentPersistenceService",
     "DocumentsRepositoryAdapter",
+    "normalize_raw_reference",
 ]

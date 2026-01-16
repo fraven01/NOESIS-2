@@ -25,9 +25,11 @@ def framework_analysis_tool(request):
     """Render the framework analysis developer tool."""
     views = _views()
     try:
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
+        scope = views._scope_context_from_request(request)
     except TenantRequiredError as exc:
         return views._tenant_required_response(exc)
+    tenant_id = scope.tenant_id
+    tenant_schema = scope.tenant_schema or tenant_id
 
     # Resolve default collection (manual collection for this tenant)
     manual_collection_id, _ = views._resolve_manual_collection(tenant_id, None)
@@ -54,13 +56,14 @@ def framework_analysis_submit(request):
     if not tenant_id:
         # Try to resolve from request context if header missing
         try:
-            tenant_id, _ = views._tenant_context_from_request(request)
+            scope = views._scope_context_from_request(request)
         except TenantRequiredError:
             return views._json_error_response(
                 "Tenant ID missing",
                 status_code=400,
                 code="invalid_tenant_header",
             )
+        tenant_id = scope.tenant_id
 
     tenant_schema = request.headers.get("X-Tenant-Schema") or "public"
     trace_id = request.headers.get("X-Trace-ID") or uuid4().hex

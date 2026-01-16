@@ -6,9 +6,9 @@ Diese Referenz beschreibt, wie Kontext-IDs von HTTP über Django und Celery bis 
 
 ### LangGraph-Definitionen
 
-- `ai_core/graphs/collection_search.py` – Graph für Collection- und Websuche; erwartet ToolContext in `meta` (ScopeContext + BusinessContext). Business-IDs (z.B. `case_id`, `workflow_id`) liegen in `business_context`, Infrastruktur-IDs in `scope_context`.
+- `ai_core/graphs/technical/collection_search.py` – Graph für Collection- und Websuche; erwartet ToolContext in `meta` (ScopeContext + BusinessContext). Business-IDs (z.B. `case_id`, `workflow_id`) liegen in `business_context`, Infrastruktur-IDs in `scope_context`.
 - `ai_core/graphs/technical/universal_ingestion_graph.py` – Orchestriert Ingestion für `source=search`, `upload` und `crawler`. Validiert benötigte Business-IDs graph-spezifisch; `case_id` ist optional im BusinessContext.
-- `ai_core/graphs/retrieval_augmented_generation.py`, `framework_analysis_graph.py`, `info_intake.py`, `document_service.py`, `cost_tracking.py` – weitere Graphen; konsumieren `meta` mit ToolContext und propagieren Scope/Business-IDs über ToolContext.
+- `ai_core/graphs/technical/retrieval_augmented_generation.py`, `ai_core/graphs/business/framework_analysis_graph.py`, `ai_core/graphs/technical/info_intake.py`, `ai_core/graphs/technical/document_service.py`, `ai_core/graphs/technical/cost_tracking.py` – weitere Graphen; konsumieren `meta` mit ToolContext und propagieren Scope/Business-IDs über ToolContext.
 - `llm_worker/graphs/hybrid_search_and_score.py` & `score_results.py` – Worker-seitige Graphen für Hybrid-Scoring; erhalten ToolContext über Task-Meta.
 
 ### Celery-Tasks
@@ -30,33 +30,33 @@ Diese Referenz beschreibt, wie Kontext-IDs von HTTP über Django und Celery bis 
 
 ## ID-Propagation je Szenario
 
-### HTTP ? Django ? Celery ? Graph (Collection Search)
+### HTTP -> Django -> Celery -> Graph (Collection Search)
 
 1. HTTP-Request liefert `X-Tenant-ID`, optional `X-Case-ID`, `X-Trace-ID`.
 2. Middleware (`RequestContextMiddleware`) ruft `normalize_request` auf, erstellt `ScopeContext` und validiert IDs (z.B. Tenant-Existenz); Business-IDs kommen aus Headern.
-3. View nutzt `request.scope_context` plus `business_context`.
+3. View nutzt `request.scope_context` plus `build_business_context_from_request(request)` und baut daraus `ToolContext`.
 4. Dispatcher serialisiert `ScopeContext` + `BusinessContext` + `ToolContext` und legt Celery-Task `llm_worker.tasks.run_graph` in Queue `agents`.
 5. Graph baut `ToolContext` aus `meta`, validiert Pflichtfelder, propagiert IDs in jeden Tool-Call (`WebSearchWorker`, Hybrid-Score) via `ToolContext`.
-6. Tools erzeugen `invocation_id` und geben Outcomes mit identischen Kontextfeldern an Langfuse/Logs weiter.
+6. Tools propagieren `invocation_id` und geben Outcomes mit identischen Kontextfeldern an Langfuse/Logs weiter.
 
 ### Websearch + Auto-Ingest
 
-1. Collection- oder External-Knowledge-Graph entscheidet ?ber Ingestion (`auto_ingest` oder HITL approved).
-2. Graph erzeugt `ingestion_run_id` am Trigger-Punkt und ?bergibt Scope-/Business-IDs in `meta` (Business: `case_id`, `workflow_id`, `collection_id`).
-3. Celery-Task `ai_core.tasks.run_ingestion_graph` startet mit `state/meta`; Phase-Spans (`crawler.ingestion.*`) f?hren `trace_id`, `ingestion_run_id`, `workflow_id`.
+1. Collection- oder External-Knowledge-Graph entscheidet über Ingestion (`auto_ingest` oder HITL approved).
+2. Graph erzeugt `ingestion_run_id` am Trigger-Punkt und übergibt Scope-/Business-IDs in `meta` (Business: `case_id`, `workflow_id`, `collection_id`).
+3. Celery-Task `ai_core.tasks.run_ingestion_graph` startet mit `state/meta`; Phase-Spans (`crawler.ingestion.*`) führen `trace_id`, `ingestion_run_id`, `workflow_id`.
 4. Nach Abschluss wird `CaseEvent`/`ingestion.end` mit denselben IDs emittiert.
 
 ### Cron-Crawler ohne Case
 
 1. Scheduler ruft `run_ingestion_graph` mit `state/meta` auf; `business_context` kann **ohne** `case_id` gebaut werden.
-2. Validation-Policy erlaubt fehlende `case_id` f?r System-Tasks; Graph markiert Events als systemisch.
+2. Validation-Policy erlaubt fehlende `case_id` für System-Tasks; Graph markiert Events als systemisch.
 3. Tools erhalten ToolContext mit `ingestion_run_id`, `tenant_id`, `trace_id`; `workflow_id` beschreibt den Crawler-Flow.
 
-### Multi-Step Graph ? Graph
+### Multi-Step Graph -> Graph
 
-1. Ein Graph ruft einen nachgelagerten Graph (z.B. `collection_search` ? `hybrid_search_and_score`).
+1. Ein Graph ruft einen nachgelagerten Graph (z.B. `collection_search` -> `hybrid_search_and_score`).
 2. Aufrufer gibt `tenant_id`, `workflow_id` und **denselben** `trace_id` weiter; `case_id` liegt in `business_context`.
-3. `run_id` wird pro Ausf?hrung neu generiert; Kind-Graph darf `ingestion_run_id` nur setzen, wenn er Ingestion startet.
+3. `run_id` wird pro Ausführung neu generiert; Kind-Graph darf `ingestion_run_id` nur setzen, wenn er Ingestion startet.
 
 ### 1.2 OpenTelemetry & W3C Trace Context
 
@@ -78,9 +78,10 @@ When resolving IDs, the priority is:
 3. **HTTP Headers / Task Metadata** (Transport)
 
 For `trace_id`, if an active OTel span exists, it takes precedence for generation/alignment.
+
 ## Validierung und Fehlerpfade
 
-- **Pflicht**: `tenant_id` immer; `case_id` Pflicht für fachliche Workloads; `trace_id` Pflicht für Observability; genau eine Laufzeit-ID.
+- **Pflicht**: `tenant_id` immer; `case_id` Pflicht für fachliche Workloads; `trace_id` Pflicht für Observability; mindestens eine Laufzeit-ID (`run_id` und/oder `ingestion_run_id`).
 - **Fail-fast**: Graph-Inputs (GraphIOSpec-boundary models, Tool-Inputs) verwenden `extra=forbid` und Feldvalidatoren. Fehlende oder leere Felder brechen den Start ab.
 - **System-Tasks**: `case_id` optional; Events markieren `system_task=true` im Metadata-Feld.
 - **Fallback**: Kein Default-Case; fehlende Cases müssen explizit erstellt werden (Auto-Create-Flag) oder führen zu 4xx.

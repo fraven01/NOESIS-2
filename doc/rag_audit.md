@@ -64,7 +64,7 @@
       embedding: Optional[List[float]] = None
       parents: Optional[Dict[str, Dict[str, Any]]] = None
   ```
-- ai_core/tasks.py: `chunk` —
+- ai_core/tasks/ingestion_tasks.py: `chunk` —
   ```python
       target_tokens = int(getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450))
       if profile_limit is not None:
@@ -85,7 +85,7 @@
           "parent_ids": parent_ids,
       }
   ```
-- ai_core/tasks.py: `_resolve_overlap_tokens` —
+- ai_core/tasks/helpers/chunking.py: `_resolve_overlap_tokens` —
   ```python
   configured_limit = getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", None)
   if configured_value is not None and configured_value <= 0:
@@ -225,14 +225,14 @@
           )
       )
   ```
-- ai_core/tasks.py: `_build_path` —
+- ai_core/tasks/helpers/task_utils.py: `_build_path` —
   ```python
   def _build_path(meta: Dict[str, str], *parts: str) -> str:
       tenant = object_store.sanitize_identifier(meta["scope_context"]["tenant_id"])
       case = object_store.sanitize_identifier(meta["scope_context"].get("case_id") or "upload")
       return "/".join([tenant, case, *parts])
   ```
-- ai_core/tasks.py: chunk output packaging —
+- ai_core/tasks/ingestion_tasks.py: chunk output packaging —
   ```python
   payload = {"chunks": chunks, "parents": limited_parents}
   out_path = _build_path(meta, "embeddings", "chunks.json")
@@ -410,7 +410,7 @@
   RAG_CHUNK_TARGET_TOKENS = env.int("RAG_CHUNK_TARGET_TOKENS", default=450)
   RAG_CHUNK_OVERLAP_TOKENS = env.int("RAG_CHUNK_OVERLAP_TOKENS", default=80)
   ```
-- ai_core/tasks.py: RAG parent capture controls —
+- ai_core/tasks/ingestion_tasks.py: RAG parent capture controls —
   ```python
   def _resolve_parent_capture_max_depth() -> int:
       value = getattr(settings, "RAG_PARENT_CAPTURE_MAX_DEPTH", 0)
@@ -427,7 +427,7 @@
   cap = int(value)
   return cap if cap > 0 else 0
   ```
-- ai_core/tasks.py: near-duplicate normalisation flag —
+- ai_core/tasks/helpers/embedding.py: near-duplicate normalisation flag —
   ```python
   env_value = os.getenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM")
   try:

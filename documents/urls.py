@@ -24,6 +24,21 @@ app_name = "documents"
 urlpatterns = [
     path("download/<uuid:document_id>/", views.document_download, name="download"),
     path("recent/", views.recent_documents, name="recent"),
+    path(
+        "<uuid:document_id>/versions/",
+        views.document_versions,
+        name="document_versions",
+    ),
+    path(
+        "<uuid:document_id>/versions/<uuid:version_id>/chunks/",
+        views.document_version_chunks,
+        name="document_version_chunks",
+    ),
+    path(
+        "<uuid:document_id>/versions/<uuid:version_id>/diff/",
+        views.document_version_diff,
+        name="document_version_diff",
+    ),
     path("share/<uuid:document_id>/", views.share_document, name="share"),
     path(
         "assets/<uuid:document_id>/<uuid:asset_id>/",

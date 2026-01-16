@@ -107,6 +107,7 @@ class FrameworkProfile(models.Model):
     """
 
     # Metadata
+    audit_meta = models.JSONField(blank=True, default=dict)
     metadata = models.JSONField(blank=True, default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

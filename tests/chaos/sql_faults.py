@@ -126,7 +126,7 @@ def test_write_path_idempotency_retry(
     payload = {"hello": "world"}
 
     first = client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data=json.dumps(payload),
         content_type="application/json",
         **headers,
@@ -138,7 +138,7 @@ def test_write_path_idempotency_retry(
     chaos_env.set_sql_down(False)
 
     retry = client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data=json.dumps(payload),
         content_type="application/json",
         **headers,
@@ -151,7 +151,7 @@ def test_write_path_idempotency_retry(
     assert call_counter["count"] == 1
 
     third = client.post(
-        "/ai/intake/",
+        "/v1/ai/intake/",
         data=json.dumps(payload),
         content_type="application/json",
         **headers,

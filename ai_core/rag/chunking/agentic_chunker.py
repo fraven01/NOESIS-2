@@ -397,6 +397,8 @@ class AgenticChunker:
         """
         chunks = []
 
+        namespace_key = self._resolve_chunk_namespace_key(context)
+
         # Add start and end boundaries
         all_boundaries = sorted([0] + boundaries + [len(sentences)])
 
@@ -412,7 +414,7 @@ class AgenticChunker:
             if self.use_content_based_ids:
                 # Content-based SHA256 ID (namespaced by document_id to prevent collisions)
                 normalized_text = chunk_text.lower().strip()
-                namespaced_content = f"{context.metadata.document_id}:{normalized_text}"
+                namespaced_content = f"{namespace_key}:{normalized_text}"
                 chunk_hash = hashlib.sha256(
                     namespaced_content.encode("utf-8")
                 ).hexdigest()
@@ -424,7 +426,7 @@ class AgenticChunker:
                 chunk_id = str(
                     uuid5(
                         NAMESPACE_DNS,
-                        f"{context.metadata.document_id}:{start_idx}:{end_idx}",
+                        f"{namespace_key}:{start_idx}:{end_idx}",
                     )
                 )
 
@@ -445,6 +447,13 @@ class AgenticChunker:
             chunks.append(chunk)
 
         return chunks
+
+    @staticmethod
+    def _resolve_chunk_namespace_key(context: DocumentProcessingContext) -> str:
+        version_id = getattr(context.metadata, "document_version_id", None)
+        if version_id in {None, ""}:
+            return str(context.metadata.document_id)
+        return str(version_id)
 
 
 # ==============================================================================

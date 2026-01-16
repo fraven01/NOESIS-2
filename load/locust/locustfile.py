@@ -122,7 +122,7 @@ class RagQueryUser(TenantHttpUser):
 
 
 class IntakeUser(TenantHttpUser):
-    """Exercises POST /ai/intake/ for info intake flows."""
+    """Exercises POST /v1/ai/intake/ for info intake flows."""
 
     payload = _load_json_env(
         "LOCUST_INTAKE_PAYLOAD",
@@ -134,7 +134,7 @@ class IntakeUser(TenantHttpUser):
 
     @task
     def run_intake(self) -> None:
-        self.post_json("/ai/intake/", self.payload, name="POST /ai/intake/")
+        self.post_json("/v1/ai/intake/", self.payload, name="POST /v1/ai/intake/")
 
 
 class IngestionRunUser(TenantHttpUser):

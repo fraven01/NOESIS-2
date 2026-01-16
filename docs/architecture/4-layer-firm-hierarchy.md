@@ -25,7 +25,7 @@ Primary locations:
 
 Business-heavy graph example (domain logic implemented in a graph module):
 
-- `ai_core/graphs/framework_analysis_graph.py` (writes `documents/framework_models.py:FrameworkProfile` / `FrameworkDocument`)
+- `ai_core/graphs/business/framework_analysis_graph.py` (writes `documents/framework_models.py:FrameworkProfile` / `FrameworkDocument`)
 
 ### Layer 3 — Technical orchestration (graphs + services)
 
@@ -40,7 +40,7 @@ Primary locations:
 Primary locations:
 
 - Agents queue worker task: `llm_worker/tasks.py:run_graph` (`queue="agents-high"` default, `agents-low` for background)
-- Ingestion queue task: `ai_core/tasks.py:run_ingestion_graph` (`queue="ingestion"`)
+- Ingestion queue task: `ai_core/tasks/graph_tasks.py:run_ingestion_graph` (`queue="ingestion"`)
 - Task/context plumbing: `common/celery.py` (`ScopedTask`, `with_scope_apply_async`)
 - Local queue wiring (compose): `docker-compose.yml`, `docker-compose.dev.yml`
 

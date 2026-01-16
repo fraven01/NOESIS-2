@@ -885,39 +885,6 @@ def build_document_processing_graph(
                 action=_chunk_action,
             )
 
-            # Persist chunks as assets for debugging/vis
-            for i, chunk in enumerate(chunks):
-                # Fallback for LateChunker (uses 'text') vs other chunkers ('content')
-                text_content = chunk.get("content") or chunk.get("text")
-                if not text_content:
-                    continue
-
-                chunk_id = chunk.get("chunk_id") or str(uuid.uuid4())
-                meta = dict(chunk.get("metadata") or {})
-                meta["asset_kind"] = "chunk"
-                meta["chunk_index"] = i
-                if "parent_ref" in chunk:
-                    meta["parent_ref"] = chunk["parent_ref"]
-
-                try:
-                    repository.add_asset(
-                        document=state.document,
-                        asset_id=chunk_id,
-                        media_type="text/plain",
-                        content=InlineBlob(data=text_content.encode("utf-8")),
-                        metadata=meta,
-                        workflow_id=workflow_id,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "chunk_persistence_failed",
-                        extra={
-                            "chunk_id": chunk_id,
-                            "error": str(exc),
-                            "document_id": str(metadata.document_id),
-                        },
-                    )
-
             chunk_stats = dict(chunk_stats or {})
             chunk_stats["chunk.state"] = pipeline_module.ProcessingState.CHUNKED.value
             chunk_stats.setdefault("chunk.count", len(chunks))
@@ -935,11 +902,11 @@ def build_document_processing_graph(
 
             # --- Persistence of Chunks to DocumentAsset (Debug/Explorer Visibility) ---
             if repository is not None:
-                try:
-                    # Local imports to avoid circular dependency
-                    from documents.contracts import Asset, AssetRef
+                # Local imports to avoid circular dependency
+                from documents.contracts import Asset, AssetRef
 
-                    for i, chunk in enumerate(chunks):
+                for i, chunk in enumerate(chunks):
+                    try:
                         # Handle both dicts and objects (Pydantic models)
                         content = getattr(chunk, "content", None)
                         if content is None and isinstance(chunk, dict):
@@ -995,15 +962,24 @@ def build_document_processing_graph(
 
                         repository.add_asset(asset, workflow_id=workflow_id)
 
-                except Exception as persist_exc:
-                    # Non-blocking failure - log and continue
-                    logger.warning(
-                        "chunk_persistence_failed",
-                        extra={
-                            "document_id": str(metadata.document_id),
-                            "error": str(persist_exc),
-                        },
-                    )
+                    except Exception as persist_exc:
+                        # Non-blocking failure - log and continue with next chunk
+                        chunk_identifier = None
+                        try:
+                            chunk_identifier = str(asset_id)
+                        except NameError:
+                            chunk_identifier = f"chunk_{i}"
+
+                        logger.warning(
+                            "chunk_persistence_failed",
+                            extra={
+                                "document_id": str(metadata.document_id),
+                                "chunk_index": i,
+                                "chunk_id": chunk_identifier,
+                                "error": str(persist_exc),
+                                "error_type": type(persist_exc).__name__,
+                            },
+                        )
             # --------------------------------------------------------------------------
 
             from .pipeline import DocumentChunkArtifact

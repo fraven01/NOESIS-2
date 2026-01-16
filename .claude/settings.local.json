@@ -57,7 +57,22 @@
       "Bash(npm run dev:manage shell:*)",
       "Bash(python -m ruff check:*)",
       "Bash(python test_upload.py:*)",
-      "Bash(npm run test:py:fast:*)"
+      "Bash(npm run test:py:fast:*)",
+      "Bash(for file in \"docs/cloud/gcp-staging.md\" \"docs/cloud/gcp-prod.md\" \"docs/environments/matrix.md\" \"docs/docker/conventions.md\")",
+      "Bash(do test -f \"f:\\\\NOESIS-2\\\\NOESIS-2$file\")",
+      "Bash(echo:*)",
+      "Bash(for file in \"docs/agents/tool-contracts.md\" \"docs/agents/reranking-contracts.md\" \"docs/agents/web-search-tool.md\")",
+      "Bash(git stash:*)",
+      "Bash(wc:*)",
+      "Bash(git rm:*)",
+      "Bash(git push:*)",
+      "Bash(git merge:*)",
+      "Bash(for file in \"tests/chaos/sql_faults.py\" \"tests/chaos/redis_faults.py\" \"ai_core/tests/test_request_context_middleware.py\" \"common/tests/test_logging.py\" \"noesis2/api/serializers.py\" \"load/locust/locustfile.py\")",
+      "Bash(do)",
+      "Bash(if [ -f \"$file\" ])",
+      "Bash(then)",
+      "Bash(fi)",
+      "Bash(npm test:*)"
     ],
     "deny": [],
     "ask": []

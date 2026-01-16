@@ -105,7 +105,7 @@ def test_ping_graceful_degradation(
     caplog,
     monkeypatch,
 ):
-    """The ``/ai/ping/`` endpoint continues to succeed when Redis is down."""
+    """The ``/v1/ai/ping/`` endpoint continues to succeed when Redis is down."""
 
     rate_limit.reset_cache()
     monkeypatch.setenv("LITELLM_BASE_URL", "http://litellm.local")
@@ -125,7 +125,7 @@ def test_ping_graceful_degradation(
     }
 
     with caplog.at_level("WARNING", logger="ai_core.infra.rate_limit"):
-        response = client.get("/ai/ping/", **headers)
+        response = client.get("/v1/ai/ping/", **headers)
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}

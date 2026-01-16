@@ -10,7 +10,7 @@ See README.md for architecture and usage details.
 from __future__ import annotations
 
 __all__ = [
-    # New SOTA chunkers
+    # SOTA chunkers
     "HybridChunker",
     "RoutingAwareChunker",
     "LateChunker",
@@ -18,10 +18,6 @@ __all__ = [
     "ChunkerConfig",
     "get_default_chunker_config",
     "get_chunker_config_from_routing",
-    # Legacy exports (backward compatibility)
-    "SectionChunkPlan",
-    "SemanticChunker",
-    "SemanticTextBlock",
 ]
 
 from .hybrid_chunker import (
@@ -33,8 +29,5 @@ from .hybrid_chunker import (
     get_chunker_config_from_routing,
 )
 from .late_chunker import LateChunker
-
-# Backward compatibility: re-export old chunker classes
-from ..semantic_chunker import SectionChunkPlan, SemanticChunker, SemanticTextBlock
 
 # AgenticChunker will be added in Phase 2

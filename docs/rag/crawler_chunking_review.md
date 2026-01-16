@@ -15,12 +15,12 @@
 ## Chunking-Befund
 - Der Crawler-Graph instanziiert standardmäßig `SimpleDocumentChunker`, der lediglich einen Chunk pro Textblock (max. 2048 Byte) generiert – gedacht als Smoke-Test-Preview, nicht für produktive Embeddings.【F:ai_core/graphs/crawler_ingestion_graph.py†L185-L204】【F:documents/cli.py†L504-L562】
 - Beim eigentlichen `trigger_embedding` wird dennoch **das gesamte normalisierte Dokument** als einzelner Chunk (`Chunk(content=normalized_content, …)`) an den Vector-Client gesendet. Parent-IDs, Abschnittsgrenzen oder Overlaps fehlen vollständig.【F:ai_core/api.py†L413-L478】
-- Das robuste Chunking mit Token-Zielgrößen (Default 450), Hard-Limit, dynamischer Überlappung, Abschnittsregistrierung und Parent-Capture steht in `ai_core.tasks.chunk` bereit, wird aber nur in der generischen Upload/Batch-Ingestion genutzt.【F:ai_core/tasks.py†L700-L1257】
+- Das robuste Chunking mit Token-Zielgrößen (Default 450), Hard-Limit, dynamischer Überlappung, Abschnittsregistrierung und Parent-Capture steht in `ai_core.tasks.chunk` bereit, wird aber nur in der generischen Upload/Batch-Ingestion genutzt.【F:ai_core/tasks/ingestion_tasks.py†L700-L1257】
 - Damit laufen selbst lange Crawler-Dokumente in einen einzigen Vektor – eine häufige Ursache für `vector_candidates: 0`, weil Suchbegriffe semantisch verwässern und keine feinkörnigen Treffer existieren.
 
 ## Boilerplate & Irrelevanzen
 - HTML-spezifische Boilerplate wird aggressiv gestrippt; für textuelle Boilerplate (z. B. wiederholte Job-Listings) fehlt hingegen ein Score oder eine Quarantäne-Strategie. In der Chunk-Phase gibt es keinen weiteren Filter.
-- Ohne produktiven Chunker landen Listen oder FAQ-Sektionen komplett im Volltext-Chunk; in der Upload-Pipeline würden sie dagegen in eigene Token-Begrenzte Chunks fallen.【F:ai_core/tasks.py†L940-L1159】
+- Ohne produktiven Chunker landen Listen oder FAQ-Sektionen komplett im Volltext-Chunk; in der Upload-Pipeline würden sie dagegen in eigene Token-Begrenzte Chunks fallen.【F:ai_core/tasks/ingestion_tasks.py†L940-L1159】
 
 ## Asset-Verknüpfung
 - Parser liefern strukturierte Asset-Metadaten inkl. `parent_ref`, Caption-Kandidaten und Kontextfenster.【F:documents/parsers_html.py†L207-L278】
@@ -29,9 +29,9 @@
 
 ## Empfehlungen
 1. **Produktions-Chunker verwenden**  
-   - Integriert `ai_core.tasks.chunk` (inkl. Parent/Overlap-Logik) in den Crawler-Graphen, bevor `trigger_embedding` aufgerufen wird. Alternativ: `trigger_embedding` soll `chunks.json` konsumieren statt `normalized_content` zu versenden.【F:ai_core/tasks.py†L700-L1257】【F:ai_core/api.py†L413-L478】
+   - Integriert `ai_core.tasks.chunk` (inkl. Parent/Overlap-Logik) in den Crawler-Graphen, bevor `trigger_embedding` aufgerufen wird. Alternativ: `trigger_embedding` soll `chunks.json` konsumieren statt `normalized_content` zu versenden.【F:ai_core/tasks/ingestion_tasks.py†L700-L1257】【F:ai_core/api.py†L413-L478】
 2. **Chunk-Metadaten anreichern**  
-   - Übernehmt `parent_ids`, Abschnittstitel und ggf. Asset-Locator in das Meta-Payload, damit Retrieval gezielt Eltern-Kontext (z. B. Überschriften) filtern kann.【F:ai_core/tasks.py†L1112-L1188】
+   - Übernehmt `parent_ids`, Abschnittstitel und ggf. Asset-Locator in das Meta-Payload, damit Retrieval gezielt Eltern-Kontext (z. B. Überschriften) filtern kann.【F:ai_core/tasks/ingestion_tasks.py†L1112-L1188】
 3. **Boilerplate-Heuristiken erweitern**  
    - Ergänzt `_strip_boilerplate` um Freitext-Signaturen (z. B. reguläre Ausdrücke für Cookie-Banner/Job-Listings) oder bewertet Blöcke anhand Wiederholungs-Score, bevor sie als Chunk-Kandidaten dienen.【F:documents/parsers_html.py†L282-L312】
 4. **Asset-Kontext fusionieren**  

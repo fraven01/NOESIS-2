@@ -13,35 +13,80 @@ from theme.views import chat_submit
 def test_chat_submit_global_search_does_not_require_case_id(tenant_pool):
     tenant = tenant_pool["alpha"]
     factory = RequestFactory()
-
     request = factory.post(
         reverse("chat-submit"),
         data={"message": "hello", "global_search": "on"},
     )
     request.tenant = tenant
+    from django.contrib.sessions.backends.db import SessionStore
 
-    captured: dict[str, object] = {}
+    request.session = SessionStore()
 
-    def fake_run(state, meta):
-        import importlib
-
-        rag = importlib.import_module(
-            "ai_core.graphs.technical.retrieval_augmented_generation"
+    with patch("theme.views_chat.RagQueryService.execute") as mock_execute:
+        mock_execute.return_value = (
+            {},
+            {"answer": "ok", "snippets": []},
         )
-        rag._build_tool_context(meta)
-        captured["meta"] = meta
-        return state, {"answer": "ok", "snippets": []}
-
-    with patch(
-        "ai_core.graphs.technical.retrieval_augmented_generation.run",
-        side_effect=fake_run,
-    ):
         response = chat_submit(request)
 
     assert response.status_code == 200
     assert "ok" in response.content.decode()
 
-    meta = captured["meta"]
-    assert isinstance(meta, dict)
-    assert meta.get("business_context", {}).get("case_id") is None
-    assert isinstance(meta.get("tool_context"), dict)
+    tool_context = mock_execute.call_args[1]["tool_context"]
+    assert tool_context.business.case_id is None
+
+
+@pytest.mark.slow
+@pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
+def test_chat_submit_case_scope_uses_case_id(tenant_pool):
+    tenant = tenant_pool["alpha"]
+    factory = RequestFactory()
+    request = factory.post(
+        reverse("chat-submit"),
+        data={"message": "hello", "case_id": "case-scope", "chat_scope": "case"},
+    )
+    request.tenant = tenant
+    from django.contrib.sessions.backends.db import SessionStore
+
+    request.session = SessionStore()
+
+    with patch("theme.views_chat.RagQueryService.execute") as mock_execute:
+        mock_execute.return_value = (
+            {},
+            {"answer": "ok", "snippets": []},
+        )
+        response = chat_submit(request)
+
+    assert response.status_code == 200
+    assert "ok" in response.content.decode()
+
+    tool_context = mock_execute.call_args[1]["tool_context"]
+    assert tool_context.business.case_id == "case-scope"
+
+
+@pytest.mark.slow
+@pytest.mark.django_db
+@pytest.mark.xdist_group("tenant_ops")
+def test_chat_submit_no_dev_case_fallback(tenant_pool):
+    tenant = tenant_pool["alpha"]
+    factory = RequestFactory()
+    request = factory.post(
+        reverse("chat-submit"),
+        data={"message": "hello"},
+    )
+    request.tenant = tenant
+    from django.contrib.sessions.backends.db import SessionStore
+
+    request.session = SessionStore()
+
+    with patch("theme.views_chat.RagQueryService.execute") as mock_execute:
+        mock_execute.return_value = (
+            {},
+            {"answer": "ok", "snippets": []},
+        )
+        response = chat_submit(request)
+
+    assert response.status_code == 200
+    tool_context = mock_execute.call_args[1]["tool_context"]
+    assert tool_context.business.case_id is None

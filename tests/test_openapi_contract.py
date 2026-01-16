@@ -49,8 +49,8 @@ def test_required_header_components_are_registered(openapi_schema):
 def test_expected_paths_are_present(openapi_schema):
     paths = set(openapi_schema["paths"].keys())
     required_paths = {
-        "/ai/ping/",
-        "/ai/intake/",
+        "/v1/ai/ping/",
+        "/v1/ai/intake/",
         "/ai/rag/query/",
         "/v1/ai/ping/",
         "/v1/ai/intake/",

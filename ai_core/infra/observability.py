@@ -387,47 +387,139 @@ def start_trace(
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     metadata: Optional[dict[str, Any]] = None,
-) -> None:
-    """Start a root trace using OpenTelemetry."""
+    trace_id: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    kind: str | None = None,
+    attributes: Optional[dict[str, Any]] = None,
+) -> Any | None:
+    """Start a root trace using OpenTelemetry.
+
+    Supports manual context propagation via trace_id/parent_id.
+    """
 
     if not tracing_enabled():
-        return
+        return None
     tracer = _get_tracer()
     if tracer is None:
-        return
+        return None
 
-    attributes = {
-        "user.id": user_id or "",
-        "session.id": session_id or "",
-    }
+    # Merge explicitly provided attributes with metadata/user info
+    final_attributes: dict[str, Any] = dict(attributes or {})
+    if user_id:
+        final_attributes["user.id"] = user_id
+    if session_id:
+        final_attributes["session.id"] = session_id
     if metadata:
         for key, value in metadata.items():
-            attributes[f"meta.{key}"] = value
-    attributes = _normalise_attributes(attributes)
+            final_attributes[f"meta.{key}"] = value
+
+    final_attributes = _normalise_attributes(final_attributes)
+
+    # Resolve Context (Parent/Distributed)
+    context = None
+    if trace_id:
+        try:
+            from opentelemetry.trace import (
+                SpanContext,
+                TraceFlags,
+                set_span_in_context,
+                NonRecordingSpan,
+            )
+
+            # We need a 128-bit hex trace_id (32 chars) and 64-bit hex span_id (16 chars)
+            # UUIDs are 32 chars hex, so they map directly to trace_id.
+            t_id = int(trace_id, 16)
+            s_id = int(parent_id, 16) if parent_id else 0
+
+            # If s_id is 0, we can't create a valid parent context for strict tree structures.
+            # However, if we simply want to force the trace_id, we need a parent with that trace_id.
+            # We'll treat it as a remote parent.
+            if t_id:
+                # If no parent ID provided, use a dummy or random one?
+                # Or 0? OTel might reject 0 span_id.
+                # Let's hope parent_id is passed or handle gracefully.
+                if s_id == 0:
+                    # Generate a random span ID for the "virtual" parent to anchor the trace?
+                    import random
+
+                    s_id = random.getrandbits(64)
+
+                span_context = SpanContext(
+                    trace_id=t_id,
+                    span_id=s_id,
+                    is_remote=True,
+                    trace_flags=TraceFlags.SAMPLED,
+                )
+                # Wrap in NonRecordingSpan to satisfy set_span_in_context
+                parent_span = NonRecordingSpan(span_context)
+                context = set_span_in_context(parent_span)
+        except Exception:
+            # Fallback to standard new trace if ID parsing fails
+            pass
+
+    # Resolve SpanKind
+    otel_kind = None
+    if kind:
+        try:
+            from opentelemetry.trace import SpanKind
+
+            kind_upper = kind.upper()
+            if kind_upper == "SERVER":
+                otel_kind = SpanKind.SERVER
+            elif kind_upper == "CLIENT":
+                otel_kind = SpanKind.CLIENT
+            elif kind_upper == "PRODUCER":
+                otel_kind = SpanKind.PRODUCER
+            elif kind_upper == "CONSUMER":
+                otel_kind = SpanKind.CONSUMER
+            elif kind_upper == "INTERNAL":
+                otel_kind = SpanKind.INTERNAL
+        except Exception:
+            pass
 
     try:
-        cm = tracer.start_as_current_span(name, attributes=attributes)
+        cm = tracer.start_as_current_span(
+            name, context=context, kind=otel_kind, attributes=final_attributes
+        )
     except Exception:
-        return
+        return None
+
     try:
-        cm.__enter__()
+        span = cm.__enter__()
     except Exception:
-        return
+        return None
+
     _OTEL_ROOT_CM.set(cm)
+    return span
 
 
-def end_trace() -> None:
+def end_trace(span: Any | None = None) -> None:
     """End the current root trace started via :func:`start_trace`."""
 
     cm = _OTEL_ROOT_CM.get()
     if cm is None:
         return
     try:
+        # We ignore the specific 'span' argument for now and rely on the ContextVar
+        # Stack-like behavior isn't fully implemented here, assuming single root per task context.
         cm.__exit__(None, None, None)
     except Exception:
         pass
     finally:
         _OTEL_ROOT_CM.set(None)
+
+
+def record_exception(span: Any, exc: BaseException) -> None:
+    """Record an exception on the given span."""
+    if span is None:
+        return
+
+    recorder = getattr(span, "record_exception", None)
+    if callable(recorder):
+        try:
+            recorder(exc)
+        except Exception:
+            pass
 
 
 def record_span(

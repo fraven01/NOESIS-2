@@ -192,6 +192,51 @@ def run_saved_search_alerts() -> dict[str, int]:
     }
 
 
+@shared_task(base=ScopedTask)
+def cleanup_document_versions(retention_days: int = 30) -> dict[str, int]:
+    """Purge document versions that were soft-deleted beyond retention."""
+
+    from ai_core.rag.vector_client import get_default_client
+    from documents.models import DocumentVersion
+
+    total_versions = 0
+    total_chunks = 0
+    total_embeddings = 0
+    now = timezone.now()
+    cutoff = now - timezone.timedelta(days=retention_days)
+
+    public_schema = get_public_schema_name()
+    with schema_context(public_schema):
+        tenants = list(Tenant.objects.exclude(schema_name=public_schema))
+
+    vector_client = get_default_client()
+    for tenant in tenants:
+        with schema_context(tenant.schema_name):
+            stale_versions = list(
+                DocumentVersion.objects.filter(
+                    deleted_at__isnull=False,
+                    deleted_at__lt=cutoff,
+                )
+            )
+            if not stale_versions:
+                continue
+            version_ids = [str(version.id) for version in stale_versions]
+            delete_stats = vector_client.hard_delete_document_versions(
+                tenant_id=tenant.schema_name,
+                document_version_ids=version_ids,
+            )
+            DocumentVersion.objects.filter(id__in=version_ids).delete()
+            total_versions += len(version_ids)
+            total_chunks += int(delete_stats.get("chunks", 0))
+            total_embeddings += int(delete_stats.get("embeddings", 0))
+
+    return {
+        "versions_deleted": total_versions,
+        "chunks_deleted": total_chunks,
+        "embeddings_deleted": total_embeddings,
+    }
+
+
 def _delivery_backoff(attempt: int) -> timezone.timedelta:
     base = EMAIL_BACKOFF_BASE_SECONDS
     delay = base * (2 ** max(0, attempt - 1))

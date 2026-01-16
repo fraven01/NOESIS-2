@@ -279,8 +279,7 @@ def test_ai_core_endpoints_expose_serializers():
     assert any(
         example.get("value", {}).get("ok") is True for example in ping_examples.values()
     )
-    legacy_ping_operation = schema["paths"]["/ai/ping/"]["get"]
-    assert legacy_ping_operation.get("deprecated") is True
+    # v1 ping endpoint is the primary endpoint (legacy unversioned endpoint removed)
     assert not ping_operation.get("deprecated")
 
     intake_operation = schema["paths"]["/v1/ai/intake/"]["post"]
@@ -320,8 +319,8 @@ def test_ai_core_endpoints_expose_serializers():
         for sample in intake_operation.get("x-codeSamples", [])
     )
 
-    legacy_intake_operation = schema["paths"]["/ai/intake/"]["post"]
-    assert legacy_intake_operation.get("deprecated") is True
+    # v1 intake endpoint is the primary endpoint (legacy unversioned endpoint removed)
+    assert not intake_operation.get("deprecated")
 
     intake_responses = intake_operation["responses"]
     for status_code in map(str, RATE_LIMIT_JSON_ERROR_STATUSES):

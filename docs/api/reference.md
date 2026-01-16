@@ -11,8 +11,10 @@ Alle Aufrufe erfordern HTTP/1.1 über TLS. Multi-Tenancy wird durch `django-tena
 | `X-Tenant-Schema` | string | required | Aktives PostgreSQL-Schema (z. B. `acme_prod`). Muss mit der Schemaauflösung via Subdomain/Hostname übereinstimmen. |
 | `X-Tenant-Id` | string | required | Mandanteninterne Kennung. Wird für Rate-Limits, Object-Store-Pfade und Vektor-Indizes genutzt. |
 | `X-Case-Id` | string | optional | Kontext-ID eines Workflows (z. B. CRM-Fall). Muss RFC3986-konforme Zeichen enthalten. |
+| `X-Collection-Id` | string | optional | Collection-ID für RAG-Abfragen. Wird als Business-Context durchgereicht. |
 | `X-Trace-Id` | string | optional | Client-seitig nutzbarer Trace-Identifier. Wird gespiegelt; fehlt er, erzeugt der Service eine neue ID und sendet sie zurück. |
 | `X-Workflow-ID` | string | optional | Workflow type identifier (e.g., 'ingestion-2024'). Must match `[A-Za-z0-9._-]+`, max 128 chars. Case-sensitive. Defaults to 'ad-hoc' if not provided. |
+| `X-Thread-ID` | string | optional | Chat-Thread-Identifier für RAG-Konversationen (nicht für non-chat Workflows). |
 | `Idempotency-Key` | string | optional | Empfohlen für POST-Endpunkte. Wiederholte Requests mit gleichem Schlüssel liefern denselben Response-Body und Statuscode. |
 | `X-Key-Alias` | string | optional | Referenziert einen LiteLLM API-Key Alias. Wird für Rate-Limiting gebunden. |
 | `X-Case-Scope` | string | optional | Zusätzliche Zugriffsscope für Agenten-Workflows. |
@@ -35,7 +37,7 @@ curl -X POST "https://api.noesis.example/v1/ai/rag/query/" \
   -H "X-Case-Id: crm-7421" \
   -H "Idempotency-Key: 6cdb89f6-8826-4f9b-8c82-1f14b3d4c21b" \
   -H "Content-Type: application/json" \
-  -d '{"tenant_id": "acme", "trace_id": "trace-a12b3c4d5", "question": "Welche Reisekosten gelten für Consultants?"}'
+  -d '{"question": "Welche Reisekosten gelten für Consultants?", "hybrid": {"alpha": 0.7}}'
 ```
 
 ## System Endpunkte
@@ -523,6 +525,7 @@ Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
 - `X-Case-Id` (optional)
+- `X-Collection-Id` (optional)
 - `Idempotency-Key` (optional)
 - `Content-Type: application/json`
 
@@ -554,21 +557,22 @@ Startet den produktiven Retrieval-Augmented-Generation-Graphen (`retrieval_augme
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
 - `X-Case-Id` (optional)
+- `X-Collection-Id` (optional)
 - `Idempotency-Key` (optional, empfohlen)
 - `Content-Type: application/json`
+
 
 **Body Beispiel**
 ```json
 {
-  "tenant_id": "acme",
-  "trace_id": "trace-b5d0c7a4",
   "question": "Welche Reisekosten gelten für Consultants?",
   "filters": {"doc_class": "policy", "process": "travel"},
-  "visibility": "tenant"
+  "visibility": "tenant",
+  "hybrid": {"alpha": 0.7}
 }
 ```
 
-Auch für Queries gilt: `tenant_id` ist ein Pflichtfeld im Body (muss dem Header entsprechen), `trace_id` wird entweder übernommen oder – falls nicht gesetzt – serverseitig ergänzt.
+`tenant_id`/`trace_id` werden aus dem Request-Kontext abgeleitet; im Body sind sie optional und werden bei Bedarf serverseitig ergänzt. `hybrid` ist Pflicht, da der Retriever ohne diese Konfiguration nicht startet.
 
 **Response 200 Beispiel**
 ```json

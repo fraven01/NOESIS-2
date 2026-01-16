@@ -53,7 +53,7 @@ Acceptance:
 ### 4) initiated_by_user_id propagation (BREAKING) — Done
 
 Pointers:
-- `ai_core/tasks.py`
+- `ai_core/tasks/`
 - `llm_worker/tasks.py`
 - `documents/upload_worker.py`
 - `crawler/worker.py`

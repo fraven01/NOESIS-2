@@ -177,6 +177,10 @@ class DocumentRef(BaseModel):
         description="Workflow identifier that produced or manages the document."
     )
     document_id: UUID = Field(description="Unique identifier of the document.")
+    document_version_id: Optional[UUID] = Field(
+        default=None,
+        description="Unique identifier of the document version.",
+    )
     collection_id: Optional[UUID] = Field(
         default=None, description="Optional collection containing the document."
     )
@@ -201,7 +205,11 @@ class DocumentRef(BaseModel):
         return normalize_workflow_id(value)
 
     @field_validator(
-        "document_id", "collection_id", "document_collection_id", mode="before"
+        "document_id",
+        "document_version_id",
+        "collection_id",
+        "document_collection_id",
+        mode="before",
     )
     @classmethod
     def _coerce_uuid_fields(cls, value):

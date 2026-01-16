@@ -39,8 +39,8 @@
 - `trace_id: TraceId` (str)
 - `invocation_id: InvocationId` (str)
 
-**XOR-Regel (validator, Zeile 66-77)**:
-- Genau eines von: `run_id` XOR `ingestion_run_id` (Pflicht!)
+**Runtime ID Regel (validator, Zeile 66-77)**:
+- Mindestens eines von: `run_id` und/oder `ingestion_run_id` (beide können koexistieren, z.B. wenn Workflow Ingestion triggert)
 
 **Optionale Felder**:
 - `case_id: CaseId | None` (str)
@@ -59,8 +59,8 @@
 - `trace_id: str` (default_factory: "trace-test")
 - `invocation_id: UUID` (default_factory: uuid4)
 
-**XOR-Regel (validator, Zeile 81-86)**:
-- Genau eines von: `run_id` XOR `ingestion_run_id` (Pflicht!)
+**Runtime ID Regel (validator, Zeile 81-86)**:
+- Mindestens eines von: `run_id` und/oder `ingestion_run_id` (beide können koexistieren, z.B. wenn Workflow Ingestion triggert)
 
 **Optionale Felder**:
 - `case_id: Optional[str]` (Zeile 67)

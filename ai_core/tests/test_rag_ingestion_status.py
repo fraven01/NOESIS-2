@@ -7,6 +7,7 @@ from ai_core.ingestion_status import (
 )
 from ai_core.infra import rate_limit
 from common.constants import (
+    META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
@@ -21,7 +22,7 @@ def test_rag_ingestion_status_returns_latest_run(
     client.force_login(UserFactory())
 
     tenant = test_tenant_schema_name
-    case = "general"  # Matching DEFAULT_CASE_ID for missing header
+    case = "general"
     # create_case(case)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
 
@@ -63,7 +64,7 @@ def test_rag_ingestion_status_returns_latest_run(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            # META_CASE_ID_KEY: case,
+            META_CASE_ID_KEY: case,
         },
     )
 

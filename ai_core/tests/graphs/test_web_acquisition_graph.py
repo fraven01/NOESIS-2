@@ -102,38 +102,6 @@ def test_wag_search_success(web_graph, mock_search_worker):
     assert output["error"] is None
 
 
-def test_wag_select_best_mode(web_graph, mock_search_worker):
-    """Test 'select_best' mode filters and selects a candidate."""
-    state = {
-        "input": {
-            "query": "test",
-            "mode": "select_best",
-            # min_snippet_length 10 to include the 'valid' one but exclude 'short' one if we set logical limit
-            "search_config": {"min_snippet_length": 20},
-        },
-        "tool_context": _create_context(),
-    }
-
-    config = {"configurable": {"search_worker": mock_search_worker}}
-
-    result = web_graph.invoke(state, config=config)
-
-    # Check selection logic in output
-    # The 'select' node updates 'search_results' and 'selected_result'
-    # Finalize puts them in output
-
-    output = result["output"]
-    results = output["search_results"]
-    selected = output["selected_result"]
-
-    # Only the long snippet should pass validation
-    assert len(results) == 1
-    assert results[0]["url"] == "https://example.com/1"
-
-    assert selected is not None
-    assert selected["url"] == "https://example.com/1"
-
-
 def test_wag_search_failure(web_graph, mock_search_worker):
     """Test search worker failure handling."""
     state = {

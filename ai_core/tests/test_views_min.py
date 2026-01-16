@@ -20,7 +20,7 @@ def test_ping_ok(client, monkeypatch, test_tenant_schema_name):
         Case.objects.create(tenant=tenant, external_id="c1")
 
     resp = client.get(
-        "/ai/ping/",
+        "/v1/ai/ping/",
         HTTP_X_TENANT_ID=tenant.schema_name,
         HTTP_X_CASE_ID="c1",
     )
@@ -40,7 +40,7 @@ def test_ping_missing_case(client, monkeypatch, test_tenant_schema_name):
     # Use the existing test tenant
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
     resp = client.get(
-        "/ai/ping/",
+        "/v1/ai/ping/",
         HTTP_X_TENANT_ID=tenant.schema_name,
         HTTP_X_CASE_ID="missing",
     )

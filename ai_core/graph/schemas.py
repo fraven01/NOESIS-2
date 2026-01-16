@@ -17,6 +17,7 @@ from common.constants import (
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
     META_TRACE_ID_KEY,
+    META_THREAD_ID_KEY,
     META_WORKFLOW_ID_KEY,
     META_DOCUMENT_ID_KEY,
     META_DOCUMENT_VERSION_ID_KEY,
@@ -28,6 +29,7 @@ from common.constants import (
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
     X_TRACE_ID_HEADER,
+    X_THREAD_ID_HEADER,
     X_WORKFLOW_ID_HEADER,
     X_DOCUMENT_ID_HEADER,
     X_DOCUMENT_VERSION_ID_HEADER,
@@ -177,6 +179,27 @@ def _build_scope_context(request: Any) -> ScopeContext:
     return ScopeContext.model_validate(scope_kwargs)
 
 
+def build_business_context_from_request(request: Any) -> BusinessContext:
+    """Build a BusinessContext from request headers (all fields optional)."""
+    case_id = _coalesce(request, X_CASE_ID_HEADER, META_CASE_ID_KEY)
+    workflow_id = _coalesce(request, X_WORKFLOW_ID_HEADER, META_WORKFLOW_ID_KEY)
+    thread_id = _coalesce(request, X_THREAD_ID_HEADER, META_THREAD_ID_KEY)
+    collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
+    document_id = _coalesce(request, X_DOCUMENT_ID_HEADER, META_DOCUMENT_ID_KEY)
+    document_version_id = _coalesce(
+        request, X_DOCUMENT_VERSION_ID_HEADER, META_DOCUMENT_VERSION_ID_KEY
+    )
+
+    return BusinessContext(
+        case_id=case_id,
+        workflow_id=workflow_id,
+        thread_id=thread_id,
+        collection_id=collection_id,
+        document_id=document_id,
+        document_version_id=document_version_id,
+    )
+
+
 def normalize_meta(request: Any) -> dict:
     """Return a normalised metadata mapping for graph executions.
 
@@ -192,23 +215,8 @@ def normalize_meta(request: Any) -> dict:
 
     scope = _build_scope_context(request)
 
-    # Extract business context IDs from request headers (all optional)
-    case_id = _coalesce(request, X_CASE_ID_HEADER, META_CASE_ID_KEY)
-    workflow_id = _coalesce(request, X_WORKFLOW_ID_HEADER, META_WORKFLOW_ID_KEY)
-    collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
-    document_id = _coalesce(request, X_DOCUMENT_ID_HEADER, META_DOCUMENT_ID_KEY)
-    document_version_id = _coalesce(
-        request, X_DOCUMENT_VERSION_ID_HEADER, META_DOCUMENT_VERSION_ID_KEY
-    )
-
     # Build BusinessContext (all fields optional per Option A)
-    business = BusinessContext(
-        case_id=case_id,
-        workflow_id=workflow_id,
-        collection_id=collection_id,
-        document_id=document_id,
-        document_version_id=document_version_id,
-    )
+    business = build_business_context_from_request(request)
 
     graph_name = _resolve_graph_name(request)
     graph_version = getattr(request, "graph_version", "v0")

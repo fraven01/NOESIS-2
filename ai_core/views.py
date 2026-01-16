@@ -8,8 +8,6 @@ import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from pathlib import Path
-from types import ModuleType
-from importlib import import_module
 from django.conf import settings
 from uuid import uuid4
 
@@ -76,14 +74,7 @@ from rest_framework.views import APIView
 
 from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.contracts.scope import ScopeContext
-from ai_core.graph.adapters import module_runner
-from ai_core.graph.core import GraphRunner
 from ai_core.tool_contracts.base import tool_context_from_meta
-from ai_core.graph.registry import get as get_graph_runner, register as register_graph
-
-from ai_core.graphs.technical import (
-    info_intake,
-)  # noqa: F401
 from ai_core.contracts.crawler_runner import CrawlerRunError
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import (
@@ -114,16 +105,6 @@ from cases.services import CaseNotFoundError, ensure_case, resolve_case
 
 
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
-
-# Import graphs so they are available via module globals for Legacy views.
-# This enables tests to monkeypatch e.g. `views.info_intake` directly and
-# allows _GraphView.get_graph to resolve from globals() without importing.
-try:  # pragma: no cover - exercised indirectly via tests
-    info_intake = import_module("ai_core.graphs.technical.info_intake")
-except Exception:  # defensive: don't break module import if graphs change
-    # Fallback to lazy import via _GraphView.get_graph when not present.
-    pass
-
 
 # Optional hooks for tests to provide lifecycle stores without
 # importing heavy dependencies at module import time.
@@ -505,7 +486,7 @@ def _prepare_request(request: Request):
     This function provides request preparation for AI Core views including:
     - Header validation (tenant, case, key_alias formats)
     - Rate limiting enforcement
-    - Default case bootstrap ("general")
+    - Default case bootstrap ("general") when explicitly requested
     - Case active status check
     - ScopeContext building via normalize_request() (Pre-MVP ID Contract)
     - Request.META enrichment for downstream consumers
@@ -522,13 +503,25 @@ def _prepare_request(request: Request):
         tenant_header = request.META.get(META_TENANT_ID_KEY)
     if tenant_header is None:
         tenant_header = request.META.get(X_TENANT_ID_HEADER)
-    case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
-    workflow_id = (request.headers.get(X_WORKFLOW_ID_HEADER) or "").strip()
+    case_id = (
+        request.headers.get(X_CASE_ID_HEADER)
+        or request.META.get(META_CASE_ID_KEY)
+        or ""
+    ).strip()
+    if not case_id:
+        case_id = None
+    workflow_id = (
+        request.headers.get(X_WORKFLOW_ID_HEADER)
+        or request.META.get(META_WORKFLOW_ID_KEY)
+        or ""
+    ).strip()
     if not workflow_id:
         # Default workflow_id to case_id if available, otherwise generate UUID
         workflow_id = case_id or uuid4().hex
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
     collection_header = request.headers.get(X_COLLECTION_ID_HEADER)
+    if collection_header is None:
+        collection_header = request.META.get(META_COLLECTION_ID_KEY)
     idempotency_header = request.headers.get(IDEMPOTENCY_KEY_HEADER)
     if not idempotency_header:
         idempotency_header = request.META.get(
@@ -631,9 +624,6 @@ def _prepare_request(request: Request):
                 status.HTTP_400_BAD_REQUEST,
             )
 
-    if not case_id:
-        case_id = DEFAULT_CASE_ID
-
     if case_id and not CASE_ID_RE.fullmatch(case_id):
         return None, _error_response(
             "Case header must use the documented format.",
@@ -704,7 +694,10 @@ def _prepare_request(request: Request):
             return None, case_error
 
     request.META[META_TRACE_ID_KEY] = trace_id
-    request.META[META_CASE_ID_KEY] = case_id
+    if case_id:
+        request.META[META_CASE_ID_KEY] = case_id
+    else:
+        request.META.pop(META_CASE_ID_KEY, None)
     request.META[META_TENANT_ID_KEY] = tenant_id
     request.META[META_TENANT_SCHEMA_KEY] = tenant_schema
     if workflow_id:
@@ -789,15 +782,6 @@ def _prepare_request(request: Request):
     return meta, None
 
 
-LEGACY_DEPRECATION_ID = "ai-core-legacy"
-
-
-def _legacy_schema_kwargs(base_kwargs: dict[str, object]) -> dict[str, object]:
-    legacy_kwargs = dict(base_kwargs)
-    legacy_kwargs["deprecated"] = True
-    return legacy_kwargs
-
-
 def _curl(command: str) -> dict[str, object]:
     """Return extensions embedding a curl code sample."""
 
@@ -859,7 +843,6 @@ INTAKE_CURL = _curl(
             '-H "Content-Type: application/json"',
             '-H "X-Tenant-Schema: acme_prod"',
             '-H "X-Tenant-Id: acme"',
-            '-H "X-Case-Id: crm-7421"',
             '-H "Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a"',
             '-d \'{"prompt": "Erstelle Meeting-Notizen"}\'',
         ]
@@ -957,7 +940,8 @@ RAG_QUERY_SCHEMA = {
     "include_trace_header": True,
     "description": (
         "Execute the production RAG graph. Headers are mapped to a ToolContext and the body is validated "
-        "against the RetrieveInput contract to populate query, filters and related metadata."
+        "against the RetrieveInput contract to populate query, filters and related metadata. "
+        "Business scope headers like X-Case-ID and X-Collection-ID are optional."
     ),
     "examples": [RAG_QUERY_REQUEST_EXAMPLE, RAG_QUERY_RESPONSE_EXAMPLE],
     "extensions": RAG_QUERY_CURL,
@@ -1397,27 +1381,6 @@ INTAKE_SCHEMA = {
 }
 
 
-RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
-    name="RagDemoDeprecatedResponse",
-    fields={
-        "status": serializers.CharField(),
-        "input": serializers.DictField(),
-        "error": inline_serializer(
-            name="RagDemoDeprecatedErrorDetail",
-            fields={
-                "type": serializers.CharField(),
-                "message": serializers.CharField(),
-                "code": serializers.CharField(required=False),
-            },
-        ),
-        "meta": inline_serializer(
-            name="RagDemoDeprecatedErrorMeta",
-            fields={"took_ms": serializers.IntegerField()},
-        ),
-    },
-)
-
-
 class _BaseAgentView(DeprecationHeadersMixin, APIView):
     # Authentication and permissions are inherited from REST_FRAMEWORK defaults
     # (SessionAuthentication + IsAuthenticated)
@@ -1441,54 +1404,8 @@ class PingViewV1(_PingBase):
         return super().get(request)
 
 
-class LegacyPingView(_PingBase):
-    """Legacy heartbeat endpoint served under the unversioned prefix."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-
-    @default_extend_schema(**_legacy_schema_kwargs(PING_SCHEMA))
-    def get(self, request: Request) -> Response:
-        return super().get(request)
-
-
 class _GraphView(_BaseAgentView):
     graph_name: str | None = None
-
-    def get_graph(self) -> GraphRunner:  # pragma: no cover - trivial indirection
-        if not self.graph_name:
-            raise NotImplementedError("graph_name must be configured on subclasses")
-        candidate = globals().get(self.graph_name)
-
-        try:
-            registered = get_graph_runner(self.graph_name)
-        except KeyError:
-            registered = None
-
-        if candidate is not None:
-            runner: GraphRunner | None = None
-            if isinstance(candidate, ModuleType):
-                if registered is None:
-                    runner = module_runner(candidate)
-            elif hasattr(candidate, "run"):
-                if registered is None or registered is not candidate:
-                    runner = candidate
-
-            if runner is not None:
-                logger.info(
-                    "graph_runner_lazy_registered",
-                    extra={
-                        "graph": self.graph_name,
-                        "source": getattr(candidate, "__name__", repr(candidate)),
-                    },
-                )
-                register_graph(self.graph_name, runner)
-                registered = runner
-
-        if registered is None:
-            raise KeyError(f"graph runner '{self.graph_name}' is not registered")
-
-        return registered
 
     def post(self, request: Request) -> Response:
         if not (
@@ -1501,19 +1418,20 @@ class _GraphView(_BaseAgentView):
                 "graph_endpoint_disabled",
                 status.HTTP_404_NOT_FOUND,
             )
+        if not self.graph_name:
+            raise NotImplementedError("graph_name must be configured on subclasses")
         meta, error = _prepare_request(request)
         if error:
             return error
 
-        graph_runner = self.get_graph()
         request.graph_name = self.graph_name
-        response = _run_graph(request, graph_runner)
+        response = _run_graph(request)
         return apply_std_headers(response, meta)
 
 
-def _run_graph(request: Request, graph_runner) -> Response:  # type: ignore[no-untyped-def]
+def _run_graph(request: Request) -> Response:  # type: ignore[no-untyped-def]
     """Compatibility wrapper used by tests to monkeypatch graph execution."""
-    return services.execute_graph(request, graph_runner)
+    return services.execute_graph(request)
 
 
 class IntakeViewV1(_GraphView):
@@ -1524,18 +1442,6 @@ class IntakeViewV1(_GraphView):
     graph_name = "info_intake"
 
     @default_extend_schema(**INTAKE_SCHEMA)
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class LegacyIntakeView(_GraphView):
-    """Deprecated intake endpoint retained for backwards compatibility."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-    graph_name = "info_intake"
-
-    @default_extend_schema(**_legacy_schema_kwargs(INTAKE_SCHEMA))
     def post(self, request: Request) -> Response:
         return super().post(request)
 
@@ -1575,7 +1481,13 @@ def _resolve_lifecycle_store() -> object | None:
 def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     """Return the payload projected onto the public RAG response contract."""
 
-    allowed_top_level = {"answer", "prompt_version", "retrieval", "snippets"}
+    allowed_top_level = {
+        "answer",
+        "prompt_version",
+        "retrieval",
+        "snippets",
+        "diagnostics",
+    }
     allowed_retrieval = {
         "alpha",
         "min_sim",
@@ -1592,7 +1504,11 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     allowed_routing = {"profile", "vector_space_id"}
 
     projected: dict[str, object] = {}
-    diagnostics: dict[str, object] = {}
+    diagnostics: dict[str, object] = (
+        dict(payload["diagnostics"])
+        if isinstance(payload.get("diagnostics"), Mapping)
+        else {}
+    )
 
     top_level_extras = {
         key: value for key, value in payload.items() if key not in allowed_top_level
@@ -1600,6 +1516,8 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
 
     for key in allowed_top_level:
         if key not in payload:
+            continue
+        if key == "diagnostics":
             continue
         if key != "retrieval":
             projected[key] = _serialise_json_value(payload[key])
@@ -1834,7 +1752,9 @@ class RagUploadView(APIView):
         # scope_context is infrastructure only (ScopeContext).
         # Business IDs like case_id should be in a separate business_context dict.
         # For now, check and set case_id in request.META instead.
-        case_id_from_header = request.headers.get("X-Case-ID", "").strip()
+        case_id_from_header = (
+            request.headers.get("X-Case-ID") or request.META.get(META_CASE_ID_KEY) or ""
+        ).strip()
 
         # Fix for Silent RAG Failure (Finding #22):
         # In DEV/DEBUG mode, default missing case_id to the dev default.
@@ -1850,11 +1770,21 @@ class RagUploadView(APIView):
         # Add business context to meta for handle_document_upload
         from ai_core.contracts.business import BusinessContext
 
+        workflow_id_from_header = (
+            request.headers.get("X-Workflow-ID")
+            or request.META.get(META_WORKFLOW_ID_KEY)
+            or ""
+        ).strip()
+        collection_id_from_header = (
+            request.headers.get("X-Collection-ID")
+            or request.META.get(META_COLLECTION_ID_KEY)
+            or ""
+        ).strip()
+
         business_context = BusinessContext(
             case_id=case_id_from_header,
-            workflow_id=request.headers.get("X-Workflow-ID", "").strip()
-            or case_id_from_header,
-            collection_id=request.headers.get("X-Collection-ID", "").strip() or None,
+            workflow_id=workflow_id_from_header or case_id_from_header,
+            collection_id=collection_id_from_header or None,
         )
         meta["business_context"] = business_context.model_dump(
             mode="json", exclude_none=True
@@ -2228,62 +2158,9 @@ class CrawlerIngestionRunnerView(APIView):
         return apply_response_headers(response, meta, result.idempotency_key)
 
 
-class RagDemoViewV1(_BaseAgentView):
-    """Deprecated demo endpoint retained only for backwards compatibility."""
-
-    api_deprecated = True
-    api_deprecation_id = "rag-demo-mvp"
-
-    @default_extend_schema(
-        request=IntakeRequestSerializer,
-        responses={410: RAG_DEMO_DEPRECATED_RESPONSE},
-        error_statuses=RATE_LIMIT_JSON_ERROR_STATUSES,
-        include_trace_header=True,
-        description=(
-            "This demo workflow has been removed from the MVP build. The endpoint "
-            "returns HTTP 410 to signal permanent removal."
-        ),
-        examples=[
-            OpenApiExample(
-                name="RagDemoRemoved",
-                summary="Deprecated",
-                description="The demo endpoint has been removed and now returns HTTP 410.",
-                value={
-                    "status": "error",
-                    "input": {},
-                    "error": {
-                        "type": "VALIDATION",
-                        "message": "The RAG demo endpoint has been removed.",
-                        "code": "rag_demo_removed",
-                    },
-                    "meta": {"took_ms": 0},
-                },
-            )
-        ],
-    )
-    def post(self, request: Request) -> Response:
-        meta, error = _prepare_request(request)
-        if error:
-            return error
-
-        response = _error_response(
-            "The RAG demo endpoint is deprecated and no longer available in the MVP build.",
-            "rag_demo_removed",
-            status.HTTP_410_GONE,
-        )
-        return apply_std_headers(response, meta)
-
-
 ping_v1 = PingViewV1.as_view()
-ping_legacy = LegacyPingView.as_view()
-ping = ping_legacy
 
 intake_v1 = IntakeViewV1.as_view()
-intake_legacy = LegacyIntakeView.as_view()
-intake = intake_legacy
-
-rag_demo_v1 = RagDemoViewV1.as_view()
-rag_demo = rag_demo_v1
 
 rag_query_v1 = RagQueryViewV1.as_view()
 rag_query = rag_query_v1

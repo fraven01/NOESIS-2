@@ -90,6 +90,7 @@ class Document(models.Model):
     source = models.CharField(max_length=255)
     external_id = models.CharField(max_length=255, blank=True, null=True)
     metadata = models.JSONField(blank=True, default=dict)
+    audit_meta = models.JSONField(blank=True, default=dict)
 
     # Context fields for traceability and tenant-specific workflows
     workflow_id = models.CharField(
@@ -162,6 +163,58 @@ class Document(models.Model):
             models.Index(
                 fields=("tenant", "case_id"),
                 name="doc_tenant_case_idx",
+            ),
+        ]
+
+
+class DocumentVersion(models.Model):
+    """Immutable snapshot of a document version."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="versions",
+    )
+    version_label = models.CharField(max_length=64, null=True, blank=True)
+    sequence = models.IntegerField()
+    label_sequence = models.IntegerField()
+    is_latest = models.BooleanField(default=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    normalized_document = models.JSONField(blank=True, default=dict)
+    created_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_document_versions",
+    )
+    created_by_service_id = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("document", "sequence"),
+                name="document_version_unique_sequence",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("document", "is_latest"),
+                name="document_version_latest_idx",
+            ),
+            models.Index(
+                fields=("document", "created_at"),
+                name="document_version_created_idx",
+            ),
+            models.Index(
+                fields=("document", "version_label", "label_sequence"),
+                name="document_version_label_idx",
             ),
         ]
 

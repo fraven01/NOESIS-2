@@ -84,6 +84,8 @@ class ChunkMeta(BaseModel):
     parent_ids: list[str] | None = None
     collection_id: str | None = None
     document_id: str | None = None
+    document_version_id: str | None = None
+    is_latest: bool | None = None
     lifecycle_state: str | None = None
     trace_id: str | None = None
 
@@ -596,6 +598,12 @@ def build_crawler_ingestion_payload(
             else None
         ),
         document_id=str(document.ref.document_id),
+        document_version_id=(
+            str(document.ref.document_version_id)
+            if getattr(document.ref, "document_version_id", None) is not None
+            else None
+        ),
+        is_latest=True,
         lifecycle_state=lifecycle_value,
     )
 

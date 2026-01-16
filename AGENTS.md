@@ -25,6 +25,27 @@ Proceed without asking only when the change stays within existing enforced contr
 - Traceability rule: if a confirmed change breaks an existing contract (schemas/IDs/meta/boundaries), always add a corresponding item to `roadmap/backlog.md` with concrete code pointers and acceptance criteria.
 - Agents-first workflow: keep roadmap/backlog items LLM-executable (code pointers + acceptance criteria) and treat docs as explanations, not alternative sources of runtime truth.
 
+### Pre-MVP Breaking Change Process
+
+During Pre-MVP phase, breaking changes (including contract/schema changes) are **permitted but not pre-approved**. Follow this process:
+
+1. **STOP** to discuss the approach and implications with the user
+2. **Add backlog item** to `roadmap/backlog.md` with:
+   - **Code pointers**: Specific file paths and line numbers to be changed
+   - **Acceptance criteria**: Testable outcomes that verify the change
+   - **LLM-executable format**: Clear enough for another agent to execute
+   - **Example**: See `roadmap/backlog.md:8-9` for required format
+3. **Proceed after explicit confirmation** from the user
+4. **Update tests** to match new contracts (breaking test changes are acceptable)
+
+**Rationale**: This ensures breaking changes are **intentional and documented**, not accidental. The backlog item serves as a contract change audit trail.
+
+**Exception**: Proceed without asking for:
+- Bugfixes within existing contracts
+- Refactors that preserve I/O shape
+- Test-only changes
+- Documentation alignment (no new runtime fields)
+
 ## Primary code locations (navigation)
 
 - Graph execution protocol & checkpointing: `ai_core/graph/core.py`
@@ -54,7 +75,7 @@ Canonical header constants live in `common/constants.py`:
 
 **Business Domain Headers (BusinessContext)**:
 
-- `X-Case-ID`, `X-Collection-ID`, `X-Workflow-ID`, `X-Document-ID`, `X-Document-Version-ID`
+- `X-Case-ID`, `X-Collection-ID`, `X-Workflow-ID`, `X-Thread-ID`, `X-Document-ID`, `X-Document-Version-ID`
 
 **Other Headers**:
 
@@ -122,7 +143,7 @@ The canonical business context model is `ai_core/contracts/business.py:BusinessC
 ScopeContext: tenant_id, trace_id, invocation_id, user_id, service_id,
               run_id, ingestion_run_id, tenant_schema, idempotency_key, timestamp
 
-BusinessContext: case_id, collection_id, workflow_id, document_id, document_version_id
+BusinessContext: case_id, collection_id, workflow_id, thread_id, document_id, document_version_id
 ```
 
 #### BusinessContext Fields (All Optional)
@@ -134,6 +155,7 @@ All business domain IDs are **optional** in `BusinessContext`. Individual graphs
 | `case_id` | `str \| None` | `X-Case-ID` | `HTTP_X_CASE_ID` | Legal case identifier |
 | `collection_id` | `str \| None` | `X-Collection-ID` | `HTTP_X_COLLECTION_ID` | Document collection ID |
 | `workflow_id` | `str \| None` | `X-Workflow-ID` | `HTTP_X_WORKFLOW_ID` | Workflow identifier |
+| `thread_id` | `str \| None` | `X-Thread-ID` | `HTTP_X_THREAD_ID` | Chat thread identifier |
 | `document_id` | `str \| None` | `X-Document-ID` | `HTTP_X_DOCUMENT_ID` | Document ID |
 | `document_version_id` | `str \| None` | `X-Document-Version-ID` | `HTTP_X_DOCUMENT_VERSION_ID` | Document version ID |
 
@@ -145,6 +167,7 @@ BusinessContext is extracted from HTTP headers in `ai_core/graph/schemas.py:norm
 # Extract business context IDs from request headers (all optional)
 case_id = _coalesce(request, X_CASE_ID_HEADER, META_CASE_ID_KEY)
 workflow_id = _coalesce(request, X_WORKFLOW_ID_HEADER, META_WORKFLOW_ID_KEY)
+thread_id = _coalesce(request, X_THREAD_ID_HEADER, META_THREAD_ID_KEY)
 collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
 document_id = _coalesce(request, X_DOCUMENT_ID_HEADER, META_DOCUMENT_ID_KEY)
 document_version_id = _coalesce(request, X_DOCUMENT_VERSION_ID_HEADER, META_DOCUMENT_VERSION_ID_KEY)
@@ -153,6 +176,7 @@ document_version_id = _coalesce(request, X_DOCUMENT_VERSION_ID_HEADER, META_DOCU
 business = BusinessContext(
     case_id=case_id,
     workflow_id=workflow_id,
+    thread_id=thread_id,
     collection_id=collection_id,
     document_id=document_id,
     document_version_id=document_version_id,
@@ -179,6 +203,7 @@ def run(context: ToolContext, input: MyToolInput) -> ToolOutput[MyToolInput, MyT
     case_id = context.business.case_id
     collection_id = context.business.collection_id
     document_id = context.business.document_id
+    thread_id = context.business.thread_id
 
     # Backward compatibility (deprecated)
     case_id_deprecated = context.case_id  # delegates to context.business.case_id
@@ -354,7 +379,7 @@ Deterministic error type identifiers are defined in `ai_core/tools/errors.py:Too
 
 ## Worker queue (ingestion)
 
-- Ingestion Celery queue name is `"ingestion"` (e.g. `ai_core/tasks.py:run_ingestion_graph` uses `@shared_task(..., queue="ingestion", name="ai_core.tasks.run_ingestion_graph")`).
+- Ingestion Celery queue name is `"ingestion"` (e.g. `ai_core/tasks/graph_tasks.py:run_ingestion_graph` uses `@shared_task(..., queue="ingestion", name="ai_core.tasks.run_ingestion_graph")`).
 
 ## Worker queue (agents)
 

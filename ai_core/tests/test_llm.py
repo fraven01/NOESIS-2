@@ -8,7 +8,7 @@ import requests
 
 from ai_core.infra.mask_prompt import mask_prompt
 from ai_core.llm import routing
-from ai_core.llm.client import LlmClientError, RateLimitError, call
+from ai_core.llm.client import LlmClientError, RateLimitError, call, call_stream
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
@@ -697,3 +697,54 @@ def test_llm_client_updates_observation_on_error(monkeypatch):
     assert error_meta["provider.http_status"] == 400
     assert error_meta["cache_hit"] is False
     assert error_meta["input.masked_prompt"] == prompt
+
+
+def test_llm_client_streams_and_records_once(monkeypatch):
+    metadata = {
+        "tenant_id": "t1",
+        "case_id": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+    stream_lines = [
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+        'data: {"choices":[{"delta":{"content":" world"}}]}',
+        'data: {"choices":[{"finish_reason":"stop"}],'
+        ' "usage":{"prompt_tokens":2,"completion_tokens":3}}',
+        "data: [DONE]",
+    ]
+
+    class StreamResp:
+        status_code = 200
+        headers: dict[str, str] = {"x-litellm-cache-hit": "false"}
+
+        def iter_lines(self, decode_unicode=True):
+            for line in stream_lines:
+                yield line
+
+        def close(self):
+            return None
+
+    def handler(url: str, headers: dict[str, str], json: dict[str, Any], stream=False):
+        assert json["stream"] is True
+        return StreamResp()
+
+    ledger_calls: list[dict[str, Any]] = []
+
+    def record(meta: dict[str, Any]) -> None:
+        ledger_calls.append(meta)
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", record)
+    _prepare_env(monkeypatch)
+
+    events = list(call_stream("simple-query", "prompt", metadata))
+    delta_text = "".join(
+        chunk.get("text", "") for chunk in events if chunk.get("event") == "delta"
+    )
+    assert delta_text == "Hello world"
+    assert events[-1]["event"] == "final"
+    assert events[-1]["usage"]["prompt_tokens"] == 2
+    assert events[-1]["usage"]["completion_tokens"] == 3
+    assert len(ledger_calls) == 1
+    assert ledger_calls[0]["usage"]["prompt_tokens"] == 2

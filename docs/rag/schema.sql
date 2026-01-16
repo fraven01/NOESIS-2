@@ -197,6 +197,13 @@ CREATE INDEX IF NOT EXISTS chunks_metadata_gin_idx
 CREATE INDEX IF NOT EXISTS chunks_metadata_case_idx
     ON {{SCHEMA_NAME}}.chunks ((metadata->>'case'));
 
+CREATE INDEX IF NOT EXISTS chunks_metadata_document_version_idx
+    ON {{SCHEMA_NAME}}.chunks ((metadata->>'document_version_id'));
+
+CREATE INDEX IF NOT EXISTS chunks_metadata_is_latest_idx
+    ON {{SCHEMA_NAME}}.chunks ((metadata->>'is_latest'))
+    WHERE metadata ? 'is_latest';
+
 CREATE INDEX IF NOT EXISTS chunks_text_norm_trgm_idx
     ON {{SCHEMA_NAME}}.chunks USING GIN (text_norm gin_trgm_ops);
 

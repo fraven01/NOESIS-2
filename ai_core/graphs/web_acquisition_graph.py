@@ -44,7 +44,6 @@ class WebAcquisitionInputModel(BaseModel):
     query: str | None = None
     search_config: dict[str, Any] | None = None
     preselected_results: list[dict[str, Any]] | None = None
-    mode: Literal["search_only", "select_best"] | None = None
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -95,8 +94,6 @@ class WebAcquisitionInput(TypedDict):
     search_config: dict[str, Any] | None
     # Optional preselected results to bypass search (e.g. from UI)
     preselected_results: list[dict[str, Any]] | None
-    # Mode: 'search_only' (default) or 'select_best'
-    mode: Literal["search_only", "select_best"] | None
 
 
 class WebAcquisitionOutput(TypedDict):
@@ -179,20 +176,6 @@ def _check_search_rate_limit(tenant_id: str, query: str) -> bool:
 
     cache.set(cache_key, count + 1, timeout=3600)
     return True
-
-
-def _blocked_domain(url: str, blocked_domains: list[str]) -> bool:
-    from urllib.parse import urlsplit
-
-    parsed = urlsplit(url)
-    hostname = (parsed.hostname or "").lower()
-    if not hostname or not blocked_domains:
-        return False
-    for domain in blocked_domains:
-        blocked = domain.lower()
-        if hostname == blocked or hostname.endswith(f".{blocked}"):
-            return True
-    return False
 
 
 # --------------------------------------------------------------------- Nodes
@@ -309,63 +292,6 @@ def search_node(state: WebAcquisitionState, config: RunnableConfig) -> dict[str,
     return {"search_results": results}
 
 
-@observe_span(name="node.select")
-def select_node(state: WebAcquisitionState) -> dict[str, Any]:
-    """Filter and select best candidate."""
-    if state.get("error"):
-        return {}
-
-    results = state.get("search_results", [])
-    inp = state.get("input", {})
-    config = inp.get("search_config") or {}
-
-    min_len = config.get("min_snippet_length", 40)
-    blocked = config.get("blocked_domains", [])
-    top_n = config.get("top_n", 5)
-    prefer_pdf = config.get("prefer_pdf", True)
-
-    # Bypass snippet checks for preselected URLs
-    preselected_urls = {
-        item["url"]
-        for item in (inp.get("preselected_results") or [])
-        if item.get("url")
-    }
-
-    validated = []
-    for raw in results:
-        url = raw.get("url")
-        snippet = raw.get("snippet", "")
-
-        if not url:
-            continue
-
-        if url not in preselected_urls and len(snippet) < min_len:
-            continue
-
-        if _blocked_domain(url, blocked):
-            continue
-
-        lowered = snippet.lower()
-        if "noindex" in lowered and "robot" in lowered:
-            continue
-
-        validated.append(raw)
-
-    shortlisted = validated[:top_n]
-    selected = None
-
-    if shortlisted:
-        if prefer_pdf:
-            for cand in shortlisted:
-                if cand.get("is_pdf"):
-                    selected = cand
-                    break
-        if not selected:
-            selected = shortlisted[0]
-
-    return {"selected_result": selected, "search_results": shortlisted}
-
-
 @observe_span(name="node.finalize")
 def finalize_node(state: WebAcquisitionState) -> dict[str, Any]:
     """Build final output."""
@@ -416,7 +342,6 @@ def build_web_acquisition_graph() -> StateGraph:
 
     workflow.add_node("validate_input", validate_input_node)
     workflow.add_node("search", search_node)
-    workflow.add_node("select", select_node)
     workflow.add_node("finalize", finalize_node)
 
     workflow.add_edge(START, "validate_input")
@@ -428,16 +353,7 @@ def build_web_acquisition_graph() -> StateGraph:
 
     workflow.add_conditional_edges("validate_input", check_error)
 
-    def check_mode(state: WebAcquisitionState) -> str:
-        if state.get("error"):
-            return "finalize"
-        mode = state.get("input", {}).get("mode", "search_only")
-        if mode == "select_best":
-            return "select"
-        return "finalize"
-
-    workflow.add_conditional_edges("search", check_mode)
-    workflow.add_edge("select", "finalize")
+    workflow.add_edge("search", "finalize")
     workflow.add_edge("finalize", END)
 
     graph = workflow.compile()

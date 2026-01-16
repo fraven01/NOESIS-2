@@ -10,7 +10,7 @@ Operativer Leitfaden für den Gemini-Code-Agenten in NOESIS 2. **Alle Contracts,
 
 ## ID-Architektur & Lifecycle (Kurzreferenz)
 
-- Pflichtfelder für Tool-Aufrufe: `tenant_id`, `trace_id`, `invocation_id` **und genau eine** Laufzeit-ID (`run_id` XOR `ingestion_run_id`).
+- Pflichtfelder für Tool-Aufrufe: `tenant_id`, `trace_id`, `invocation_id` **und mindestens eine** Laufzeit-ID (`run_id` und/oder `ingestion_run_id` - beide können koexistieren, z.B. wenn Workflow Ingestion triggert).
 - HTTP-Header: `X-Tenant-ID` (immer), `X-Trace-ID` (immer), `X-Case-ID` (fachlich, wenn Case-Kontext besteht).
 - ID-Semantik & Propagation: siehe [`docs/architecture/id-semantics.md`](docs/architecture/id-semantics.md) und [`docs/architecture/id-propagation.md`](docs/architecture/id-propagation.md).
 - **Implementierungs-Guide**: [`docs/architecture/id-guide-for-agents.md`](docs/architecture/id-guide-for-agents.md) (Pflichtlektüre für Coding).

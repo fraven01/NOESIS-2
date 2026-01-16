@@ -1,10 +1,27 @@
 from __future__ import annotations
 
-from django.http import HttpResponse
+from uuid import uuid4
+
+from django.shortcuts import render
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
+# from ai_core.graph.core import GraphContext, ThreadAwareCheckpointer (Removed M-5)
+from ai_core.services.rag_query import RagQueryService
+from common.constants import (
+    X_CASE_ID_HEADER,
+    X_COLLECTION_ID_HEADER,
+    X_THREAD_ID_HEADER,
+)
+from theme.chat_utils import (
+    build_hybrid_config,
+    build_snippet_items,
+    coerce_optional_text,
+)
+
 logger = get_logger(__name__)
+logger = get_logger(__name__)
+# CHECKPOINTER = ThreadAwareCheckpointer() (Removed M-5)
 
 
 def _views():
@@ -20,102 +37,111 @@ def chat_submit(request):
     Invokes the production RAG graph and returns the assistant's reply.
     """
     message = request.POST.get("message")
-    case_id = (
-        request.POST.get("case_id")
-        or request.headers.get("X-Case-ID")
-        or "dev-case-local"
+    case_id = coerce_optional_text(
+        request.POST.get("case_id") or request.headers.get(X_CASE_ID_HEADER)
     )
+    # No dev-case-local fallback (SCOPE-1): Scope logic below will set to None if needed
+    collection_id = coerce_optional_text(
+        request.POST.get("collection_id") or request.headers.get(X_COLLECTION_ID_HEADER)
+    )
+    thread_id = coerce_optional_text(
+        request.POST.get("thread_id") or request.headers.get(X_THREAD_ID_HEADER)
+    )
+    if thread_id is None:
+        thread_id = uuid4().hex
+    try:
+        request.session["rag_chat_thread_id"] = thread_id
+    except Exception:
+        pass
 
-    # Feature: Global Search in RAG Chat (Dev Workbench)
-    # If global_search is checked, ignore case_id to search entire tenant
+    scope_option = (
+        request.POST.get("chat_scope")
+        or request.session.get("rag_chat_scope")
+        or "collection"
+    )
     if request.POST.get("global_search") == "on":
+        scope_option = "global"
+    if scope_option not in {"collection", "case", "global"}:
+        scope_option = "collection"
+    request.session["rag_chat_scope"] = scope_option
+
+    manual_collection_id = None
+
+    needs_manual_collection = False
+    if scope_option == "collection":
         case_id = None
+    elif scope_option == "case":
+        collection_id = None
+    else:  # global
+        case_id = None
+        collection_id = None
+        needs_manual_collection = True
 
     if not message:
-        return HttpResponse('<div class="text-red-500 p-4">Message is required.</div>')
+        return render(
+            request,
+            "theme/partials/chat_message.html",
+            {"error": "Message is required."},
+        )
 
     try:
-        from ai_core.graphs.technical.retrieval_augmented_generation import (
-            run as run_rag_graph,
-        )
+        from theme.helpers.context import prepare_workbench_context
 
-        views = _views()
-        tenant_id, tenant_schema = views._tenant_context_from_request(request)
-
-        # 1. Prepare State & Meta
-        state = {
-            "question": message,
-            "query": message,  # Required for retrieval
-            "hybrid": {
-                "alpha": 0.5,
-                "top_k": 5,
-                "min_sim": 0.0,
-            },
-        }
-
-        from ai_core.contracts.business import BusinessContext
-        from ai_core.ids.http_scope import normalize_request
-
-        scope = normalize_request(request)
-        business = BusinessContext(
+        # 1. Prepare Context
+        tool_context = prepare_workbench_context(
+            request,
             case_id=case_id,
+            collection_id=collection_id,
+            thread_id=thread_id,
             workflow_id="rag-chat-manual",
         )
-        tool_context = scope.to_tool_context(
-            business=business,
-            metadata={"graph_name": "rag.default", "graph_version": "v0"},
+
+        # Add graph metadata manually (helper doesn't add it)
+        tool_context = tool_context.model_copy(
+            update={"metadata": {"graph_name": "rag.default", "graph_version": "v0"}}
         )
 
-        meta = {
-            "tenant_id": tenant_id,
-            "tenant_schema": tenant_schema or scope.tenant_schema,
-            "case_id": case_id,
-            "trace_id": scope.trace_id,
-            "run_id": scope.run_id,  # Required for ScopeContext validation
-            "workflow_id": "rag-chat-manual",  # Workflow type for tracing
-            "scope_context": scope.model_dump(mode="json", exclude_none=True),
-            "business_context": business.model_dump(mode="json", exclude_none=True),
-            # Ensure we have a valid tool context
-            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
-        }
+        # graph_context removed (M-5)
 
-        # 2. Run Graph
-        final_state, result_payload = run_rag_graph(state, meta)
+        scope = tool_context.scope
+        tenant_id = scope.tenant_id
+        tenant_schema = scope.tenant_schema or tenant_id
+        views = _views()
+        manual_collection_id, _ = views._resolve_manual_collection(tenant_id, None)
+        if needs_manual_collection and manual_collection_id:
+            collection_id = manual_collection_id
 
-        # 3. Extract Answer
+        service = RagQueryService()
+        _, result_payload = service.execute(
+            tool_context=tool_context,
+            question=message,
+            hybrid=build_hybrid_config(request),
+        )
+
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
+        snippet_items = build_snippet_items(snippets)
 
-        # 4. Render Response Partial
-        # We'll inline the HTML for now, or we could create a partial template
-        response_html = f"""
-        <div class="flex items-start gap-4 justify-end">
-            <div class="bg-indigo-600 p-4 rounded-2xl rounded-tr-none shadow-sm text-sm text-white max-w-[80%]">
-                <p>{message}</p>
-            </div>
-            <div class="flex-shrink-0 h-8 w-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold text-xs">You</div>
-        </div>
-        <div class="flex items-start gap-4">
-            <div class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">AI</div>
-            <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100 text-sm text-slate-700 max-w-[80%] space-y-2">
-                <div class="prose prose-sm max-w-none text-slate-700">
-                    {answer}
-                </div>
-                {'<div class="mt-2 pt-2 border-t border-slate-100"><p class="text-xs font-semibold text-slate-500 mb-1">Sources:</p><ul class="space-y-1">' + ''.join([f'<li class="text-xs text-slate-400 truncate" title="{s.get("text", "")[:200]}">• {s.get("source", "Unknown")} ({int(s.get("score", 0)*100)}%)</li>' for s in snippets[:3]]) + '</ul></div>' if snippets else ''}
-            </div>
-        </div>
-        """
-        return HttpResponse(response_html)
+        return render(
+            request,
+            "theme/partials/chat_message.html",
+            {
+                "message": message,
+                "answer": answer,
+                "snippets": snippet_items,
+                "tenant_id": tenant_id,
+                "tenant_schema": tenant_schema or scope.tenant_schema,
+                "case_id": case_id,
+                "collection_id": collection_id,
+                "thread_id": thread_id,
+                "chat_scope": scope_option,
+            },
+        )
 
     except Exception as e:
         logger.exception("chat_submit.failed")
-        return HttpResponse(
-            f"""
-        <div class="flex items-start gap-4">
-            <div class="flex-shrink-0 h-8 w-8 rounded-full bg-red-100 flex items-center justify-center text-red-700 font-bold text-xs">ERR</div>
-            <div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-red-100 text-sm text-red-600 max-w-[80%]">
-                <p>Error processing request: {str(e)}</p>
-            </div>
-        </div>
-        """
+        return render(
+            request,
+            "theme/partials/chat_message.html",
+            {"error": f"Error processing request: {str(e)}"},
         )

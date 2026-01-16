@@ -69,6 +69,15 @@ class IngestionContextBuilder:
             return None
         return mapping.get(key)
 
+    @staticmethod
+    def _extract_tool_context(meta: Optional[Mapping[str, Any]]) -> Any:
+        if not isinstance(meta, MappingABC):
+            return None
+        try:
+            return tool_context_from_meta(meta)
+        except (TypeError, ValueError):
+            return None
+
     def build_from_state(
         self,
         state: Mapping[str, Any],
@@ -91,12 +100,7 @@ class IngestionContextBuilder:
         - Raw payload path: Special extraction from state
         """
         state_meta = self._extract_from_mapping(state, "meta")
-        tool_context = None
-        if isinstance(meta, MappingABC):
-            try:
-                tool_context = tool_context_from_meta(meta)
-            except (TypeError, ValueError):
-                tool_context = None
+        tool_context = self._extract_tool_context(meta)
         scope_context = tool_context.scope if tool_context else None
         business_context = tool_context.business if tool_context else None
         raw_reference = self._extract_from_mapping(state, "raw_document")

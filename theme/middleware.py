@@ -8,10 +8,12 @@ logger = get_logger(__name__)
 
 class SimulatedUserMiddleware(MiddlewareMixin):
     """
-    Middleware that allows overriding the logged-in user for 'rag-tools' views
-    to simulate different personas (Admin, Legal, etc.) during development.
+    Allow staff users to simulate other users in the RAG Workbench (DEBUG only).
 
-    This is STRICTLY for development and requires DEBUG=True or RAG_TOOLS_ENABLED=True.
+    Security:
+    - This middleware only runs if DEBUG=True or RAG_TOOLS_ENABLED=True.
+    - It strictly requires the ACTING user to be authenticated and have `is_staff=True`.
+    - It preserves the actual user as `request.original_user`.
     """
 
     def process_request(self, request):
@@ -21,23 +23,34 @@ class SimulatedUserMiddleware(MiddlewareMixin):
         if not request.path.startswith("/rag-tools/"):
             return
 
+        # SECURITY: Ensure the acting user is known and privileged.
+        # We rely on AuthenticationMiddleware having run before this.
+        if not hasattr(request, "user") or not request.user.is_authenticated:
+            return
+
+        if not request.user.is_staff:
+            return
+
         simulated_user_id = request.session.get("rag_tools_simulated_user_id")
         if not simulated_user_id:
             return
 
+        # Allow passing "anonymous" as a string to simulate an unauthenticated user
+        if simulated_user_id == "anonymous":
+            request.original_user = request.user
+            from django.contrib.auth.models import AnonymousUser
+
+            request.user = AnonymousUser()
+            request.is_simulated_user = True
+            return
+
         User = get_user_model()
         try:
-            # We fetch the user instance. We handle the case where it might be a string ID or int.
-            user = User.objects.get(pk=simulated_user_id)
-            # Override request.user.
-            # Note: This does NOT log the user in via session auth,
-            # it just overrides the attribute for this request cycle.
-            request.user = user
+            target_user = User.objects.get(pk=simulated_user_id)
+            # Store the real user before switching
+            request.original_user = request.user
+            request.user = target_user
             request.is_simulated_user = True
-
-            # Also attach to scope context if possible/needed, or just rely on
-            # views extracting it from request.user
-
         except User.DoesNotExist:
             logger.warning(
                 "rag_tools.simulation.user_not_found", user_id=simulated_user_id

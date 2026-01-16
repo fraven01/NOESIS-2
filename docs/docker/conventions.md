@@ -27,4 +27,4 @@ See: `docker-compose.yml`, `docker-compose.dev.yml`.
 ## Queue usage in code
 
 - Graph execution enqueues `llm_worker.tasks.run_graph` on `agents-high` by default (background can use `agents-low`).
-- Ingestion tasks run on the `ingestion` queue, e.g. `ai_core/tasks.py:run_ingestion_graph`.
+- Ingestion tasks run on the `ingestion` queue, e.g. `ai_core/tasks/graph_tasks.py:run_ingestion_graph`.
