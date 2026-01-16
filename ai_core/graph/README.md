@@ -10,15 +10,21 @@ modules to a consistent execution contract.
 - **GraphRunner protocol** - every runner exposes `run(state: dict, meta: dict) -> (dict, dict)`
   and must return the next persisted state alongside the HTTP payload.
 - **Checkpointer** - the default `FileCheckpointer` persists JSON snapshots under
-  `.ai_core_store/<tenant>/<case>/state.json` using `sanitize_identifier`.
+  `.ai_core_store/<tenant>/workflow-executions/<workflow_id>/<run_id>/state.json`
+  (or `.ai_core_store/<tenant>/workflow-executions/<plan_key>/state.json` when a derived
+  `plan_key` is provided) using `sanitize_identifier`. The thread-aware variant stores
+  under `.ai_core_store/<tenant>/threads/<thread_id>/state.json`.
 
 ## State & Meta Contract
-- Required metadata fields: `tenant_id`, `case_id`, `trace_id`, `graph_name`,
-  `graph_version` (default `"v0"`).
+- Required metadata fields: `tenant_id`, `trace_id`, `graph_name`, `graph_version`
+  (default `"v0"`), plus `workflow_id` for persisted graph executions.
+- Checkpointing requires `workflow_id` plus `run_id`/`ingestion_run_id`, unless a derived
+  `plan_key` is supplied in context metadata (`workflow_execution` scope).
 - `merge_state(old, incoming)` performs a shallow overwrite: keys from the request body
   replace existing entries; missing keys remain untouched.
-- The file layout is tenant/case scoped; corrupted or non-dict payloads raise
-  `TypeError` to trigger a 400 response in the views.
+- The file layout is tenant/workflow_execution scoped (or thread-scoped when `thread_id`
+  is present); corrupted or non-dict payloads raise `TypeError` to trigger a 400 response
+  in the views.
 
 ## Lifecycle
 1. `apps.AiCoreConfig.ready()` imports and executes `graph.bootstrap.bootstrap()`.

@@ -19,7 +19,7 @@ def _scope_meta(tenant_id: str, case_id: str) -> dict[str, Any]:
         run_id=uuid4().hex,
         service_id="test-worker",
     )
-    business = BusinessContext(case_id=case_id)
+    business = BusinessContext(case_id=case_id, workflow_id="rag.default")
     tool_context = scope.to_tool_context(business=business)
     return {
         "scope_context": scope.model_dump(mode="json"),
@@ -67,7 +67,11 @@ def test_graph_persists_history_with_thread_id() -> None:
         run_id=uuid4().hex,
         service_id="test-worker",
     )
-    business = BusinessContext(case_id="case-1", thread_id="thread-1")
+    business = BusinessContext(
+        case_id="case-1",
+        workflow_id="rag.default",
+        thread_id="thread-1",
+    )
     tool_context = scope.to_tool_context(business=business)
     meta = {"tool_context": tool_context.model_dump(mode="json")}
 

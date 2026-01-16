@@ -64,7 +64,7 @@ def test_rag_worker_sync_success(monkeypatch, disable_async_graphs):
         timestamp=datetime.now(timezone.utc),
         service_id="test-worker",
     )
-    business = BusinessContext(case_id="case-test")
+    business = BusinessContext(case_id="case-test", workflow_id="rag.default")
     tool_context = ToolContext(scope=scope, business=business)
 
     normalized_meta = {
@@ -153,7 +153,7 @@ def test_rag_worker_async_fallback(monkeypatch, disable_async_graphs):
         timestamp=datetime.now(timezone.utc),
         service_id="test-worker",
     )
-    business = BusinessContext(case_id="case-test")
+    business = BusinessContext(case_id="case-test", workflow_id="rag.default")
     tool_context = ToolContext(scope=scope, business=business)
 
     normalized_meta = {

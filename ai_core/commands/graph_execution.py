@@ -142,11 +142,16 @@ class GraphExecutionCommand:
         if hasattr(request, "_request") and request._request is not request:
             setattr(request._request, "tool_context", tool_context)
 
-        context = GraphContext(
-            tool_context=tool_context,
-            graph_name=normalized_meta["graph_name"],
-            graph_version=normalized_meta["graph_version"],
-        )
+        try:
+            context = GraphContext(
+                tool_context=tool_context,
+                graph_name=normalized_meta["graph_name"],
+                graph_version=normalized_meta["graph_version"],
+            )
+        except ValueError as exc:
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
 
         ledger_identifier = _extract_ledger_identifier(normalized_meta)
         initial_cost_total = _extract_initial_cost(normalized_meta)

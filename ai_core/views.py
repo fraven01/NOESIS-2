@@ -479,7 +479,7 @@ def _resolve_hard_delete_actor(
     return actor
 
 
-def _prepare_request(request: Request):
+def _prepare_request(request: Request, *, workflow_id_hint: str | None = None):
     """
     Prepare a request by extracting, validating, and enriching context.
 
@@ -515,9 +515,10 @@ def _prepare_request(request: Request):
         or request.META.get(META_WORKFLOW_ID_KEY)
         or ""
     ).strip()
+    if not workflow_id and workflow_id_hint:
+        workflow_id = workflow_id_hint.strip()
     if not workflow_id:
-        # Default workflow_id to case_id if available, otherwise generate UUID
-        workflow_id = case_id or uuid4().hex
+        workflow_id = None
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
     collection_header = request.headers.get(X_COLLECTION_ID_HEADER)
     if collection_header is None:
@@ -1389,7 +1390,7 @@ class _BaseAgentView(DeprecationHeadersMixin, APIView):
 
 class _PingBase(_BaseAgentView):
     def get(self, request: Request) -> Response:
-        meta, error = _prepare_request(request)
+        meta, error = _prepare_request(request, workflow_id_hint=self.graph_name)
         if error:
             return error
         response = Response({"ok": True})

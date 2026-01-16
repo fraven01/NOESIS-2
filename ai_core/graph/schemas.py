@@ -204,8 +204,9 @@ def normalize_meta(request: Any) -> dict:
     """Return a normalised metadata mapping for graph executions.
 
     BREAKING CHANGE (Option A - Graph-Specific Validation):
-    No longer enforces case_id globally. Business context fields are optional.
-    Individual graphs validate required fields based on their needs.
+    No longer enforces case_id globally. Business context fields are optional
+    except for workflow_id, which is required for workflow execution scope.
+    Individual graphs validate additional required fields based on their needs.
 
     Canonical runtime context injection:
     - `normalize_meta()` attaches `scope_context`, `business_context`, and `tool_context`.
@@ -217,6 +218,8 @@ def normalize_meta(request: Any) -> dict:
 
     # Build BusinessContext (all fields optional per Option A)
     business = build_business_context_from_request(request)
+    if not business.workflow_id:
+        raise ValueError("workflow_id is required for workflow execution")
 
     graph_name = _resolve_graph_name(request)
     graph_version = getattr(request, "graph_version", "v0")

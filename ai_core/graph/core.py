@@ -45,6 +45,12 @@ class GraphContext:
     graph_name: str
     graph_version: str = "v0"
 
+    def __post_init__(self) -> None:
+        if not self.workflow_id or not self.run_id:
+            raise ValueError(
+                "workflow_id and run_id are required for workflow execution checkpointing"
+            )
+
     @property
     def tenant_id(self) -> str:
         return self.tool_context.scope.tenant_id
@@ -59,9 +65,7 @@ class GraphContext:
 
     @property
     def workflow_id(self) -> str | None:
-        return (
-            self.tool_context.business.workflow_id or self.tool_context.business.case_id
-        )
+        return self.tool_context.business.workflow_id
 
     @property
     def thread_id(self) -> str | None:
@@ -73,14 +77,33 @@ class GraphContext:
             self.tool_context.scope.run_id or self.tool_context.scope.ingestion_run_id
         )
 
+    @property
+    def plan_key(self) -> str | None:
+        value = self.tool_context.metadata.get("plan_key")
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return str(value)
+
 
 class FileCheckpointer(Checkpointer):
     """Checkpoint implementation backed by the local object store."""
 
     def _path(self, ctx: GraphContext) -> str:
         safe_tenant = sanitize_identifier(ctx.tenant_id)
-        safe_case = sanitize_identifier(ctx.case_id)
-        return f"{safe_tenant}/{safe_case}/state.json"
+        plan_key = ctx.plan_key
+        if plan_key:
+            safe_plan_key = sanitize_identifier(plan_key)
+            return f"{safe_tenant}/workflow-executions/{safe_plan_key}/state.json"
+
+        workflow_id = ctx.workflow_id
+        run_id = ctx.run_id
+        safe_workflow = sanitize_identifier(workflow_id)
+        safe_run = sanitize_identifier(run_id)
+        return (
+            f"{safe_tenant}/workflow-executions/{safe_workflow}/{safe_run}/state.json"
+        )
 
     def load(self, ctx: GraphContext) -> dict:
         """Load a previously stored state or return an empty mapping."""
@@ -97,6 +120,9 @@ class FileCheckpointer(Checkpointer):
                     "graph": ctx.graph_name,
                     "tenant_id": ctx.tenant_id,
                     "case_id": ctx.case_id,
+                    "workflow_id": ctx.workflow_id,
+                    "run_id": ctx.run_id,
+                    "plan_key": ctx.plan_key,
                 },
             )
             write_json(path, {})
@@ -110,6 +136,9 @@ class FileCheckpointer(Checkpointer):
                     "graph": ctx.graph_name,
                     "tenant_id": ctx.tenant_id,
                     "case_id": ctx.case_id,
+                    "workflow_id": ctx.workflow_id,
+                    "run_id": ctx.run_id,
+                    "plan_key": ctx.plan_key,
                 },
             )
             write_json(path, {})
