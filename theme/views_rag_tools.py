@@ -319,7 +319,7 @@ def start_rerank_workflow(request):
                 }
             )
 
-        graph_result = result_payload.get("result") or {}
+        graph_result = result_payload.get("data") or {}
         search_payload = graph_result.get("search") or {}
         telemetry_payload = graph_result.get("telemetry") or {}
         outcome_label = graph_result.get("outcome") or "Workflow abgeschlossen"

@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Mapping, MutableMapping, Sequence
 from datetime import datetime, timezone
-from typing import Annotated, Any, Literal, Optional, Protocol, TypedDict, cast
+from typing import Annotated, Any, Literal, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -41,7 +41,6 @@ from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import emit_event, observe_span
 from ai_core.rag.embeddings import EmbeddingClient
 from ai_core.tool_contracts import ToolContext
-from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.tools.web_search import (
     SearchProviderError,
     ToolOutcome,
@@ -189,16 +188,29 @@ class CollectionSearchGraphRequest(BaseModel):
     """Boundary input model for the collection search graph.
 
     BREAKING CHANGE: schema_id and schema_version are required fields (no defaults).
-    All callers must explicitly provide these values.
+    All callers must explicitly provide these values and include tool_context.
     """
 
     schema_id: Literal[COLLECTION_SEARCH_SCHEMA_ID]
-    schema_version: Literal[COLLECTION_SEARCH_IO_VERSION_STRING]
+    schema_version: str
     input: GraphInput
     tool_context: ToolContext | None = None
     runtime: dict[str, Any] | None = None
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @field_validator("schema_version")
+    @classmethod
+    def _validate_schema_version(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("schema_version must be a string")
+        parts = value.strip().split(".")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            raise ValueError("schema_version must be in MAJOR.MINOR.PATCH form")
+        major = int(parts[0])
+        if major != COLLECTION_SEARCH_IO_VERSION.major:
+            raise ValueError("schema_version major must match")
+        return value.strip()
 
 
 class CollectionSearchGraphOutput(BaseModel):
@@ -380,6 +392,10 @@ _FRESHNESS_MAP: dict[str, FreshnessMode] = {
     "software_docs_strict": FreshnessMode.SOFTWARE_DOCS_STRICT,
     "law_evergreen": FreshnessMode.LAW_EVERGREEN,
 }
+_EMBEDDING_WEIGHT_PROFILES: dict[str, float] = {
+    "software_docs_strict": 0.7,
+    "law_evergreen": 0.5,
+}
 
 MIN_DIVERSITY_BUCKETS = 3
 _DEFAULT_SEARCH_TIMEOUT_S = 30.0
@@ -421,6 +437,86 @@ def _resolve_search_timeout_s() -> float:
     if timeout <= 0:
         return default
     return timeout
+
+
+def _resolve_graph_timeout_s(runtime: Mapping[str, Any]) -> float | None:
+    runtime_value = runtime.get("graph_timeout_s")
+    if runtime_value is not None:
+        try:
+            timeout = float(runtime_value)
+        except (TypeError, ValueError):
+            timeout = None
+    else:
+        timeout = None
+    if timeout is None:
+        try:
+            from django.conf import settings
+        except Exception:
+            return None
+        timeout = getattr(settings, "GRAPH_COLLECTION_SEARCH_TIMEOUT_S", None)
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            return None
+    if timeout <= 0:
+        return None
+    return timeout
+
+
+def _timeout_payload(timeout_s: float | None) -> CollectionSearchGraphOutput:
+    telemetry: dict[str, Any] | None = None
+    if timeout_s is not None:
+        telemetry = {"graph_timeout_s": timeout_s}
+    return CollectionSearchGraphOutput(
+        outcome="error",
+        search=None,
+        telemetry=telemetry,
+        ingestion=None,
+        plan=None,
+        hitl=None,
+        error="graph_timeout",
+    )
+
+
+async def _ainvoke_with_timeout(
+    runnable: Any,
+    state: CollectionSearchState,
+    timeout_s: float,
+) -> CollectionSearchState:
+    return await asyncio.wait_for(runnable.ainvoke(state), timeout=timeout_s)
+
+
+def _run_async(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(asyncio.run, coro)
+        return future.result()
+
+
+def _resolve_embedding_weight(graph_input: GraphInput) -> tuple[float, str]:
+    quality_mode = graph_input.quality_mode
+    profile_weight = _EMBEDDING_WEIGHT_PROFILES.get(quality_mode)
+    if profile_weight is None:
+        return graph_input.embedding_weight, "input"
+    return profile_weight, f"profile:{quality_mode}"
+
+
+def _build_embedding_texts(
+    query: str, purpose: str, results: Sequence[SearchResultPayload]
+) -> list[str]:
+    """Build embedding inputs without diluting the query with long purpose text."""
+    texts = [query.strip()]
+    if purpose.strip():
+        texts.append(purpose.strip())
+    for result in results:
+        combined = f"{result.title} {result.snippet}".strip()
+        texts.append(combined)
+    return texts
 
 
 def _record_transition(
@@ -762,7 +858,7 @@ async def _execute_parallel_searches(
 
 
 @observe_span(name="node.search")
-def search_node(state: CollectionSearchState) -> dict[str, Any]:
+async def search_node(state: CollectionSearchState) -> dict[str, Any]:
     """Execute parallel web search using asyncio.gather for I/O-bound operations."""
     strategy_state = state.get("strategy")
     strategy = strategy_state.plan if strategy_state else None
@@ -790,40 +886,17 @@ def search_node(state: CollectionSearchState) -> dict[str, Any]:
 
     # Execute searches in parallel
     try:
-        # Check if we're already in an event loop
-        try:
-            asyncio.get_running_loop()
-            # We're in an async context - run in separate thread to avoid nesting
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    _execute_parallel_searches(
-                        worker,
-                        strategy.queries,
-                        tool_context,
-                        total_timeout_s=_resolve_search_timeout_s(),
-                    ),
-                )
-                aggregated, search_meta, errors = future.result()
-        except RuntimeError:
-            # No running event loop, we can use asyncio.run directly
-            aggregated, search_meta, errors = asyncio.run(
-                _execute_parallel_searches(
-                    worker,
-                    strategy.queries,
-                    tool_context,
-                    total_timeout_s=_resolve_search_timeout_s(),
-                )
-            )
+        aggregated, search_meta, errors = await _execute_parallel_searches(
+            worker,
+            strategy.queries,
+            tool_context,
+            total_timeout_s=_resolve_search_timeout_s(),
+        )
     except Exception as exc:
         LOGGER.exception("parallel_search_failed")
         return {
             "search": {
-                "errors": [
-                    SearchError(error=type(exc).__name__, message=str(exc))
-                ],
+                "errors": [SearchError(error=type(exc).__name__, message=str(exc))],
                 "results": [],
             }
         }
@@ -852,8 +925,10 @@ _EMBEDDING_MAX_RETRIES = 3
 _EMBEDDING_RETRY_DELAY_S = 0.5
 
 
-def _embed_with_retry(
-    texts: list[str], max_retries: int = _EMBEDDING_MAX_RETRIES
+async def _embed_with_retry(
+    embedding_client: EmbeddingClient,
+    texts: list[str],
+    max_retries: int = _EMBEDDING_MAX_RETRIES,
 ) -> tuple[list[list[float]], bool]:
     """Embed texts with retry mechanism.
 
@@ -864,8 +939,7 @@ def _embed_with_retry(
 
     for attempt in range(max_retries):
         try:
-            embedding_client = EmbeddingClient.from_settings()
-            embedding_result = embedding_client.embed(texts)
+            embedding_result = await asyncio.to_thread(embedding_client.embed, texts)
             return embedding_result.vectors, True
         except Exception as exc:
             last_exc = exc
@@ -878,7 +952,7 @@ def _embed_with_retry(
                 },
             )
             if attempt < max_retries - 1:
-                time.sleep(_EMBEDDING_RETRY_DELAY_S * (attempt + 1))
+                await asyncio.sleep(_EMBEDDING_RETRY_DELAY_S * (attempt + 1))
 
     LOGGER.error(
         "embedding_rank.failed_all_retries",
@@ -889,7 +963,7 @@ def _embed_with_retry(
 
 
 @observe_span(name="node.embedding_rank")
-def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
+async def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
     """Rank search results using embeddings.
 
     Uses configurable weights and top_k from GraphInput.
@@ -902,28 +976,34 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
         return {"embedding_rank": {"scored_count": 0, "top_k": 0, "failed": False}}
 
     graph_input = state["input"]
+    runtime = state["runtime"]
     query = graph_input.question
     purpose = graph_input.purpose
 
     # Use configurable parameters from GraphInput
     top_k = graph_input.embedding_top_k
-    embedding_weight = graph_input.embedding_weight
+    embedding_weight, weight_source = _resolve_embedding_weight(graph_input)
     heuristic_weight = 1.0 - embedding_weight
 
-    # Embedding logic
-    texts_to_embed = [f"{query} {purpose}".strip()]
-    for result in results:
-        combined = f"{result.title} {result.snippet}".strip()
-        texts_to_embed.append(combined)
+    # Embedding logic: keep query separate to avoid purpose dilution.
+    texts_to_embed = _build_embedding_texts(query, purpose, results)
 
     # Call embedding service with retry
-    vectors, embedding_success = _embed_with_retry(texts_to_embed)
+    embedding_client = runtime.get("runtime_embedding_client")
+    if embedding_client is None:
+        embedding_client = EmbeddingClient.from_settings()
+        runtime["runtime_embedding_client"] = embedding_client
+
+    vectors, embedding_success = await _embed_with_retry(
+        embedding_client, texts_to_embed
+    )
 
     query_vec = vectors[0] if vectors else []
     scored_results = []
 
+    offset = 2 if purpose.strip() else 1
     for idx, result in enumerate(results):
-        vec = vectors[idx + 1] if len(vectors) > idx + 1 else []
+        vec = vectors[idx + offset] if len(vectors) > idx + offset else []
         emb_score = 0.0
         if query_vec and vec:
             emb_score = cosine_similarity(query_vec, vec) * 100.0
@@ -953,6 +1033,8 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
             "top_k": len(top_results),
             "embedding_success": embedding_success,
             "embedding_weight": embedding_weight,
+            "embedding_weight_source": weight_source,
+            "embedding_query_only": True,
         }
     )
     _record_transition(
@@ -971,6 +1053,8 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
             "top_k": len(top_results),
             "failed": not embedding_success,
             "embedding_weight": embedding_weight,
+            "embedding_weight_source": weight_source,
+            "embedding_query_only": True,
         },
     }
 
@@ -1265,7 +1349,9 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
             reason = decision.rationale
     elif graph_input.auto_ingest:
         # Auto-ingest logic (simplified)
-        results = hybrid_state.result.ranked if hybrid_state and hybrid_state.result else []
+        results = (
+            hybrid_state.result.ranked if hybrid_state and hybrid_state.result else []
+        )
         selected_urls = select_auto_ingest_urls(
             results,
             top_k=graph_input.auto_ingest_top_k,
@@ -1483,13 +1569,9 @@ class CollectionSearchAdapter:
         if boundary.runtime:
             runtime.update(boundary.runtime)
 
-        # 3. Resolve ToolContext (from boundary or meta fallback)
+        # 3. Resolve ToolContext (boundary only, fail fast)
         if tool_context is None:
-            if not meta:
-                raise InvalidGraphInput(
-                    "tool_context is required either in state or meta"
-                )
-            tool_context = tool_context_from_meta(meta)
+            raise InvalidGraphInput("tool_context is required in the boundary state")
 
         _validate_tenant_context(tool_context)
 
@@ -1511,7 +1593,17 @@ class CollectionSearchAdapter:
 
         # 3. Invoke Graph
         try:
-            final_state = self.runnable.invoke(initial_state)
+            timeout_s = _resolve_graph_timeout_s(runtime)
+            if timeout_s is None:
+                final_state = _run_async(self.runnable.ainvoke(initial_state))
+            else:
+                final_state = _run_async(
+                    _ainvoke_with_timeout(self.runnable, initial_state, timeout_s)
+                )
+        except (asyncio.TimeoutError, TimeoutError):
+            timeout_s = _resolve_graph_timeout_s(runtime)
+            error_payload = _timeout_payload(timeout_s).model_dump(mode="json")
+            return {"error": "graph_timeout"}, error_payload
         except Exception as exc:
             LOGGER.exception("graph_execution_failed")
             error_payload = CollectionSearchGraphOutput(
@@ -1614,7 +1706,9 @@ def build_graph() -> CollectionSearchAdapter:
             payload = result.get("result") if isinstance(result, Mapping) else None
             if isinstance(payload, HybridResult):
                 return payload
-            return HybridResult.model_validate(payload or result)
+            raise InvalidGraphInput(
+                "Hybrid executor must return HybridResult in result['result']"
+            )
 
     search_worker = get_web_search_worker()
 

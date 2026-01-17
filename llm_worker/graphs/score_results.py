@@ -42,9 +42,9 @@ def _build_prompt(
     rag_facets: Mapping[str, Any] = (config or {}).get("rag_facets") or {}
     rag_gaps: Sequence[str] = (config or {}).get("rag_gap_dimensions") or []
     rag_key_points: Sequence[str] = (config or {}).get("rag_key_points") or []
-    rag_documents: Sequence[Mapping[str, Any]] = (
-        (config or {}).get("rag_documents") or []
-    )
+    rag_documents: Sequence[Mapping[str, Any]] = (config or {}).get(
+        "rag_documents"
+    ) or []
 
     sections: list[str] = [
         "Rolle: Du bist fachkundige:r Evaluator:in für qualitative Suchwerte aus Suchmaschinen, um zu prüfen, ob Sucheregbnisse für den Zweck der Suche geeigent sind.",

@@ -269,9 +269,7 @@ def test_llm_timeout_falls_back(
     assert result["result"].ranked
     assert "doc-1" in {item.candidate_id for item in result["result"].ranked}
     assert state["flags"]["debug"]["llm"]["fallback"] == "timeout"
-    assert any(
-        "hybrid.llm_timeout" in record.getMessage() for record in caplog.records
-    )
+    assert any("hybrid.llm_timeout" in record.getMessage() for record in caplog.records)
 
 
 def test_llm_cache_avoids_second_call(monkeypatch: pytest.MonkeyPatch) -> None:

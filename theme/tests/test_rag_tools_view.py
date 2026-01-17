@@ -395,7 +395,7 @@ def test_web_search_rerank_applies_scores(
     mock_submit_task.return_value = (
         {
             "task_id": "task-1",
-            "result": {
+            "data": {
                 "ranked": [
                     {"id": "doc-b", "score": 88, "reasons": ["präzise"]},
                     {"id": "doc-a", "score": 40, "reasons": []},
@@ -642,7 +642,7 @@ def test_start_rerank_workflow_returns_completed(
     mock_submit_business_graph.return_value = (
         {
             "task_id": "task-123",
-            "result": {
+            "data": {
                 "outcome": "search_completed",
                 "telemetry": telemetry_payload,
                 "search": search_payload,

@@ -1082,9 +1082,7 @@ class HybridSearchAndScoreGraph:
         )
 
         score_config: dict[str, Any] = dict(meta)
-        score_config["prompt_version"] = (
-            meta.get("prompt_version") or "hybrid-score.v1"
-        )
+        score_config["prompt_version"] = meta.get("prompt_version") or "hybrid-score.v1"
         score_config["model_preset"] = meta.get("model_preset") or "fast"
         score_config["max_tokens"] = meta.get("max_tokens") or 2000
         if scoring_context:

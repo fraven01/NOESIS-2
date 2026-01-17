@@ -112,9 +112,7 @@ def _resolve_timeout_value(
     return default
 
 
-def _resolve_timeouts(
-    label: str, cfg, *, stream: bool
-) -> tuple[float, float] | None:
+def _resolve_timeouts(label: str, cfg, *, stream: bool) -> tuple[float, float] | None:
     timeouts = cfg.timeouts or {}
     keys: list[str] = []
     if stream:

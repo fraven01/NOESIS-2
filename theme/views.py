@@ -417,7 +417,7 @@ def _run_rerank_workflow(
         meta["message"] = "Rerank workflow wurde gestartet und läuft im Hintergrund."
         return meta, None
 
-    result_payload = rerank_response.get("result") or {}
+    result_payload = rerank_response.get("data") or {}
     ranked_entries = result_payload.get("ranked") or []
     merged_results = _apply_rerank_results(results, ranked_entries)
 

@@ -7,6 +7,9 @@ from django.db import connection
 
 from ai_core.graph.execution import LocalGraphExecutor
 from ai_core.graphs.technical.cost_tracking import track_ledger_costs
+from ai_core.graphs.technical.collection_search import (
+    CollectionSearchGraphOutput,
+)
 from ai_core.ids.http_scope import normalize_task_context
 from ai_core.infra.observability import emit_event
 from ai_core.tool_contracts.base import tool_context_from_meta
@@ -16,6 +19,21 @@ from common.logging import get_logger
 from llm_worker.graphs import run_score_results
 
 logger = get_logger(__name__)
+
+
+def _resolve_collection_search_timeout_s() -> float | None:
+    try:
+        from django.conf import settings
+    except Exception:
+        return None
+    value = getattr(settings, "GRAPH_COLLECTION_SEARCH_TIMEOUT_S", None)
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return None
+    if timeout <= 0:
+        return None
+    return timeout
 
 
 @shared_task(
@@ -108,9 +126,6 @@ def run_graph(  # type: ignore[no-untyped-def]
                 config_payload = runner_meta.get("config")
                 if not isinstance(config_payload, Mapping):
                     config_payload = {}
-                control_meta = runner_meta.get("control")
-                if isinstance(control_meta, Mapping):
-                    config_payload = {**control_meta, **config_payload}
                 data_payload = runner_meta.get("data")
                 if not isinstance(data_payload, Mapping):
                     data_payload = {}
@@ -131,9 +146,38 @@ def run_graph(  # type: ignore[no-untyped-def]
                 new_state = runner_state
             else:
                 graph_executor = LocalGraphExecutor()
-                new_state, result = graph_executor.run(
-                    graph_name, runner_state, runner_meta
-                )
+                if graph_name == "collection_search":
+                    timeout_s = _resolve_collection_search_timeout_s()
+                else:
+                    timeout_s = None
+                if timeout_s is None:
+                    new_state, result = graph_executor.run(
+                        graph_name, runner_state, runner_meta
+                    )
+                else:
+                    from concurrent.futures import (
+                        ThreadPoolExecutor,
+                        TimeoutError as FutureTimeout,
+                    )
+
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(
+                            graph_executor.run, graph_name, runner_state, runner_meta
+                        )
+                        try:
+                            new_state, result = future.result(timeout=timeout_s)
+                        except FutureTimeout:
+                            future.cancel()
+                            result = CollectionSearchGraphOutput(
+                                outcome="error",
+                                search=None,
+                                telemetry={"graph_timeout_s": timeout_s},
+                                ingestion=None,
+                                plan=None,
+                                hitl=None,
+                                error="graph_timeout",
+                            ).model_dump(mode="json")
+                            new_state = {"error": "graph_timeout"}
         finally:
             runner_meta.pop("ledger_logger", None)
             # Ensure ledger_logger is removed from the state if it was copied there

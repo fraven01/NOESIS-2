@@ -40,12 +40,12 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
   - **Pointers:** `ai_core/llm/client.py:391`, `ai_core/llm/client.py:738`, `ai_core/graphs/technical/collection_search.py:561`, `ai_core/graphs/technical/collection_search.py:650`, `llm_worker/graphs/hybrid_search_and_score.py:1116`, `llm_worker/graphs/score_results.py:353`
   - **Acceptance:** LLM client adds explicit connect/read timeouts (sync + streaming); parallel search uses a total timeout with partial results; hybrid score timeout handling is reachable and logged; tests updated to cover timeout behavior; see `roadmap/collection-search-review.md`
 
-- [ ] **Collection Search boundary contract cleanup (V1-V8)**:
+- [x] **Collection Search boundary contract cleanup (V1-V8)**:
   - **Details:** `roadmap/collection-search-review.md`
   - **Pointers:** `ai_core/graphs/technical/collection_search.py:140`, `ai_core/graphs/technical/collection_search.py:480`, `ai_core/graphs/technical/collection_search.py:636`, `ai_core/graphs/technical/collection_search.py:837`, `ai_core/graphs/technical/collection_search.py:867`, `llm_worker/graphs/hybrid_search_and_score.py:626`, `llm_worker/graphs/hybrid_search_and_score.py:1389`, `llm_worker/graphs/score_results.py:353`
   - **Acceptance:** Graph internals pass typed models across nodes (no dict round-trips); search output uses typed structures at boundaries; dead branch removed; redundant model_dump removed; config/control/meta shape simplified; hardcoded jurisdiction/purpose removed; tests updated to enforce contracts; see `roadmap/collection-search-review.md`
 
-- [ ] **Collection Search fail-fast reset (drop legacy fallbacks)**:
+- [x] **Collection Search fail-fast reset (drop legacy fallbacks)**:
   - **Details:** `roadmap/collection-search-review.md`
   - **Pointers:** `ai_core/graphs/technical/collection_search.py:1458` (CollectionSearchAdapter.run tool_context meta fallback), `ai_core/graphs/technical/collection_search.py:1605` (_HybridExecutorAdapter HybridResult coercion), `llm_worker/tasks.py:111` (control -> config merge)
   - **Acceptance:** `CollectionSearchAdapter.run()` requires `tool_context` in boundary state (no meta fallback); `_HybridExecutorAdapter` rejects non-`HybridResult` payloads instead of coercing; `llm_worker/tasks.py` no longer merges legacy `control` into `config`; tests updated to cover hard failures (invalid inputs) and remove legacy payload paths; breaking change documented via this backlog item
@@ -54,20 +54,45 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 ### P1 - High Value Cleanups (Low-Medium Effort)
 
-- [ ] **Collection Search strategy quality improvements**: add structured JSON output with examples and richer fallback queries.
+- [x] **Collection Search strategy quality improvements**: add structured JSON output with examples and richer fallback queries.
   - **Details:** `roadmap/collection-search-review.md`
   - **Pointers:** `ai_core/services/collection_search/strategy.py:139`, `ai_core/services/collection_search/strategy.py:226`
   - **Acceptance:** Strategy prompt includes JSON-only schema + few-shot example; fallback strategy uses non-trivial query variants; tests cover schema parsing and fallback behavior
 
-- [ ] **Collection Search adaptive embedding weights**: adjust embedding vs heuristic weights by quality_mode or context.
+- [x] **Collection Search adaptive embedding weights**: adjust embedding vs heuristic weights by quality_mode or context.
   - **Details:** `roadmap/collection-search-review.md`
   - **Pointers:** `ai_core/graphs/technical/collection_search.py:738`
   - **Acceptance:** Weight selection is driven by quality_mode (or explicit profile mapping) and recorded in telemetry; default remains unchanged when not configured
 
-- [ ] **Collection Search hard graph timeout (worker-safe)**: add a whole-graph timeout without signal.alarm (Windows-safe).
+- [x] **Collection Search hard graph timeout (worker-safe)**: add a whole-graph timeout without signal.alarm (Windows-safe).
   - **Details:** `roadmap/collection-search-review.md`
   - **Pointers:** `ai_core/graphs/technical/collection_search.py`, `llm_worker/tasks.py:run_graph`, `ai_core/services/__init__.py`
   - **Acceptance:** Graph execution enforces a hard cap via worker limits or explicit timeout wrapper; timeout produces a deterministic error payload; no signal.alarm usage
+
+- [x] **Collection Search runtime performance cleanup (async + retries)**:
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py:search_node`, `ai_core/graphs/technical/collection_search.py:_execute_parallel_searches`, `ai_core/graphs/technical/collection_search.py:_embed_with_retry`
+  - **Acceptance:** search_node runs as true async (no ThreadPoolExecutor + asyncio.run); parallel search uses a single event loop; embedding retry uses non-blocking wait or moves embedding to async node; tests updated for async execution path
+
+- [x] **Collection Search LLM client unification (strategy generator)**:
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/services/collection_search/strategy.py:llm_strategy_generator`
+  - **Acceptance:** strategy generator uses central LLM client with JSON-mode support, Langfuse spans, and unified cost/error handling; direct litellm calls removed; tests updated for JSON response parsing
+
+- [x] **Collection Search embedding client injection**:
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py:embedding_rank_node`, `ai_core/graphs/technical/collection_search.py:_embed_with_retry`
+  - **Acceptance:** EmbeddingClient injected via runtime (like WebSearchWorker) and reused per graph; embedding rank node supports dependency injection for tests; no per-call from_settings()
+
+- [x] **Collection Search purpose handling in embedding rank**:
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py:embedding_rank_node`
+  - **Acceptance:** purpose does not dilute query embedding (e.g., weighted vector combination or moved to hybrid scoring); rationale documented in code; tests cover purpose-heavy input
+
+- [ ] **Collection Search schema version tolerance (plan evolution)**:
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py:CollectionSearchGraphRequest`, `ai_core/contracts/plans/*`
+  - **Acceptance:** Graph accepts minor-compatible schema updates without failing hard; strict rejection for incompatible major changes; tests cover minor version acceptance and major version rejection
 
 - [ ] **Activate AgenticChunker LLM Boundary Detection**: Implement `_detect_boundaries_llm()` in `ai_core/rag/chunking/agentic_chunker.py:354-379` (~25 LOC). Infrastructure complete (prompt template, Pydantic models, rate limiter, fallback logic). Needed to improve fallback quality for long documents (`token_count > max_tokens`). Details: `ai_core/rag/chunking/README.md#agentic-chunking`.
 

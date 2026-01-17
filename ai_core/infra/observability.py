@@ -13,9 +13,10 @@ import importlib.util
 import logging
 import os
 import base64
+import functools
+import inspect
 from contextvars import ContextVar
 from typing import Any, Callable, Iterable, Optional, TypeVar, cast, TYPE_CHECKING
-import functools
 
 if TYPE_CHECKING:
     from .usage import Usage
@@ -231,6 +232,30 @@ def observe_span(
     def decorator(func: F) -> F:
         span_name = name or getattr(func, "__name__", "observe")
         phase = _derive_phase(span_name, getattr(func, "__name__", None))
+
+        if inspect.iscoroutinefunction(func):
+
+            async def _run_async(*args: Any, **kwargs: Any):  # type: ignore[misc]
+                result = await func(*args, **kwargs)
+                if auto_annotate:
+                    _maybe_annotate_span(phase, args, kwargs, result)
+                return result
+
+            @functools.wraps(func)
+            async def wrapped(*args: Any, **kwargs: Any):  # type: ignore[misc]
+                if not tracing_enabled():
+                    return await _run_async(*args, **kwargs)
+                tracer = _get_tracer()
+                if tracer is None:
+                    return await _run_async(*args, **kwargs)
+                try:
+                    cm = tracer.start_as_current_span(span_name)
+                except Exception:
+                    return await _run_async(*args, **kwargs)
+                with cm:
+                    return await _run_async(*args, **kwargs)
+
+            return cast(F, wrapped)
 
         def _run(*args: Any, **kwargs: Any):  # type: ignore[misc]
             result = func(*args, **kwargs)
