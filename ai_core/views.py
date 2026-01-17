@@ -1389,6 +1389,8 @@ class _BaseAgentView(DeprecationHeadersMixin, APIView):
 
 
 class _PingBase(_BaseAgentView):
+    graph_name: str | None = None
+
     def get(self, request: Request) -> Response:
         meta, error = _prepare_request(request, workflow_id_hint=self.graph_name)
         if error:

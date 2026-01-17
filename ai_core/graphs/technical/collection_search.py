@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Mapping, MutableMapping, Sequence
 from datetime import datetime, timezone
-from typing import Any, Literal, Optional, Protocol, TypedDict, cast
+from typing import Annotated, Any, Literal, Optional, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from common.validators import normalise_str_sequence, optional_str
+from ai_core.contracts.plans import (
+    Evidence,
+    Gate,
+    ImplementationPlan,
+    PlanScope,
+    Slot,
+    Task,
+    derive_plan_key,
+)
 from ai_core.services.collection_search.auto_ingest import select_auto_ingest_urls
 from ai_core.services.collection_search.hitl import build_hitl_payload
 from ai_core.services.collection_search.scoring import (
@@ -72,6 +82,20 @@ class GraphInput(BaseModel):
     auto_ingest: bool = Field(default=False)
     auto_ingest_top_k: int = Field(default=10, ge=1, le=20)
     auto_ingest_min_score: float = Field(default=60.0, ge=0.0, le=100.0)
+
+    # Embedding ranking configuration
+    embedding_top_k: int = Field(
+        default=20,
+        ge=5,
+        le=50,
+        description="Number of top results to keep after embedding ranking",
+    )
+    embedding_weight: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Weight for embedding similarity score (heuristic weight = 1 - this)",
+    )
 
     @field_validator("quality_mode", mode="before")
     @classmethod
@@ -160,37 +184,6 @@ class HitlDecision(BaseModel):
         return optional_str(value, field_name="rationale")
 
 
-class CollectionSearchPlan(BaseModel):
-    """Output contract for collection search (Planning Stage)."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    plan_id: str
-    tenant_id: str
-    collection_id: str
-    created_at: str  # ISO format
-
-    # Strategy
-    strategy: SearchStrategy
-
-    # Results
-    candidates: list[dict[str, Any]]
-    scored_candidates: list[dict[str, Any]]
-
-    # Selection
-    selected_urls: list[str]
-    selection_reason: str | None
-
-    # HITL
-    hitl_required: bool
-    hitl_reasons: list[str]
-    review_payload: dict[str, Any] | None
-
-    # Execution Hints
-    execution_mode: Literal["acquire_only", "acquire_and_ingest"]
-    ingest_policy: dict[str, Any] | None = None
-
-
 # -----------------------------------------------------------------------------
 # Protocols
 # -----------------------------------------------------------------------------
@@ -248,32 +241,66 @@ class CrawlerManagerProtocol(Protocol):
 
 
 # -----------------------------------------------------------------------------
-# State Definition
+# State Definition & Reducers
 # -----------------------------------------------------------------------------
 
 
+def _merge_dict(
+    left: MutableMapping[str, Any], right: Mapping[str, Any]
+) -> MutableMapping[str, Any]:
+    """Shallow-merge reducer for dict state fields.
+
+    Merges right into left, preserving existing keys unless overwritten.
+    This prevents accidental data loss when updating only some dict keys.
+    """
+    if left is None:
+        return dict(right) if right else {}
+    if right is None:
+        return left
+    merged = dict(left)
+    merged.update(right)
+    return merged
+
+
+def _append_list(left: list[Any], right: list[Any]) -> list[Any]:
+    """Append reducer for list state fields."""
+    if left is None:
+        return list(right) if right else []
+    if right is None:
+        return left
+    return left + list(right)
+
+
 class CollectionSearchState(TypedDict):
-    """State management for the collection search graph."""
+    """State management for the collection search graph.
+
+    Uses Annotated types with reducer functions for safe partial updates.
+    This prevents accidental overwrites when nodes only update specific keys.
+    """
 
     input: Mapping[str, Any]  # Raw input used to build GraphInput
     tool_context: ToolContext
     runtime: Mapping[str, Any]  # Runtime dependencies
 
-    # Intermediate state
+    # Intermediate state with merge reducers
     strategy: Optional[Mapping[str, Any]]
-    search: Optional[MutableMapping[str, Any]]  # keys: results, errors, responses
-    embedding_rank: Optional[MutableMapping[str, Any]]  # keys: scored_count, top_k
-    hybrid: Optional[MutableMapping[str, Any]]  # keys: result, candidates
-    hitl: Optional[MutableMapping[str, Any]]
-    ingestion: Optional[MutableMapping[str, Any]]
+    search: Annotated[
+        MutableMapping[str, Any], _merge_dict
+    ]  # keys: results, errors, responses, embedding_failed
+    embedding_rank: Annotated[
+        MutableMapping[str, Any], _merge_dict
+    ]  # keys: scored_count, top_k, failed
+    hybrid: Annotated[MutableMapping[str, Any], _merge_dict]  # keys: result, candidates
+    hitl: Annotated[MutableMapping[str, Any], _merge_dict]
+    ingestion: Annotated[MutableMapping[str, Any], _merge_dict]
 
-    # Observability
-    meta: MutableMapping[str, Any]
-    telemetry: MutableMapping[str, Any]
-    transitions: list[Mapping[str, Any]]
+    # Observability with merge/append reducers
+    meta: Annotated[MutableMapping[str, Any], _merge_dict]
+    telemetry: Annotated[MutableMapping[str, Any], _merge_dict]
+    transitions: Annotated[list[Mapping[str, Any]], _append_list]
 
     # Phase 5: Plan Output
-    plan: Optional[Mapping[str, Any]]  # Serialized CollectionSearchPlan
+    plan: Optional[Mapping[str, Any]]  # Serialized ImplementationPlan
 
 
 _FRESHNESS_MAP: dict[str, FreshnessMode] = {
@@ -350,6 +377,73 @@ def _get_ids(tool_context: ToolContext, collection_scope: str) -> dict[str, str 
     }
 
 
+def _resolve_plan_profile(tool_context: ToolContext) -> tuple[str | None, str | None]:
+    metadata = tool_context.metadata
+    profile_id = metadata.get("framework_profile_id")
+    profile_version = metadata.get("framework_profile_version")
+    if profile_id and profile_version:
+        profile_version = None
+    if profile_id is None and profile_version is None:
+        profile_version = "v0"
+    return (
+        str(profile_id) if profile_id else None,
+        str(profile_version) if profile_version else None,
+    )
+
+
+def _resolve_gremium_identifier(
+    tool_context: ToolContext, graph_input: GraphInput
+) -> str:
+    value = tool_context.metadata.get("gremium_identifier")
+    if value:
+        return str(value)
+    return graph_input.collection_scope
+
+
+def _extract_slot_value(plan: ImplementationPlan, key: str) -> Any:
+    for slot in plan.slots:
+        if slot.key == key:
+            return slot.value
+    return None
+
+
+def _update_ingestion_task(
+    plan: ImplementationPlan, task_info: Mapping[str, Any]
+) -> ImplementationPlan:
+    run_id = task_info.get("run_id") or task_info.get("task_id")
+    new_evidence = []
+    if run_id:
+        new_evidence = [
+            Evidence(
+                ref_type="object_store",
+                ref_id=str(run_id),
+                summary="crawler_run",
+                metadata={"source": "crawler"},
+            )
+        ]
+
+    updated_tasks = []
+    for task in plan.tasks:
+        if task.key == "execute_ingestion":
+            outputs = list(task.outputs)
+            outputs.extend(new_evidence)
+            updated_tasks.append(
+                task.model_copy(update={"status": "completed", "outputs": outputs})
+            )
+        else:
+            updated_tasks.append(task)
+
+    metadata = dict(plan.metadata)
+    metadata["ingestion"] = {"task_info": dict(task_info)}
+    return plan.model_copy(
+        update={
+            "tasks": updated_tasks,
+            "evidence": list(plan.evidence) + new_evidence,
+            "metadata": metadata,
+        }
+    )
+
+
 # -----------------------------------------------------------------------------
 # Nodes
 # -----------------------------------------------------------------------------
@@ -397,9 +491,137 @@ def strategy_node(state: CollectionSearchState) -> dict[str, Any]:
     return {"strategy": {"plan": plan}}
 
 
+def _execute_single_search(
+    worker: WebSearchWorker,
+    query: str,
+    index: int,
+    tool_context: ToolContext,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
+    """Execute a single search query and return (results, meta, error).
+
+    Args:
+        worker: WebSearchWorker instance
+        query: Search query string
+        index: Query index for tracking
+        tool_context: ToolContext instance (not dict!) for worker
+
+    Returns:
+        Tuple of (results_list, search_meta, error_dict).
+        Only one of search_meta or error_dict will be non-None.
+    """
+    query_start = time.time()
+    try:
+        response: WebSearchResponse = worker.run(query=query, context=tool_context)
+        query_latency = time.time() - query_start
+
+        emit_event(
+            {
+                "event.name": "query.executed",
+                "query.index": index,
+                "query.result_count": len(response.results),
+                "query.latency_ms": int(query_latency * 1000),
+                "query.status": "success",
+            }
+        )
+
+        outcome: ToolOutcome = response.outcome
+        meta = dict(outcome.meta)
+        meta["query"] = query
+
+        if outcome.decision == "ok":
+            results = []
+            for position, result in enumerate(response.results):
+                normalised = result.model_dump(mode="json")
+                normalised.update(
+                    {
+                        "query": query,
+                        "query_index": index,
+                        "position": position,
+                    }
+                )
+                results.append(normalised)
+            return results, meta, None
+        else:
+            error = {
+                "query": query,
+                "error": meta.get("error"),
+                "message": outcome.rationale,
+            }
+            return [], meta, error
+
+    except SearchProviderError as exc:
+        error = {
+            "query": query,
+            "error": type(exc).__name__,
+            "message": str(exc),
+        }
+        return [], None, error
+
+
+async def _execute_parallel_searches(
+    worker: WebSearchWorker,
+    queries: list[str],
+    tool_context: ToolContext,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Execute multiple search queries in parallel using asyncio.
+
+    Args:
+        worker: WebSearchWorker instance
+        queries: List of search queries
+        tool_context: Base ToolContext to derive per-query contexts from
+
+    Returns:
+        Tuple of (aggregated_results, search_meta, errors).
+    """
+    loop = asyncio.get_event_loop()
+
+    async def run_search(index: int, query: str):
+        # Create per-query ToolContext with unique worker_call_id
+        worker_call_id = f"search-{index}-{uuid4()}"
+        updated_metadata = {**tool_context.metadata, "worker_call_id": worker_call_id}
+        query_context = tool_context.model_copy(update={"metadata": updated_metadata})
+
+        # Run synchronous worker in thread pool to avoid blocking
+        return await loop.run_in_executor(
+            None,
+            _execute_single_search,
+            worker,
+            query,
+            index,
+            query_context,
+        )
+
+    # Execute all searches in parallel
+    tasks = [run_search(i, q) for i, q in enumerate(queries)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    aggregated: list[dict[str, Any]] = []
+    search_meta: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            errors.append(
+                {
+                    "query": queries[i],
+                    "error": type(result).__name__,
+                    "message": str(result),
+                }
+            )
+        else:
+            res_list, meta, error = result
+            aggregated.extend(res_list)
+            if meta:
+                search_meta.append(meta)
+            if error:
+                errors.append(error)
+
+    return aggregated, search_meta, errors
+
+
 @observe_span(name="node.search")
 def search_node(state: CollectionSearchState) -> dict[str, Any]:
-    """Execute parallel web search."""
+    """Execute parallel web search using asyncio.gather for I/O-bound operations."""
     strategy_data = state.get("strategy", {}).get("plan")
     if not strategy_data:
         return {"search": {"errors": ["No strategy generated"], "results": []}}
@@ -417,72 +639,28 @@ def search_node(state: CollectionSearchState) -> dict[str, Any]:
 
     ids = _get_ids(tool_context, state.get("input", {}).get("collection_scope", ""))
 
-    aggregated: list[dict[str, Any]] = []
-    search_meta: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-
-    for index, query in enumerate(strategy.queries):
-        worker_context = {
-            "tenant_id": ids["tenant_id"],
-            "trace_id": ids["trace_id"],
-            "workflow_id": ids["workflow_id"],
-            "case_id": ids["case_id"],
-            "run_id": ids["run_id"],
-            "worker_call_id": f"search-{index}-{uuid4()}",
-        }
-        # Filter None values
-        worker_context = {k: v for k, v in worker_context.items() if v is not None}
-
-        query_start = time.time()
+    # Execute searches in parallel
+    try:
+        # Check if we're already in an event loop
         try:
-            response: WebSearchResponse = worker.run(
-                query=query, context=worker_context
-            )
-            query_latency = time.time() - query_start
+            asyncio.get_running_loop()
+            # We're in an async context - run in separate thread to avoid nesting
+            import concurrent.futures
 
-            emit_event(
-                {
-                    "event.name": "query.executed",
-                    "query.index": index,
-                    "query.result_count": len(response.results),
-                    "query.latency_ms": int(query_latency * 1000),
-                    "query.status": "success",
-                }
-            )
-        except SearchProviderError as exc:
-            errors.append(
-                {
-                    "query": query,
-                    "error": type(exc).__name__,
-                    "message": str(exc),
-                }
-            )
-            continue
-
-        outcome: ToolOutcome = response.outcome
-        meta = dict(outcome.meta)
-        meta["query"] = query
-        search_meta.append(meta)
-
-        if outcome.decision == "ok":
-            for position, result in enumerate(response.results):
-                normalised = result.model_dump(mode="json")
-                normalised.update(
-                    {
-                        "query": query,
-                        "query_index": index,
-                        "position": position,
-                    }
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    _execute_parallel_searches(worker, strategy.queries, tool_context),
                 )
-                aggregated.append(normalised)
-        else:
-            errors.append(
-                {
-                    "query": query,
-                    "error": meta.get("error"),
-                    "message": outcome.rationale,
-                }
+                aggregated, search_meta, errors = future.result()
+        except RuntimeError:
+            # No running event loop, we can use asyncio.run directly
+            aggregated, search_meta, errors = asyncio.run(
+                _execute_parallel_searches(worker, strategy.queries, tool_context)
             )
+    except Exception as exc:
+        LOGGER.exception("parallel_search_failed")
+        return {"search": {"errors": [{"error": str(exc)}], "results": []}}
 
     meta = dict(ids)
     meta.update({"total_results": len(aggregated), "error_count": len(errors)})
@@ -497,18 +675,68 @@ def search_node(state: CollectionSearchState) -> dict[str, Any]:
     }
 
 
+_EMBEDDING_MAX_RETRIES = 3
+_EMBEDDING_RETRY_DELAY_S = 0.5
+
+
+def _embed_with_retry(
+    texts: list[str], max_retries: int = _EMBEDDING_MAX_RETRIES
+) -> tuple[list[list[float]], bool]:
+    """Embed texts with retry mechanism.
+
+    Returns:
+        Tuple of (vectors, success). On failure after all retries, returns ([], False).
+    """
+    last_exc: Exception | None = None
+
+    for attempt in range(max_retries):
+        try:
+            embedding_client = EmbeddingClient.from_settings()
+            embedding_result = embedding_client.embed(texts)
+            return embedding_result.vectors, True
+        except Exception as exc:
+            last_exc = exc
+            LOGGER.warning(
+                "embedding_rank.retry",
+                extra={
+                    "attempt": attempt + 1,
+                    "max_retries": max_retries,
+                    "error": str(exc),
+                },
+            )
+            if attempt < max_retries - 1:
+                time.sleep(_EMBEDDING_RETRY_DELAY_S * (attempt + 1))
+
+    LOGGER.error(
+        "embedding_rank.failed_all_retries",
+        exc_info=last_exc,
+        extra={"max_retries": max_retries},
+    )
+    return [], False
+
+
 @observe_span(name="node.embedding_rank")
 def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
-    """Rank search results using embeddings."""
+    """Rank search results using embeddings.
+
+    Uses configurable weights and top_k from GraphInput.
+    Implements retry mechanism for embedding service calls.
+    Sets explicit failure status if embedding service is unavailable.
+    """
     search_state = state.get("search", {})
     results = search_state.get("results", [])
     if not results:
-        return {"embedding_rank": {"scored_count": 0, "top_k": 0}}
+        return {"embedding_rank": {"scored_count": 0, "top_k": 0, "failed": False}}
 
     raw_input = state["input"]
-    query = raw_input.get("question", "")
-    purpose = raw_input.get("purpose", "")
-    top_k = 20  # Hardcoded or configurable
+    graph_input = GraphInput.model_validate(raw_input)
+    query = graph_input.question
+    purpose = graph_input.purpose
+
+    # Use configurable parameters from GraphInput
+    top_k = graph_input.embedding_top_k
+    embedding_weight = graph_input.embedding_weight
+    heuristic_weight = 1.0 - embedding_weight
 
     # Embedding logic
     texts_to_embed = [f"{query} {purpose}".strip()]
@@ -516,13 +744,8 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
         combined = f"{result.get('title', '')} {result.get('snippet', '')}".strip()
         texts_to_embed.append(combined)
 
-    try:
-        embedding_client = EmbeddingClient.from_settings()
-        embedding_result = embedding_client.embed(texts_to_embed)
-        vectors = embedding_result.vectors
-    except Exception as exc:
-        LOGGER.warning("embedding_rank.failed", exc_info=exc)
-        vectors = []
+    # Call embedding service with retry
+    vectors, embedding_success = _embed_with_retry(texts_to_embed)
 
     query_vec = vectors[0] if vectors else []
     scored_results = []
@@ -534,7 +757,9 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
             emb_score = cosine_similarity(query_vec, vec) * 100.0
 
         heu_score = calculate_generic_heuristics(result, query)
-        hybrid_score = (0.6 * emb_score) + (0.4 * heu_score)
+
+        # Apply configurable weights
+        hybrid_score = (embedding_weight * emb_score) + (heuristic_weight * heu_score)
 
         scored = dict(result)
         scored["embedding_rank_score"] = hybrid_score
@@ -545,41 +770,58 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
     scored_results.sort(key=lambda x: x["embedding_rank_score"], reverse=True)
     top_results = scored_results[:top_k]
 
-    ids = _get_ids(state["tool_context"], raw_input.get("collection_scope", ""))
+    ids = _get_ids(state["tool_context"], graph_input.collection_scope)
     meta = dict(ids)
-    meta.update({"top_k": len(top_results)})
+    meta.update(
+        {
+            "top_k": len(top_results),
+            "embedding_success": embedding_success,
+            "embedding_weight": embedding_weight,
+        }
+    )
     _record_transition(
         state, "embedding_rank_node", "ranked", "embedding_rank_completed", meta
     )
 
-    # Update search results IN PLACE (or replace them)
-    # The state update merges, so we return the new list
+    # With Annotated reducer, we only need to return the keys we want to update
+    # The _merge_dict reducer will preserve existing keys (errors, responses)
     return {
         "search": {
-            "results": top_results,  # Replace with ranked/pruned list
-            # Preserve other fields? LangGraph update is a shallow merge on the top level keys typically
-            # so we should be careful. Actually TypedDict updates are key-based.
-            # If we return "search", it might overwrite the whole dict if we are not careful.
-            # Using spread to preserve is safer if the graph runtime logic merges.
-            # In standard component graphs, dict return usually merges.
-            # Let's preserve errors/responses context if we can, but 'results' is key.
-            "errors": search_state.get("errors", []),
-            "responses": search_state.get("responses", []),
+            "results": top_results,
+            "embedding_failed": not embedding_success,
         },
         "embedding_rank": {
             "scored_count": len(scored_results),
             "top_k": len(top_results),
+            "failed": not embedding_success,
+            "embedding_weight": embedding_weight,
         },
     }
 
 
 @observe_span(name="node.hybrid_score")
 def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
-    """Execute hybrid scoring via worker subgraph."""
+    """Execute hybrid scoring via worker subgraph.
+
+    Checks for upstream embedding failures and logs warnings if data quality
+    may be compromised.
+    """
     search_state = state.get("search", {})
     results = search_state.get("results", [])
     if not results:
         return {"hybrid": {}}
+
+    # Check for upstream embedding failures
+    embedding_failed = search_state.get("embedding_failed", False)
+    embedding_rank_state = state.get("embedding_rank", {})
+    if embedding_failed or embedding_rank_state.get("failed"):
+        LOGGER.warning(
+            "hybrid_score.degraded_input",
+            extra={
+                "reason": "embedding_service_failed",
+                "message": "Input scores are based on heuristics only, quality may be reduced",
+            },
+        )
 
     tool_context = state["tool_context"]
     runtime = state["runtime"]
@@ -636,10 +878,19 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
         min_diversity_buckets=MIN_DIVERSITY_BUCKETS,
     )
 
+    # Include full tool_context for sub-graph context reconstruction
+    # tool_context_from_meta() expects either tool_context or scope_context in meta
+    scope_payload = tool_context.scope.model_dump(mode="json", exclude_none=True)
+    business_payload = tool_context.business.model_dump(mode="json", exclude_none=True)
     tenant_ctx = {
         "tenant_id": tool_context.scope.tenant_id,
         "trace_id": tool_context.scope.trace_id,
         "case_id": tool_context.business.case_id,
+        "query": graph_input.question,
+        # Required for tool_context_from_meta() in hybrid_search_and_score
+        "tool_context": tool_context.model_dump(mode="json"),
+        "scope_context": scope_payload,
+        "business_context": business_payload,
     }
 
     try:
@@ -654,7 +905,13 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
 
     ids = _get_ids(tool_context, graph_input.collection_scope)
     meta = dict(ids)
-    meta.update({"ranked_count": len(hybrid_res.ranked)})
+    meta.update(
+        {
+            "ranked_count": len(hybrid_res.ranked),
+            "embedding_degraded": embedding_failed
+            or embedding_rank_state.get("failed", False),
+        }
+    )
     _record_transition(
         state, "hybrid_score_node", "scored", "hybrid_score_completed", meta
     )
@@ -663,6 +920,8 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
         "hybrid": {
             "result": hybrid_res.model_dump(mode="json"),
             "candidates": candidate_lookup,
+            "embedding_degraded": embedding_failed
+            or embedding_rank_state.get("failed", False),
         }
     }
 
@@ -715,6 +974,12 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
     if not plan_data:
         return {"ingestion": {"status": "skipped_no_plan"}}
 
+    try:
+        plan = ImplementationPlan.model_validate(plan_data)
+    except ValidationError as exc:
+        LOGGER.exception("plan_validation_failed")
+        return {"ingestion": {"error": f"Invalid plan: {exc}"}}
+
     # Check execution conditions
     raw_input = state["input"]
     hitl_state = state.get("hitl", {})
@@ -730,8 +995,8 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
     if not should_execute:
         return {"ingestion": {"status": "planned_only"}}
 
-    selected_urls = plan_data.get("selected_urls", [])
-    if not selected_urls:
+    selected_urls = _extract_slot_value(plan, "selected_urls") or []
+    if not isinstance(selected_urls, list) or not selected_urls:
         return {"ingestion": {"status": "skipped_no_selection"}}
 
     # Resolve Crawler Manager
@@ -741,7 +1006,9 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
         return {"ingestion": {"error": "No crawler manager configured"}}
 
     tool_context = state["tool_context"]
-    collection_id = plan_data["collection_id"]
+    collection_id = _extract_slot_value(plan, "collection_id")
+    if not collection_id:
+        return {"ingestion": {"error": "Missing collection_id in plan"}}
 
     # Build Crawler Request (Bulk)
     # CrawlerRunRequest automatically creates Origins from origins list
@@ -767,7 +1034,11 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
 
     try:
         result_info = manager.dispatch_crawl_request(crawl_req, meta)
-        return {"ingestion": {"status": "triggered", "task_info": result_info}}
+        updated_plan = _update_ingestion_task(plan, result_info)
+        return {
+            "ingestion": {"status": "triggered", "task_info": result_info},
+            "plan": updated_plan.model_dump(mode="json"),
+        }
     except Exception as exc:
         LOGGER.exception("Crawler dispatch failed")
         return {"ingestion": {"error": str(exc)}}
@@ -775,10 +1046,11 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
 
 @observe_span(name="node.build_plan")
 def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
-    """Construct and persist the CollectionSearchPlan."""
+    """Construct and persist the ImplementationPlan."""
     raw_input = state["input"]
     graph_input = GraphInput.model_validate(raw_input)
-    ids = _get_ids(state["tool_context"], graph_input.collection_scope)
+    tool_context = state["tool_context"]
+    ids = _get_ids(tool_context, graph_input.collection_scope)
     strategy = state.get("strategy", {}).get("plan")
     hybrid = state.get("hybrid", {})
     hitl = state.get("hitl", {})
@@ -808,43 +1080,128 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
         )
         reason = "auto_ingest"
 
-    # Plan ID
-    plan_id = str(uuid4())
+    hitl_reasons = state.get("hitl", {}).get("reasons", [])
+    auto_approved = bool(hitl.get("auto_approved"))
 
     # Construct Plan
     try:
-        plan = CollectionSearchPlan(
-            plan_id=plan_id,
+        profile_id, profile_version = _resolve_plan_profile(tool_context)
+        scope = PlanScope(
             tenant_id=cast(str, ids["tenant_id"]),
-            collection_id=graph_input.collection_scope,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            strategy=(
-                SearchStrategy.model_validate(strategy)
-                if strategy
-                else fallback_strategy(
-                    SearchStrategyRequest(
-                        tenant_id=ids["tenant_id"],
-                        query=graph_input.question,
-                        quality_mode="standard",
-                        purpose="fallback",
-                    )
+            gremium_identifier=_resolve_gremium_identifier(tool_context, graph_input),
+            framework_profile_id=profile_id,
+            framework_profile_version=profile_version,
+            case_id=ids["case_id"],
+            workflow_id=cast(str, ids["workflow_id"]),
+            run_id=cast(str, ids["run_id"] or ids["ingestion_run_id"]),
+        )
+        plan_key = derive_plan_key(scope)
+        plan_strategy = (
+            SearchStrategy.model_validate(strategy)
+            if strategy
+            else fallback_strategy(
+                SearchStrategyRequest(
+                    tenant_id=ids["tenant_id"],
+                    query=graph_input.question,
+                    quality_mode="standard",
+                    purpose="fallback",
                 )
-            ),
-            candidates=[c for c in hybrid.get("candidates", {}).values()],
-            scored_candidates=hybrid.get("result", {}).get("ranked", []),
-            selected_urls=selected_urls,
-            selection_reason=reason,
-            hitl_required=bool(
-                decision_data is None and not graph_input.auto_ingest
-            ),  # simplified logic
-            hitl_reasons=state.get("hitl", {}).get("reasons", []),
-            review_payload=hitl.get("review_payload"),
-            execution_mode="acquire_and_ingest",  # Default
-            ingest_policy=None,
+            )
+        )
+        candidates = [c for c in hybrid.get("candidates", {}).values()]
+        scored_candidates = hybrid.get("result", {}).get("ranked", [])
+        selected_evidence = [
+            Evidence(ref_type="url", ref_id=url, summary="selected_url")
+            for url in selected_urls
+        ]
+
+        hitl_required = decision_data is None and not graph_input.auto_ingest
+        gate_required = decision_data is not None or hitl_required
+        if decision_data:
+            decision = HitlDecision.model_validate(decision_data)
+            hitl_status = decision.status
+            hitl_required = False
+            hitl_rationale = decision.rationale
+        elif auto_approved or graph_input.auto_ingest:
+            hitl_status = "approved"
+            hitl_required = False
+            hitl_rationale = None
+        else:
+            hitl_status = "pending"
+            hitl_rationale = None
+
+        plan = ImplementationPlan(
+            plan_key=plan_key,
+            scope=scope,
+            slots=[
+                Slot(
+                    key="collection_id",
+                    status="filled",
+                    value=graph_input.collection_scope,
+                    slot_type="collection_id",
+                ),
+                Slot(
+                    key="selected_urls",
+                    status="filled" if selected_urls else "pending",
+                    value=selected_urls,
+                    slot_type="url_list",
+                    provenance=selected_evidence,
+                ),
+            ],
+            tasks=[
+                Task(
+                    key="select_sources",
+                    status="completed" if selected_urls else "pending",
+                    outputs=selected_evidence,
+                ),
+                Task(
+                    key="execute_ingestion",
+                    status="pending" if selected_urls else "blocked",
+                ),
+            ],
+            gates=[
+                Gate(
+                    key="hitl_review",
+                    status=hitl_status,
+                    required=gate_required,
+                    rationale=hitl_rationale,
+                    evidence=(
+                        selected_evidence
+                        if hitl_status in ("approved", "partial")
+                        else []
+                    ),
+                    metadata={
+                        "reasons": hitl_reasons,
+                        "auto_approved": auto_approved,
+                    },
+                )
+            ],
+            deviations=[],
+            evidence=selected_evidence,
+            metadata={
+                "strategy": plan_strategy.model_dump(mode="json"),
+                "candidates": candidates,
+                "scored_candidates": scored_candidates,
+                "selection": {
+                    "selected_urls": selected_urls,
+                    "selection_reason": reason,
+                },
+                "hitl": {
+                    "required": hitl_required,
+                    "reasons": hitl_reasons,
+                    "review_payload": hitl.get("review_payload"),
+                    "decision_status": hitl_status,
+                },
+                "execution_mode": "acquire_and_ingest",
+                "ingest_policy": None,
+            },
         )
     except ValidationError as ve:
         LOGGER.error(f"Plan validation failed: {ve}")
         return {"ingestion": {"error": str(ve)}}
+    except ValueError as exc:
+        LOGGER.error(f"Plan scope failed: {exc}")
+        return {"ingestion": {"error": str(exc)}}
 
     return {"plan": plan.model_dump(mode="json")}
 
@@ -968,16 +1325,40 @@ class CollectionSearchAdapter:
         # The legacy run() returned (state, result_dict)
         # We need to reconstruct the expected result dict structure
 
-        search_res = final_state.get("search", {})
+        search_res = final_state.get("search", {}) or {}
+        hybrid_state = final_state.get("hybrid", {}) or {}
+        strategy_state = final_state.get("strategy", {}) or {}
+
+        fatal_messages: list[str] = []
+        search_errors = search_res.get("errors") or []
+        search_results = search_res.get("results") or []
+        if search_errors and not search_results:
+            first_error = (
+                search_errors[0] if isinstance(search_errors, Sequence) else ""
+            )
+            detail = f": {first_error}" if first_error else ""
+            fatal_messages.append(f"search_failed{detail}")
+
+        strategy_error = strategy_state.get("error")
+        if strategy_error:
+            fatal_messages.append(f"strategy_failed: {strategy_error}")
+
+        hybrid_error = hybrid_state.get("error")
+        if hybrid_error:
+            fatal_messages.append(f"hybrid_score_failed: {hybrid_error}")
+
+        outcome = "error" if fatal_messages else "completed"
+        error_message = "; ".join(fatal_messages) if fatal_messages else None
 
         # Construct summary result
         result_payload = CollectionSearchGraphOutput(
-            outcome="completed",
+            outcome=outcome,
             search=search_res,
             telemetry=final_state.get("telemetry"),
             ingestion=final_state.get("ingestion"),
             plan=final_state.get("plan"),
             hitl=final_state.get("hitl"),
+            error=error_message,
         ).model_dump(mode="json")
 
         # Merge back to raw state just in case caller expects it
@@ -1003,10 +1384,16 @@ def build_graph() -> CollectionSearchAdapter:
 
     class _HybridExecutorAdapter:
         def run(self, *, scoring_context, candidates, tenant_context) -> HybridResult:
-            state = {"candidates": [c.model_dump() for c in candidates]}
+            state = {
+                "query": scoring_context.question,
+                "candidates": [c.model_dump() for c in candidates],
+            }
             meta = {"scoring_context": scoring_context.model_dump(), **tenant_context}
+            if "query" not in meta:
+                meta["query"] = scoring_context.question
             _, result = hybrid_run(state, meta)
-            return HybridResult.model_validate(result)
+            payload = result.get("result") if isinstance(result, Mapping) else None
+            return HybridResult.model_validate(payload or result)
 
     search_worker = get_web_search_worker()
 

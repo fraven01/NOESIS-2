@@ -92,7 +92,7 @@ Die Knotenfolge lautet:
 3. **embedding_rank** - berechnet heuristische Scores und bereitet Kandidaten vor.
 4. **hybrid_score** - ruft `hybrid_search_and_score` fuer Re-Ranking auf.
 5. **hitl** - baut HITL-Payload und Entscheidungspfad.
-6. **build_plan** - erstellt den Plan (z.B. `CollectionSearchPlan`).
+6. **build_plan** - erstellt den Plan (z.B. `ImplementationPlan`).
 7. **delegate** - fuehrt den Plan optional ueber den Universal Ingestion Graph aus.
 
 Der ehemalige Coverage-Verification-Schritt ist derzeit deaktiviert.

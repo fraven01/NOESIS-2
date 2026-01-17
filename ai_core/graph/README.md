@@ -29,7 +29,7 @@ modules to a consistent execution contract.
 ## Lifecycle
 1. `apps.AiCoreConfig.ready()` imports and executes `graph.bootstrap.bootstrap()`.
 2. `bootstrap()` wraps the remaining legacy module (`info_intake`) with
-   `module_runner` und registriert die produktiven Graphen
+   `module_runner` and registers the production graphs
    (`retrieval_augmented_generation`, `crawler.ingestion`).
 3. If a runner is absent (e.g. in tests), register a stub runner in the registry
    or override the executor in the test harness.

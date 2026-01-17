@@ -9,10 +9,45 @@ from datetime import datetime, timezone
 import pytest
 
 from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.plans import (
+    Evidence,
+    ImplementationPlan,
+    PlanScope,
+    derive_plan_key,
+)
 from ai_core.contracts.scope import ScopeContext
 from ai_core.graph.core import FileCheckpointer, GraphContext, ThreadAwareCheckpointer
+from ai_core.graph.state import load_plan_from_scope
 from ai_core.infra import object_store
 from ai_core.tool_contracts.base import ToolContext, tool_context_from_scope
+
+
+def _build_plan_scope() -> PlanScope:
+    return PlanScope(
+        tenant_id="tenant-1",
+        gremium_identifier="Board A",
+        framework_profile_id=None,
+        framework_profile_version="v1",
+        case_id="case-1",
+        workflow_id="workflow-1",
+        run_id="run-1",
+    )
+
+
+def _build_plan(scope: PlanScope, *, evidence_count: int) -> ImplementationPlan:
+    evidence = [
+        Evidence(
+            ref_type="url",
+            ref_id=f"https://example.com/source-{idx}",
+            summary="source",
+        )
+        for idx in range(evidence_count)
+    ]
+    return ImplementationPlan(
+        plan_key=derive_plan_key(scope),
+        scope=scope,
+        evidence=evidence,
+    )
 
 
 def test_load_returns_empty_when_state_file_absent(tmp_path, monkeypatch) -> None:
@@ -232,3 +267,71 @@ def test_checkpointer_requires_run_id(tmp_path, monkeypatch) -> None:
             ),
             graph_name="info_intake",
         )
+
+
+def test_checkpointer_persists_plan_and_evidence(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    checkpointer = FileCheckpointer()
+    plan_scope = _build_plan_scope()
+    plan = _build_plan(plan_scope, evidence_count=1)
+    scope = ScopeContext(
+        tenant_id=plan_scope.tenant_id,
+        trace_id="trace-901",
+        invocation_id="invocation-901",
+        run_id=plan_scope.run_id,
+    )
+    business = BusinessContext(
+        workflow_id=plan_scope.workflow_id,
+        case_id=plan_scope.case_id,
+    )
+    ctx = GraphContext(
+        tool_context=tool_context_from_scope(scope, business),
+        graph_name="collection_search",
+    )
+    state = {"plan": plan.model_dump(mode="json")}
+
+    checkpointer.save(ctx, state)
+
+    safe_tenant = object_store.sanitize_identifier(ctx.tenant_id)
+    safe_plan = object_store.sanitize_identifier(plan.plan_key)
+    state_path = (
+        tmp_path / safe_tenant / "workflow-executions" / safe_plan / "state.json"
+    )
+    payload = json.loads(state_path.read_text())
+
+    assert payload["plan"]["plan_key"] == plan.plan_key
+    assert payload["evidence"][0]["ref_id"] == plan.evidence[0].ref_id
+
+
+def test_load_plan_from_scope_returns_latest(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    checkpointer = FileCheckpointer()
+    plan_scope = _build_plan_scope()
+    scope = ScopeContext(
+        tenant_id=plan_scope.tenant_id,
+        trace_id="trace-902",
+        invocation_id="invocation-902",
+        run_id=plan_scope.run_id,
+    )
+    business = BusinessContext(
+        workflow_id=plan_scope.workflow_id,
+        case_id=plan_scope.case_id,
+    )
+    ctx = GraphContext(
+        tool_context=tool_context_from_scope(scope, business),
+        graph_name="collection_search",
+    )
+
+    plan = _build_plan(plan_scope, evidence_count=1)
+    checkpointer.save(ctx, {"plan": plan.model_dump(mode="json")})
+
+    updated_plan = _build_plan(plan_scope, evidence_count=2)
+    checkpointer.save(ctx, {"plan": updated_plan.model_dump(mode="json")})
+
+    loaded = load_plan_from_scope(plan_scope)
+
+    assert loaded is not None
+    loaded_plan, evidence = loaded
+    assert loaded_plan.plan_key == updated_plan.plan_key
+    assert len(evidence) == 2
+    assert isinstance(evidence[0], Evidence)

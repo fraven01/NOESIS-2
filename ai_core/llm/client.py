@@ -277,6 +277,10 @@ def _truncate(text: str | None, limit: int) -> str | None:
     return text[:limit]
 
 
+def _supports_temperature(model_id: str) -> bool:
+    return "gpt-5" not in model_id
+
+
 @observe_span(name="llm.call")
 def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Call the LLM via LiteLLM proxy using a routing ``label``.
@@ -321,12 +325,13 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 payload["max_tokens"] = max_tokens_val
     except Exception:
         pass
-    try:
-        temperature_env = os.getenv("LITELLM_TEMPERATURE")
-        if temperature_env is not None:
-            payload["temperature"] = float(temperature_env)
-    except Exception:
-        pass
+    if _supports_temperature(model_id):
+        try:
+            temperature_env = os.getenv("LITELLM_TEMPERATURE")
+            if temperature_env is not None:
+                payload["temperature"] = float(temperature_env)
+        except Exception:
+            pass
 
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = case_value or "unknown-case"
@@ -664,12 +669,13 @@ def call_stream(
                 payload["max_tokens"] = max_tokens_val
     except Exception:
         pass
-    try:
-        temperature_env = os.getenv("LITELLM_TEMPERATURE")
-        if temperature_env is not None:
-            payload["temperature"] = float(temperature_env)
-    except Exception:
-        pass
+    if _supports_temperature(model_id):
+        try:
+            temperature_env = os.getenv("LITELLM_TEMPERATURE")
+            if temperature_env is not None:
+                payload["temperature"] = float(temperature_env)
+        except Exception:
+            pass
 
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = case_value or "unknown-case"

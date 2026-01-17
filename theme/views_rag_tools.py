@@ -225,6 +225,8 @@ def start_rerank_workflow(request):
         query = data.get("query", "").strip()
         collection_id = data.get("collection_id", "").strip()
         workflow_id = str(data.get("workflow_id") or "").strip()
+        if not workflow_id:
+            workflow_id = _resolve_active_workflow_id(request)
         quality_params = SearchQualityParams.model_validate(data)
         quality_mode = quality_params.quality_mode
         max_candidates = quality_params.max_candidates

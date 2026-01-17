@@ -20,10 +20,10 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
   - **Acceptance:** plan_key (derived, not minted) replaces plan_id in planning docs; workflow_execution terminology used consistently; no references to execution_case_id or required case_id for graph meta
 
 - [x] **Blueprint + ImplementationPlan contracts (Phase 1)**:
-  - **Pointers:** `ai_core/contracts/plans/` (new package), `ai_core/contracts/plans/plan.py`, `ai_core/contracts/plans/blueprint.py`, `ai_core/contracts/plans/evidence.py`, `ai_core/graphs/technical/collection_search.py:CollectionSearchPlan`
+  - **Pointers:** `ai_core/contracts/plans/` (new package), `ai_core/contracts/plans/plan.py`, `ai_core/contracts/plans/blueprint.py`, `ai_core/contracts/plans/evidence.py`, `ai_core/graphs/technical/collection_search.py:ImplementationPlan`
   - **Acceptance:** Pydantic models for Blueprint, ImplementationPlan, Slot, Task, Gate, Deviation, Evidence, and Confidence; schema_version on plan models ("v0" or semver); Evidence uses ref_type/ref_id (url | repo_doc | repo_chunk | object_store | confluence | screenshot); optional slot_type or json_schema_ref; JSON schema export; deterministic plan_key derivation helper (UUIDv5 or hash) over plan scope tuple (derived, not minted) with canonicalization (ordered scope tuple, normalized gremium_identifier, choose framework_profile_id or framework_profile_version); round-trip serialization tests; tests forbid execution_case_id, minted plan_id, or any additional UUID fields; references updated in `roadmap/agentic-ai-first-strategy.md`; no new IDs introduced
 
-- [ ] **Vertical slice: Plan-driven Collection Search**:
+- [x] **Vertical slice: Plan-driven Collection Search**:
   - **Pointers:** `ai_core/graphs/technical/collection_search.py:build_plan_node`, `ai_core/graphs/technical/collection_search.py:HitlDecision`, `ai_core/services/collection_search/hitl.py`, `ai_core/services/collection_search/strategy.py`, `ai_core/services/collection_search/scoring.py`, `ai_core/graphs/technical/universal_ingestion_graph.py`
   - **Acceptance:** `build_plan_node` emits the new plan schema with slots/tasks/gates/deviations/evidence using workflow_execution terminology; HITL decisions update slot values and gate outcomes (slot completion); `execute_plan` consumes task outputs and records evidence; graph output links evidence to ingested artifacts; tests updated in `ai_core/tests/graphs/test_collection_search_graph.py`
 
@@ -35,10 +35,34 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 ### P0 - Critical Quick Wins (High Impact, Medium-High Effort)
 
+- [ ] **Collection Search timeouts and stall protection**:
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/llm/client.py:391`, `ai_core/llm/client.py:738`, `ai_core/graphs/technical/collection_search.py:561`, `ai_core/graphs/technical/collection_search.py:650`, `llm_worker/graphs/hybrid_search_and_score.py:1116`, `llm_worker/graphs/score_results.py:353`
+  - **Acceptance:** LLM client adds explicit connect/read timeouts (sync + streaming); parallel search uses a total timeout with partial results; hybrid score timeout handling is reachable and logged; tests updated to cover timeout behavior; see `roadmap/collection-search-review.md`
+
+- [ ] **Collection Search boundary contract cleanup (V1-V8)**:
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py:140`, `ai_core/graphs/technical/collection_search.py:480`, `ai_core/graphs/technical/collection_search.py:636`, `ai_core/graphs/technical/collection_search.py:837`, `ai_core/graphs/technical/collection_search.py:867`, `llm_worker/graphs/hybrid_search_and_score.py:626`, `llm_worker/graphs/hybrid_search_and_score.py:1389`, `llm_worker/graphs/score_results.py:353`
+  - **Acceptance:** Graph internals pass typed models across nodes (no dict round-trips); search output uses typed structures at boundaries; dead branch removed; redundant model_dump removed; config/control/meta shape simplified; hardcoded jurisdiction/purpose removed; tests updated to enforce contracts; see `roadmap/collection-search-review.md`
 
 ### Docs/Test touchpoints (checklist)
 
 ### P1 - High Value Cleanups (Low-Medium Effort)
+
+- [ ] **Collection Search strategy quality improvements**: add structured JSON output with examples and richer fallback queries.
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/services/collection_search/strategy.py:139`, `ai_core/services/collection_search/strategy.py:226`
+  - **Acceptance:** Strategy prompt includes JSON-only schema + few-shot example; fallback strategy uses non-trivial query variants; tests cover schema parsing and fallback behavior
+
+- [ ] **Collection Search adaptive embedding weights**: adjust embedding vs heuristic weights by quality_mode or context.
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py:738`
+  - **Acceptance:** Weight selection is driven by quality_mode (or explicit profile mapping) and recorded in telemetry; default remains unchanged when not configured
+
+- [ ] **Collection Search hard graph timeout (worker-safe)**: add a whole-graph timeout without signal.alarm (Windows-safe).
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py`, `llm_worker/tasks.py:run_graph`, `ai_core/services/__init__.py`
+  - **Acceptance:** Graph execution enforces a hard cap via worker limits or explicit timeout wrapper; timeout produces a deterministic error payload; no signal.alarm usage
 
 - [ ] **Activate AgenticChunker LLM Boundary Detection**: Implement `_detect_boundaries_llm()` in `ai_core/rag/chunking/agentic_chunker.py:354-379` (~25 LOC). Infrastructure complete (prompt template, Pydantic models, rate limiter, fallback logic). Needed to improve fallback quality for long documents (`token_count > max_tokens`). Details: `ai_core/rag/chunking/README.md#agentic-chunking`.
 
@@ -60,6 +84,10 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 ## Semantics / IDs
 
 ## Layering / boundaries
+
+- [ ] **Explicit ToolContext in HybridScoreExecutor Protocol**: Replace `tenant_context: Mapping[str, Any]` with explicit `tool_context: ToolContext` parameter in `HybridScoreExecutor.run()`. Current workaround embeds `tool_context` in `tenant_context` dict for `tool_context_from_meta()` reconstruction. Clean solution: extend Protocol signature, update `_HybridExecutorAdapter`, remove dict-embedding hack.
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py:HybridScoreExecutor`, `ai_core/graphs/technical/collection_search.py:hybrid_score_node`, `ai_core/graphs/technical/collection_search.py:_HybridExecutorAdapter`, `llm_worker/graphs/hybrid_search_and_score.py`
+  - **Acceptance:** `HybridScoreExecutor.run()` accepts `tool_context: ToolContext`; `tenant_context` removed or reduced to minimal tenant-specific fields; `_HybridExecutorAdapter` passes `tool_context` directly to sub-graph meta; no dict-embedding workaround needed
 
 ## Externalization readiness (later)
 

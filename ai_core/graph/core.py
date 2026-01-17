@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import ValidationError
 
 from ai_core.infra.object_store import read_json, sanitize_identifier, write_json
-from ai_core.graph.state import PersistedGraphState
+from ai_core.graph.state import (
+    PersistedGraphState,
+    extract_plan_envelope,
+    plan_state_path,
+)
 
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only imports
@@ -46,7 +50,7 @@ class GraphContext:
     graph_version: str = "v0"
 
     def __post_init__(self) -> None:
-        if not self.workflow_id or not self.run_id:
+        if not self.plan_key and (not self.workflow_id or not self.run_id):
             raise ValueError(
                 "workflow_id and run_id are required for workflow execution checkpointing"
             )
@@ -150,14 +154,35 @@ class FileCheckpointer(Checkpointer):
 
         if not isinstance(state, dict):  # pragma: no cover - defensive branch
             raise TypeError("state must be a dictionary")
+        plan_payload, evidence_payload, derived_plan_key = extract_plan_envelope(state)
         persisted = PersistedGraphState(
             tool_context=ctx.tool_context,
             state=state,
+            plan=plan_payload,
+            evidence=evidence_payload,
             graph_name=ctx.graph_name,
             graph_version=ctx.graph_version,
             checkpoint_at=datetime.now(timezone.utc),
         )
-        write_json(self._path(ctx), persisted.model_dump(mode="json"))
+        payload = persisted.model_dump(mode="json")
+        primary_path = self._path(ctx)
+        write_json(primary_path, payload)
+        if derived_plan_key and derived_plan_key != ctx.plan_key:
+            alt_path = plan_state_path(ctx.tenant_id, derived_plan_key)
+            if alt_path != primary_path:
+                if ctx.plan_key:
+                    logger.warning(
+                        "graph.checkpoint.plan_key_mismatch",
+                        extra={
+                            "graph": ctx.graph_name,
+                            "tenant_id": ctx.tenant_id,
+                            "workflow_id": ctx.workflow_id,
+                            "run_id": ctx.run_id,
+                            "plan_key": ctx.plan_key,
+                            "derived_plan_key": derived_plan_key,
+                        },
+                    )
+                write_json(alt_path, payload)
 
 
 class ThreadAwareCheckpointer(FileCheckpointer):

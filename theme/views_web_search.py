@@ -230,21 +230,22 @@ def web_search(request):
                 code="internal_error",
             )
 
-        data_res = response_payload.get("data", {})
-        # Correctly treat 'data' as the state itself
-        final_state = data_res
-        result = data_res.get("result", {})
+        # CollectionSearchGraphOutput has fields directly on data_res:
+        # schema_id, schema_version, outcome, search, telemetry, ingestion, plan, hitl, error
+        data_res = response_payload.get("data") or {}
 
-        search_payload = final_state.get("search", {})
+        # Extract fields directly from CollectionSearchGraphOutput schema
+        # Use `or {}` pattern because fields can be explicitly None
+        search_payload = data_res.get("search") or {}
         results = search_payload.get("results", [])
-        telemetry_payload = result.get("telemetry")
+        telemetry_payload = data_res.get("telemetry")
         if telemetry_payload:
             telemetry_payload = dict(telemetry_payload)
             if "responses" in search_payload:
                 telemetry_payload["search_responses"] = search_payload["responses"]
 
         response_data = {
-            "outcome": result.get("outcome"),
+            "outcome": data_res.get("outcome"),
             "results": results,
             "search": search_payload,
             "telemetry": telemetry_payload,
@@ -342,10 +343,9 @@ def web_search(request):
                 )
 
     # Common Logic
-    # P2 Fix: Backend result key is 'search_results' (from line 325) while view logic expects 'results'
-    # 'search_results' variable is already extracted at line 325, so we prioritize that.
-    results = response_data.get("results") or search_results
-    search_payload = response_data.get("search", {})
+    # Use `or []` pattern to handle None/empty results safely across both branches
+    results = response_data.get("results") or []
+    search_payload = response_data.get("search") or {}
     trace_id = response_data.get("trace_id")
 
     logger.info(

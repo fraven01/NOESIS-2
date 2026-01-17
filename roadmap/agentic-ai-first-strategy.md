@@ -62,7 +62,7 @@ These are implemented as graph states and transitions, not personas.
 - Graph meta normalization: `ai_core/graph/schemas.py`
 - Tool context envelope: `ai_core/tool_contracts/base.py`
 - Graph I/O contracts: `ai_core/graph/io.py`
-- Existing plan output: `ai_core/graphs/technical/collection_search.py` (`CollectionSearchPlan`, `build_plan_node`)
+- Existing plan output: `ai_core/graphs/technical/collection_search.py` (`ImplementationPlan`, `build_plan_node`)
 - HITL gateway pattern: `ai_core/services/collection_search/hitl.py`
 
 ## Proposed vertical slice (confirmed)

@@ -17,7 +17,12 @@ class TestWorkbenchContext:
 
         # Test setting Collection and Case
         response = client.post(
-            url, {"collection_id": "test-collection", "case_id": "test-case"}
+            url,
+            {
+                "collection_id": "test-collection",
+                "case_id": "test-case",
+                "workflow_id": "workflow-test",
+            },
         )
         assert response.status_code == 200
         assert client.session.get("rag_active_collection_id") == "test-collection"
@@ -34,7 +39,9 @@ class TestWorkbenchContext:
         session.save()
 
         url = reverse("rag_tools_set_context")
-        response = client.post(url, {"collection_id": "", "case_id": ""})
+        response = client.post(
+            url, {"collection_id": "", "case_id": "", "workflow_id": "workflow-test"}
+        )
 
         assert response.status_code == 200
         assert client.session.get("rag_active_collection_id") is None

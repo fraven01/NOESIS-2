@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -338,6 +339,27 @@ def _load_yaml_defaults() -> _YamlBundle:
     return _YamlBundle(_YamlPolicy(default_hosts, default_regex_rules), tenant_map)
 
 
+def _schema_context_for_tenant(tenant_id: str | None):
+    if not tenant_id:
+        return nullcontext()
+    try:
+        from django_tenants.utils import schema_context
+    except Exception:  # pragma: no cover - optional dependency
+        return nullcontext()
+    try:
+        from customers.tenant_context import TenantContext
+    except Exception:  # pragma: no cover - optional dependency
+        return nullcontext()
+    try:
+        tenant = TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+    except Exception:  # pragma: no cover - defensive guard
+        return nullcontext()
+    schema_name = getattr(tenant, "schema_name", None)
+    if not schema_name:
+        return nullcontext()
+    return schema_context(schema_name)
+
+
 def _load_override_lists(tenant_id: str | None) -> list[_HostRule]:
     if not tenant_id:
         return []
@@ -348,11 +370,12 @@ def _load_override_lists(tenant_id: str | None) -> list[_HostRule]:
     except LookupError:  # pragma: no cover - defensive guard
         return []
     try:
-        record = (
-            model.objects.filter(tenant_id=tenant_id)
-            .values("preferred_hosts", "blocked_hosts")
-            .first()
-        )
+        with _schema_context_for_tenant(tenant_id):
+            record = (
+                model.objects.filter(tenant_id=tenant_id)
+                .values("preferred_hosts", "blocked_hosts")
+                .first()
+            )
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("hybrid.policy_override_query_failed", extra={"error": str(exc)})
         return []
@@ -386,9 +409,12 @@ def _load_db_rules(
     except LookupError:  # pragma: no cover - defensive guard
         return [], []
     try:
-        rows = model.objects.filter(tenant_id=tenant_id).values(
-            "domain", "action", "priority"
-        )
+        with _schema_context_for_tenant(tenant_id):
+            rows = list(
+                model.objects.filter(tenant_id=tenant_id).values(
+                    "domain", "action", "priority"
+                )
+            )
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("hybrid.policy_rule_query_failed", extra={"error": str(exc)})
         return [], []

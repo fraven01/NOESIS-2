@@ -32,6 +32,7 @@ from common.constants import (
     META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
+    META_WORKFLOW_ID_KEY,
     X_COLLECTION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
@@ -52,6 +53,7 @@ def authenticated_client(client, request):
     if "django_db" in request.keywords:
         user = UserFactory()
         client.force_login(user)
+    client.defaults[META_WORKFLOW_ID_KEY] = "workflow-test"
     return client
 
 

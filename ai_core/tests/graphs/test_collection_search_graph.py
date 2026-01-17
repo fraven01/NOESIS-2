@@ -87,6 +87,15 @@ def cs_module():
 class TestCollectionSearchGraph:
     """Tests for CollectionSearch using isolated module."""
 
+    def _plan_slot_value(self, plan: Mapping[str, Any], key: str) -> Any:
+        for slot in plan.get("slots", []):
+            if slot.get("key") == key:
+                return slot.get("value")
+        return None
+
+    def _plan_metadata(self, plan: Mapping[str, Any]) -> Mapping[str, Any]:
+        return plan.get("metadata") or {}
+
     def _initial_state(self) -> dict[str, Any]:
         """Build GraphIOSpec-compliant boundary request."""
         from ai_core.contracts import BusinessContext, ScopeContext
@@ -262,7 +271,8 @@ class TestCollectionSearchGraph:
         assert request.purpose == "docs-gap-analysis"
 
         assert result.get("plan") is not None
-        assert result["plan"]["hitl_required"] is True
+        plan_metadata = self._plan_metadata(result["plan"])
+        assert plan_metadata.get("hitl", {}).get("required") is True
         assert result.get("ingestion", {}).get("status") == "planned_only"
 
     def test_search_failure_aborts_flow(self, cs_module) -> None:
@@ -546,11 +556,16 @@ class TestCollectionSearchGraph:
         assert (
             result["hitl"].get("decision") is not None
         ), f"HITL decision missing: {result['hitl']}"
-        assert result["plan"]["collection_id"] == "550e8400-e29b-41d4-a716-446655440000"
-        assert result["plan"]["execution_mode"] == "acquire_and_ingest"
-        assert result["plan"]["hitl_required"] is False
-        assert "https://added.com" in result["plan"]["selected_urls"]
-        assert "https://docs.acme.test/admin" in result["plan"]["selected_urls"]
+        plan_metadata = self._plan_metadata(result["plan"])
+        assert (
+            self._plan_slot_value(result["plan"], "collection_id")
+            == "550e8400-e29b-41d4-a716-446655440000"
+        )
+        assert plan_metadata.get("execution_mode") == "acquire_and_ingest"
+        assert plan_metadata.get("hitl", {}).get("required") is False
+        selected_urls = self._plan_slot_value(result["plan"], "selected_urls") or []
+        assert "https://added.com" in selected_urls
+        assert "https://docs.acme.test/admin" in selected_urls
 
         assert result["ingestion"]["status"] == "triggered"
         assert result["ingestion"]["task_info"]["run_id"] == "test-crawl-run"
@@ -772,3 +787,93 @@ class TestCollectionSearchGraph:
         _, result = graph_adapter.run(state, meta=meta)
 
         assert result["outcome"] == "completed"
+
+    def test_search_worker_receives_tool_context_not_dict(self, cs_module) -> None:
+        """Regression test: search worker must receive ToolContext, not a dict.
+
+        This test ensures that _execute_single_search passes a proper ToolContext
+        object to the worker, not a plain dict. Previously, a dict was passed which
+        caused 'AttributeError: dict has no attribute metadata' in production.
+        """
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+            SearchResult,
+        )
+        from ai_core.tool_contracts import ToolContext
+
+        received_contexts: list[Any] = []
+
+        class ContextCapturingWorker:
+            """Worker that captures the context type for verification."""
+
+            def run(self, *, query: str, context: Any) -> WebSearchResponse:
+                received_contexts.append(context)
+                results = [
+                    SearchResult(
+                        url="https://test.example/doc",
+                        title="Test Doc",
+                        snippet="Test snippet",
+                        source="test",
+                        score=0.9,
+                        is_pdf=False,
+                    ),
+                ]
+                outcome = ToolOutcome(
+                    decision="ok",
+                    rationale="search_completed",
+                    meta={"provider": "stub", "latency_ms": 10},
+                )
+                return WebSearchResponse(results=results, outcome=outcome)
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request: Any) -> Any:
+                cs_module.cosine_similarity.return_value = 0.8
+                cs_module.calculate_generic_heuristics.return_value = 0.5
+                return cs_module.SearchStrategy(
+                    queries=["query1", "query2"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class MockObj:
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                m = MagicMock()
+                m.model_dump.return_value = {"ranked": []}
+                return m
+
+            def verify(self, **k):
+                return {}
+
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": ContextCapturingWorker(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
+
+        initial_state = self._initial_state()
+        meta = self._tool_context_meta()
+        _, result = graph.run(initial_state, meta=meta)
+
+        assert result["outcome"] == "completed"
+        assert len(received_contexts) == 2, "Expected 2 search calls (one per query)"
+
+        for i, ctx in enumerate(received_contexts):
+            assert isinstance(
+                ctx, ToolContext
+            ), f"Search call {i}: Expected ToolContext, got {type(ctx).__name__}"
+            assert hasattr(
+                ctx, "metadata"
+            ), f"Search call {i}: ToolContext missing metadata attribute"
+            assert (
+                "worker_call_id" in ctx.metadata
+            ), f"Search call {i}: worker_call_id not set in metadata"
