@@ -206,20 +206,15 @@ class TestCollectionSearchGraph:
                 self.calls: list[tuple[Any, Sequence[Any], Mapping[str, Any]]] = []
 
             def run(self, *, scoring_context, candidates, tenant_context) -> Any:
-                self.calls.append((scoring_context, candidates, tenant_context))
-                result = MagicMock()
-                # Mock result structure that translates to expected dict
-                result.candidates = {}
-                result.result = MagicMock()
-                result.result.ranked = []
+                from llm_worker.schemas import HybridResult
 
-                # Mock model_dump behavior expected by hybrid_score_node
-                result.model_dump.return_value = {
-                    "ranked": [],
-                    "candidates": {},
-                    "coverage_delta": {"TECHNICAL": 0.0},
-                }
-                return result
+                self.calls.append((scoring_context, candidates, tenant_context))
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
         class LocalStubHitlGateway:
             def __init__(self, decision: Any | None) -> None:
@@ -307,7 +302,14 @@ class TestCollectionSearchGraph:
                 return None
 
             def run(self, **k):
-                return MagicMock()
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
             def verify(self, **k):
                 return {}
@@ -373,7 +375,14 @@ class TestCollectionSearchGraph:
                 return None
 
             def run(self, **k):
-                return MagicMock()
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
             def verify(self, **k):
                 return {}
@@ -398,6 +407,98 @@ class TestCollectionSearchGraph:
 
         assert result["search"]["results"] == []
         assert len(search_worker.calls) == 3
+
+    def test_parallel_search_timeout_returns_partial_results(self, cs_module) -> None:
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+            SearchResult,
+        )
+        import time
+        import sys
+
+        cs_module.cosine_similarity.return_value = 0.8
+        cs_module.calculate_generic_heuristics.return_value = 0.5
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request: Any) -> Any:
+                return cs_module.SearchStrategy(
+                    queries=["fast query", "slow query"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class SlowSearchWorker:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def run(
+                self, *, query: str, context: Mapping[str, Any]
+            ) -> WebSearchResponse:
+                self.calls.append(query)
+                if "slow" in query:
+                    time.sleep(0.4)
+                else:
+                    time.sleep(0.01)
+                results = [
+                    SearchResult(
+                        url="https://docs.acme.test/fast",
+                        title="Fast Result",
+                        snippet="Quick response",
+                        source="acme",
+                        score=0.9,
+                        is_pdf=False,
+                    )
+                ]
+                outcome = ToolOutcome(
+                    decision="ok",
+                    rationale="search_completed",
+                    meta={"provider": "stub", "latency_ms": 10},
+                )
+                return WebSearchResponse(results=results, outcome=outcome)
+
+        class MockObj:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
+
+            def verify(self, **k):
+                return {}
+
+        sys.modules["django.conf"].settings.SEARCH_WORKER_TIMEOUT_SECONDS = 0.15
+
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": SlowSearchWorker(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
+        initial_state = self._initial_state()
+        meta = self._tool_context_meta()
+        _, result = graph.run(initial_state, meta=meta)
+
+        assert result["search"]["results"]
+        assert any(
+            error.get("error") == "TimeoutError"
+            for error in result["search"]["errors"]
+        )
 
     def test_auto_ingest_disabled_by_default(self, cs_module) -> None:
         from ai_core.tools.web_search import (
@@ -429,11 +530,14 @@ class TestCollectionSearchGraph:
                 return None
 
             def run(self, **k):
-                m = MagicMock()
-                m.model_dump.return_value = {}
-                m.ranked = []
-                m.candidates = {}
-                return m
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
             def verify(self, **k):
                 return {}
@@ -506,22 +610,14 @@ class TestCollectionSearchGraph:
 
         class ValidCandidatesHybridExecutor:
             def run(self, *, scoring_context, candidates, tenant_context) -> Any:
-                result = MagicMock()
-                c1 = {
-                    "url": "https://docs.acme.test/admin",
-                    "title": "Admin",
-                    "score": 0.9,
-                }
+                from llm_worker.schemas import HybridResult
 
-                result.ranked = []
-                result.candidates = {"cand1": c1}
-                result.coverage_delta = "TECHNICAL"
-
-                def model_dump(**kwargs):
-                    return {"candidates": {"cand1": c1}, "result": {"ranked": []}}
-
-                result.model_dump = model_dump
-                return result
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
         mock_crawler_manager = MagicMock()
         mock_crawler_manager.dispatch_crawl_request.return_value = {
@@ -618,13 +714,14 @@ class TestCollectionSearchGraph:
 
         class AutoIngestHybridExecutor:
             def run(self, *, scoring_context, candidates, tenant_context):
-                result = MagicMock()
-                ranked = [
-                    {"url": "https://docs.acme.test/admin", "score": 95.0},
-                    {"url": "https://docs.acme.test/ignore", "score": 40.0},
-                ]
-                result.model_dump.return_value = {"ranked": ranked}
-                return result
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
         class LocalStubHitlGateway:
             def present(self, payload):
@@ -751,11 +848,14 @@ class TestCollectionSearchGraph:
                 return None
 
             def run(self, **k):
-                m = MagicMock()
-                m.model_dump.return_value = {}
-                m.ranked = []
-                m.candidates = {}
-                return m
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
             def verify(self, **k):
                 return {}
@@ -842,9 +942,14 @@ class TestCollectionSearchGraph:
                 return None
 
             def run(self, **k):
-                m = MagicMock()
-                m.model_dump.return_value = {"ranked": []}
-                return m
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
             def verify(self, **k):
                 return {}

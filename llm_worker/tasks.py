@@ -105,17 +105,29 @@ def run_graph(  # type: ignore[no-untyped-def]
         runner_meta["ledger_logger"] = tracker.record_ledger_meta
         try:
             if task_type == "score_results":
+                config_payload = runner_meta.get("config")
+                if not isinstance(config_payload, Mapping):
+                    config_payload = {}
                 control_meta = runner_meta.get("control")
-                if not isinstance(control_meta, Mapping):
-                    control_meta = {}
+                if isinstance(control_meta, Mapping):
+                    config_payload = {**control_meta, **config_payload}
                 data_payload = runner_meta.get("data")
                 if not isinstance(data_payload, Mapping):
                     data_payload = {}
-                result = run_score_results(
-                    control=control_meta,
-                    data=data_payload,
-                    meta=runner_meta,
-                )
+
+                config_payload = dict(config_payload)
+                if tenant_id and "tenant_id" not in config_payload:
+                    config_payload["tenant_id"] = tenant_id
+                if case_id and "case_id" not in config_payload:
+                    config_payload["case_id"] = case_id
+                if trace_id and "trace_id" not in config_payload:
+                    config_payload["trace_id"] = trace_id
+                if "key_alias" in runner_meta and "key_alias" not in config_payload:
+                    config_payload["key_alias"] = runner_meta["key_alias"]
+                if "ledger_logger" in runner_meta:
+                    config_payload["ledger_logger"] = runner_meta["ledger_logger"]
+
+                result = run_score_results(data_payload, config=config_payload)
                 new_state = runner_state
             else:
                 graph_executor = LocalGraphExecutor()

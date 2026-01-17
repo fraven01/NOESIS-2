@@ -54,14 +54,19 @@ def test_run_score_results_sorts_rankings(monkeypatch):
     monkeypatch.setattr("ai_core.llm.client.call", fake_call)
 
     result = run_score_results(
-        control={"model_preset": "fast", "temperature": 0.05},
         data={
             "query": "policy for contractors",
             "results": _sample_results(),
             "criteria": ["aktueller Stand", "deutsches Recht"],
             "k": 1,
         },
-        meta={"tenant_id": "t-1", "case_id": "c-1", "trace_id": "trace-1"},
+        config={
+            "model_preset": "fast",
+            "temperature": 0.05,
+            "tenant_id": "t-1",
+            "case_id": "c-1",
+            "trace_id": "trace-1",
+        },
     )
 
     assert calls["label"] == "fast"
@@ -86,7 +91,6 @@ def test_run_score_results_handles_invalid_json(monkeypatch):
     )
 
     result = run_score_results(
-        control=None,
         data={
             "query": "alpha",
             "results": _sample_results(),
@@ -114,8 +118,8 @@ def test_run_graph_routes_score_results(monkeypatch):
         "top_k": [],
     }
 
-    def fake_run_score(control, data, meta):
-        assert meta["task_type"] == "score_results"
+    def fake_run_score(data, config):
+        assert config["model_preset"] == "fast"
         return sentinel
 
     monkeypatch.setattr(tasks, "run_score_results", fake_run_score)
@@ -133,7 +137,7 @@ def test_run_graph_routes_score_results(monkeypatch):
         state={"step": "start"},
         meta={
             "task_type": "score_results",
-            "control": {"model_preset": "fast"},
+            "config": {"model_preset": "fast"},
             "data": {
                 "query": "alpha",
                 "results": _sample_results(),
@@ -183,8 +187,8 @@ def test_run_score_results_fallbacks_on_invalid_model(monkeypatch):
     monkeypatch.setattr("ai_core.llm.client.call", fake_call)
 
     result = run_score_results(
-        control={"model_preset": "broken"},
         data={"query": "abc", "results": _sample_results()},
+        config={"model_preset": "broken"},
     )
 
     assert attempts == ["broken", "fast"]
@@ -220,8 +224,8 @@ def test_run_score_results_applies_max_tokens(monkeypatch):
     monkeypatch.delenv("LITELLM_MAX_TOKENS", raising=False)
 
     run_score_results(
-        control={"max_tokens": 2048},
         data={"query": "abc", "results": _sample_results()},
+        config={"max_tokens": 2048},
     )
 
     assert captured["max_tokens"] == "2048"
@@ -257,8 +261,8 @@ def test_run_score_results_tries_default_label(monkeypatch):
     monkeypatch.setattr("ai_core.llm.client.call", fake_call)
 
     result = run_score_results(
-        control={"model_preset": "vertex_ai/gemini-2.5-flash"},
         data={"query": "alpha", "results": _sample_results()},
+        config={"model_preset": "vertex_ai/gemini-2.5-flash"},
     )
 
     assert attempts == ["vertex_ai/gemini-2.5-flash", "fast", "default"]
@@ -293,8 +297,8 @@ def test_run_score_results_sets_temperature_for_gpt5(monkeypatch):
     monkeypatch.setattr("ai_core.llm.client.call", fake_call)
 
     run_score_results(
-        control={"model_preset": "openai/gpt-5-nano", "temperature": 0.05},
         data={"query": "alpha", "results": _sample_results()},
+        config={"model_preset": "openai/gpt-5-nano", "temperature": 0.05},
     )
 
     assert recorded_temps == [None]

@@ -10,7 +10,7 @@ from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError
 from common.logging import get_logger
 
-from llm_worker.schemas import ScoreResultsData
+from llm_worker.schemas import ScoreResultsConfig, ScoreResultsData
 
 logger = get_logger(__name__)
 
@@ -36,13 +36,15 @@ def _temporary_env_var(key: str, value: str) -> Iterator[None]:
 
 
 def _build_prompt(
-    payload: ScoreResultsData, meta: Mapping[str, Any] | None = None
+    payload: ScoreResultsData, config: Mapping[str, Any] | None = None
 ) -> str:
-    scoring_context = (meta or {}).get("scoring_context_payload") or {}
-    rag_facets: Mapping[str, Any] = (meta or {}).get("rag_facets") or {}
-    rag_gaps: Sequence[str] = (meta or {}).get("rag_gap_dimensions") or []
-    rag_key_points: Sequence[str] = (meta or {}).get("rag_key_points") or []
-    rag_documents: Sequence[Mapping[str, Any]] = (meta or {}).get("rag_documents") or []
+    scoring_context = (config or {}).get("scoring_context_payload") or {}
+    rag_facets: Mapping[str, Any] = (config or {}).get("rag_facets") or {}
+    rag_gaps: Sequence[str] = (config or {}).get("rag_gap_dimensions") or []
+    rag_key_points: Sequence[str] = (config or {}).get("rag_key_points") or []
+    rag_documents: Sequence[Mapping[str, Any]] = (
+        (config or {}).get("rag_documents") or []
+    )
 
     sections: list[str] = [
         "Rolle: Du bist fachkundige:r Evaluator:in für qualitative Suchwerte aus Suchmaschinen, um zu prüfen, ob Sucheregbnisse für den Zweck der Suche geeigent sind.",
@@ -262,21 +264,22 @@ def _normalise_rankings(raw_text: str, allowed_ids: set[str]) -> list[dict[str, 
     return normalised
 
 
-def _build_metadata(
-    meta: Mapping[str, Any] | None,
-    control: Mapping[str, Any] | None,
-    prompt_version: str,
+def _coerce_config(
+    config: Mapping[str, Any] | ScoreResultsConfig | None,
 ) -> dict[str, Any]:
-    def _lookup(key: str) -> Any:
-        if meta and key in meta:
-            return meta[key]
-        if control and key in control:
-            return control[key]
-        return None
+    if config is None:
+        return {}
+    if isinstance(config, ScoreResultsConfig):
+        return config.model_dump(mode="python", exclude_none=True)
+    if isinstance(config, Mapping):
+        return dict(config)
+    return {}
 
-    tenant_id = _lookup("tenant_id")
-    case_id = _lookup("case_id")
-    trace_id = _lookup("trace_id") or DEFAULT_TRACE_ID
+
+def _build_metadata(config: Mapping[str, Any], prompt_version: str) -> dict[str, Any]:
+    tenant_id = config.get("tenant_id")
+    case_id = config.get("case_id")
+    trace_id = config.get("trace_id") or DEFAULT_TRACE_ID
 
     metadata: dict[str, Any] = {
         "tenant_id": tenant_id,
@@ -284,10 +287,10 @@ def _build_metadata(
         "trace_id": trace_id,
         "prompt_version": prompt_version,
     }
-    key_alias = _lookup("key_alias")
+    key_alias = config.get("key_alias")
     if key_alias:
         metadata["key_alias"] = key_alias
-    ledger_logger = _lookup("ledger_logger")
+    ledger_logger = config.get("ledger_logger")
     if ledger_logger:
         metadata["ledger_logger"] = ledger_logger
     return metadata
@@ -351,10 +354,9 @@ def _prompt_metrics(payload: ScoreResultsData, prompt: str) -> dict[str, Any]:
 
 
 def run_score_results(
-    control: Mapping[str, Any] | None,
     data: Mapping[str, Any] | ScoreResultsData,
     *,
-    meta: Mapping[str, Any] | None = None,
+    config: Mapping[str, Any] | ScoreResultsConfig | None = None,
 ) -> dict[str, Any]:
     """Rank search results via LiteLLM and return deterministic scores."""
 
@@ -363,22 +365,19 @@ def run_score_results(
         if isinstance(data, ScoreResultsData)
         else ScoreResultsData.model_validate(data)
     )
-    prompt_version = (
-        (control or {}).get("prompt_version")
-        or (meta.get("prompt_version") if meta else None)
-        or DEFAULT_PROMPT_VERSION
-    )
-    metadata = _build_metadata(meta, control, prompt_version)
-    model_label = str((control or {}).get("model_preset") or DEFAULT_MODEL_LABEL)
-    prompt = _build_prompt(payload, meta)
+    config_data = _coerce_config(config)
+    prompt_version = config_data.get("prompt_version") or DEFAULT_PROMPT_VERSION
+    metadata = _build_metadata(config_data, prompt_version)
+    model_label = str(config_data.get("model_preset") or DEFAULT_MODEL_LABEL)
+    prompt = _build_prompt(payload, config_data)
     allowed_ids = {item.id for item in payload.results}
     logger.info(
         "score_results.prompt_metrics",
         extra=_prompt_metrics(payload, prompt),
     )
 
-    temperature_value = _coerce_temperature((control or {}).get("temperature"))
-    max_tokens_value = _coerce_max_tokens((control or {}).get("max_tokens"))
+    temperature_value = _coerce_temperature(config_data.get("temperature"))
+    max_tokens_value = _coerce_max_tokens(config_data.get("max_tokens"))
     labels_to_try: list[str] = []
     for candidate in (model_label, DEFAULT_MODEL_LABEL, "default"):
         candidate_text = str(candidate).strip()

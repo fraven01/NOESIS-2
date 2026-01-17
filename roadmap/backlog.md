@@ -27,7 +27,7 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
   - **Pointers:** `ai_core/graphs/technical/collection_search.py:build_plan_node`, `ai_core/graphs/technical/collection_search.py:HitlDecision`, `ai_core/services/collection_search/hitl.py`, `ai_core/services/collection_search/strategy.py`, `ai_core/services/collection_search/scoring.py`, `ai_core/graphs/technical/universal_ingestion_graph.py`
   - **Acceptance:** `build_plan_node` emits the new plan schema with slots/tasks/gates/deviations/evidence using workflow_execution terminology; HITL decisions update slot values and gate outcomes (slot completion); `execute_plan` consumes task outputs and records evidence; graph output links evidence to ingested artifacts; tests updated in `ai_core/tests/graphs/test_collection_search_graph.py`
 
-- [ ] **Plan persistence and retrieval (vertical slice)**:
+- [x] **Plan persistence and retrieval (vertical slice)**:
   - **Pointers:** `ai_core/graph/core.py:FileCheckpointer`, `ai_core/graph/state.py:PersistedGraphState`, `common/object_store_defaults.py`
   - **Acceptance:** Plan and evidence persist as part of the graph state envelope; deterministic plan_key resolves to the latest persisted state for the workflow execution (derived, not minted); retrieval helper returns validated plan + evidence; tests cover round-trip persistence; no new IDs introduced; no new DB tables in the slice
 
@@ -35,7 +35,7 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 ### P0 - Critical Quick Wins (High Impact, Medium-High Effort)
 
-- [ ] **Collection Search timeouts and stall protection**:
+- [x] **Collection Search timeouts and stall protection**:
   - **Details:** `roadmap/collection-search-review.md`
   - **Pointers:** `ai_core/llm/client.py:391`, `ai_core/llm/client.py:738`, `ai_core/graphs/technical/collection_search.py:561`, `ai_core/graphs/technical/collection_search.py:650`, `llm_worker/graphs/hybrid_search_and_score.py:1116`, `llm_worker/graphs/score_results.py:353`
   - **Acceptance:** LLM client adds explicit connect/read timeouts (sync + streaming); parallel search uses a total timeout with partial results; hybrid score timeout handling is reachable and logged; tests updated to cover timeout behavior; see `roadmap/collection-search-review.md`
@@ -44,6 +44,11 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
   - **Details:** `roadmap/collection-search-review.md`
   - **Pointers:** `ai_core/graphs/technical/collection_search.py:140`, `ai_core/graphs/technical/collection_search.py:480`, `ai_core/graphs/technical/collection_search.py:636`, `ai_core/graphs/technical/collection_search.py:837`, `ai_core/graphs/technical/collection_search.py:867`, `llm_worker/graphs/hybrid_search_and_score.py:626`, `llm_worker/graphs/hybrid_search_and_score.py:1389`, `llm_worker/graphs/score_results.py:353`
   - **Acceptance:** Graph internals pass typed models across nodes (no dict round-trips); search output uses typed structures at boundaries; dead branch removed; redundant model_dump removed; config/control/meta shape simplified; hardcoded jurisdiction/purpose removed; tests updated to enforce contracts; see `roadmap/collection-search-review.md`
+
+- [ ] **Collection Search fail-fast reset (drop legacy fallbacks)**:
+  - **Details:** `roadmap/collection-search-review.md`
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py:1458` (CollectionSearchAdapter.run tool_context meta fallback), `ai_core/graphs/technical/collection_search.py:1605` (_HybridExecutorAdapter HybridResult coercion), `llm_worker/tasks.py:111` (control -> config merge)
+  - **Acceptance:** `CollectionSearchAdapter.run()` requires `tool_context` in boundary state (no meta fallback); `_HybridExecutorAdapter` rejects non-`HybridResult` payloads instead of coercing; `llm_worker/tasks.py` no longer merges legacy `control` into `config`; tests updated to cover hard failures (invalid inputs) and remove legacy payload paths; breaking change documented via this backlog item
 
 ### Docs/Test touchpoints (checklist)
 

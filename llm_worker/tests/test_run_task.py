@@ -23,7 +23,7 @@ def api_client():
 def _score_results_payload() -> dict:
     return {
         "task_type": "score_results",
-        "control": {"model_preset": "demo"},
+        "config": {"model_preset": "demo"},
         "data": {
             "query": "test",
             "results": [

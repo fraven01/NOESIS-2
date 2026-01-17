@@ -226,15 +226,7 @@ class ChunkQualityEvaluator:
         context: Any = None,
     ) -> ChunkQualityScore:
         """Evaluate a single chunk."""
-        from ai_core.infra.config import get_config
-        from ai_core.infra.circuit_breaker import get_litellm_circuit_breaker
-        from ai_core.llm.client import LlmUpstreamError
-        from litellm import completion
-
-        cfg = get_config()
-        completion_kwargs = {"api_base": cfg.litellm_base_url}
-        if cfg.litellm_api_key:
-            completion_kwargs["api_key"] = cfg.litellm_api_key
+        from ai_core.llm.client import call
 
         # Build prompt
         prompt = CHUNK_QUALITY_PROMPT.format(
@@ -242,30 +234,26 @@ class ChunkQualityEvaluator:
             parent_ref=chunk.get("parent_ref", "unknown"),
         )
 
-        # Call LLM
-        breaker = get_litellm_circuit_breaker()
-        if not breaker.allow_request():
-            raise LlmUpstreamError(
-                "LiteLLM circuit breaker open",
-                status=503,
-                code="circuit_open",
-            )
-        try:
-            response = completion(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                timeout=self.timeout,
-                **completion_kwargs,
-            )
-        except Exception:
-            breaker.record_failure(reason="litellm_completion")
-            raise
-        else:
-            breaker.record_success()
+        # Build metadata for tracing (extract from context if available)
+        metadata: dict[str, Any] = {}
+        if context is not None:
+            metadata["trace_id"] = getattr(context, "trace_id", None)
+            ctx_meta = getattr(context, "metadata", None)
+            if ctx_meta is not None:
+                metadata["tenant_id"] = getattr(ctx_meta, "tenant_id", None)
+                metadata["case_id"] = getattr(ctx_meta, "case_id", None)
+
+        # Call LLM via central client (includes circuit breaker, observability)
+        response = call(
+            self.model,
+            prompt,
+            metadata,
+            response_format={"type": "json_object"},
+            extra_params={"timeout": self.timeout},
+        )
 
         # Parse JSON response
-        result = json.loads(response.choices[0].message.content)
+        result = json.loads(response["text"])
 
         # Extract scores
         coherence = float(result.get("coherence", 0))

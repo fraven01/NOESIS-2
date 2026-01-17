@@ -56,6 +56,10 @@ class LlmUpstreamError(LlmClientError):
     """Raised when the LiteLLM upstream is unavailable or returns 5xx."""
 
 
+class LlmTimeoutError(LlmClientError, TimeoutError):
+    """Raised when the LLM client exceeds the configured timeout."""
+
+
 class StreamChunk(TypedDict, total=False):
     event: Literal["delta", "final", "error"]
     text: str | None
@@ -86,6 +90,40 @@ def _safe_text(resp: requests.Response | None) -> str | None:
     if not isinstance(resp_text, str):
         resp_text = str(resp_text)
     return resp_text.strip()
+
+
+_DEFAULT_LLM_TIMEOUT_S = 30.0
+
+
+def _resolve_timeout_value(
+    timeouts: Mapping[str, int], keys: Sequence[str], default: float | None
+) -> float | None:
+    for key in keys:
+        raw_value = timeouts.get(key)
+        if raw_value is None:
+            continue
+        try:
+            candidate = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if candidate <= 0:
+            return None
+        return candidate
+    return default
+
+
+def _resolve_timeouts(
+    label: str, cfg, *, stream: bool
+) -> tuple[float, float] | None:
+    timeouts = cfg.timeouts or {}
+    keys: list[str] = []
+    if stream:
+        keys.extend([f"{label}_stream", "stream"])
+    keys.extend([label, "default"])
+    timeout_s = _resolve_timeout_value(timeouts, keys, _DEFAULT_LLM_TIMEOUT_S)
+    if timeout_s is None:
+        return None
+    return (timeout_s, timeout_s)
 
 
 def _normalise_text_parts(value: object) -> str | None:
@@ -282,7 +320,14 @@ def _supports_temperature(model_id: str) -> bool:
 
 
 @observe_span(name="llm.call")
-def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+def call(
+    label: str,
+    prompt: str,
+    metadata: Dict[str, Any],
+    *,
+    response_format: Dict[str, Any] | None = None,
+    extra_params: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     """Call the LLM via LiteLLM proxy using a routing ``label``.
 
     Parameters
@@ -294,6 +339,12 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     metadata:
         Dict containing at least ``tenant_id``, ``case_id``, and ``trace_id``,
         plus optional ``user_id`` for telemetry attribution.
+    response_format:
+        Optional response format specification, e.g. ``{"type": "json_object"}``
+        for structured JSON output.
+    extra_params:
+        Optional dict of additional parameters to pass to the LLM API.
+        These are merged into the request payload after standard parameters.
     """
 
     model_id = resolve(label)
@@ -333,6 +384,14 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # Add response_format if specified (e.g., {"type": "json_object"})
+    if response_format is not None:
+        payload["response_format"] = response_format
+
+    # Merge extra_params last to allow overrides
+    if extra_params:
+        payload.update(extra_params)
+
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = case_value or "unknown-case"
     idempotency_key = f"{case_id}:{label}:{prompt_version}"
@@ -364,6 +423,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     resp: requests.Response | None = None
     attempt_headers = headers.copy()
     attempt_headers[IDEMPOTENCY_KEY_HEADER] = idempotency_key
+    timeout = _resolve_timeouts(label, cfg, stream=False)
     breaker = get_litellm_circuit_breaker()
     if not breaker.allow_request():
         retry_after_ms = None
@@ -388,8 +448,40 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         start_ts = time.perf_counter()
-        resp = requests.post(url, headers=attempt_headers, json=payload)
+        resp = requests.post(
+            url,
+            headers=attempt_headers,
+            json=payload,
+            timeout=timeout,
+        )
         latency_ms = (time.perf_counter() - start_ts) * 1000.0
+    except requests.Timeout as exc:
+        latency_ms = (time.perf_counter() - start_ts) * 1000.0
+        status = None
+        breaker.record_failure(reason="timeout")
+        logger.warning(
+            "llm request timeout",
+            exc_info=exc,
+            extra={**log_extra, "status": status, "timeout_s": timeout},
+        )
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": "LlmTimeoutError",
+                "error.message": _truncate(str(exc) or "LLM request timeout", 256),
+                "provider.http_status": status,
+                "timeout_s": timeout,
+            }
+        )
+        raise LlmTimeoutError(
+            str(exc) or "LLM request timeout",
+            status=None,
+            code="timeout",
+        ) from exc
     except requests.RequestException as exc:
         latency_ms = (time.perf_counter() - start_ts) * 1000.0
         status = None
@@ -636,9 +728,27 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
 
 @observe_span(name="llm.call_stream")
 def call_stream(
-    label: str, prompt: str, metadata: Dict[str, Any]
+    label: str,
+    prompt: str,
+    metadata: Dict[str, Any],
+    *,
+    extra_params: Dict[str, Any] | None = None,
 ) -> Iterator[StreamChunk]:
-    """Stream tokens from the LLM via LiteLLM proxy (streaming mode)."""
+    """Stream tokens from the LLM via LiteLLM proxy (streaming mode).
+
+    Parameters
+    ----------
+    label:
+        Routing label that resolves to a model id.
+    prompt:
+        Prompt text which will be PII-masked before sending.
+    metadata:
+        Dict containing at least ``tenant_id``, ``case_id``, and ``trace_id``,
+        plus optional ``user_id`` for telemetry attribution.
+    extra_params:
+        Optional dict of additional parameters to pass to the LLM API.
+        These are merged into the request payload after standard parameters.
+    """
 
     model_id = resolve(label)
     cfg = get_config()
@@ -677,6 +787,10 @@ def call_stream(
         except Exception:
             pass
 
+    # Merge extra_params last to allow overrides
+    if extra_params:
+        payload.update(extra_params)
+
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = case_value or "unknown-case"
     idempotency_key = f"{case_id}:{label}:{prompt_version}"
@@ -709,6 +823,7 @@ def call_stream(
     resp: requests.Response | None = None
     attempt_headers = headers.copy()
     attempt_headers[IDEMPOTENCY_KEY_HEADER] = idempotency_key
+    timeout = _resolve_timeouts(label, cfg, stream=True)
     breaker = get_litellm_circuit_breaker()
     if not breaker.allow_request():
         retry_after_ms = None
@@ -735,7 +850,42 @@ def call_stream(
 
     try:
         start_ts = time.perf_counter()
-        resp = requests.post(url, headers=attempt_headers, json=payload, stream=True)
+        resp = requests.post(
+            url,
+            headers=attempt_headers,
+            json=payload,
+            stream=True,
+            timeout=timeout,
+        )
+    except requests.Timeout as exc:
+        latency_ms = (time.perf_counter() - start_ts) * 1000.0
+        status = None
+        breaker.record_failure(reason="timeout")
+        logger.warning(
+            "llm request timeout",
+            exc_info=exc,
+            extra={**log_extra, "status": status, "timeout_s": timeout},
+        )
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": "LlmTimeoutError",
+                "error.message": _truncate(str(exc) or "LLM request timeout", 256),
+                "provider.http_status": status,
+                "timeout_s": timeout,
+            }
+        )
+        err = LlmTimeoutError(
+            str(exc) or "LLM request timeout",
+            status=None,
+            code="timeout",
+        )
+        yield {"event": "error", "error": str(err)}
+        raise err from exc
     except requests.RequestException as exc:
         latency_ms = (time.perf_counter() - start_ts) * 1000.0
         status = None
@@ -894,6 +1044,34 @@ def call_stream(
                 delta_text = _coerce_stream_delta_text(choices[0])
                 if delta_text:
                     yield {"event": "delta", "text": delta_text}
+    except requests.Timeout as exc:
+        latency_ms = (time.perf_counter() - start_ts) * 1000.0
+        breaker.record_failure(reason="timeout")
+        logger.warning(
+            "llm request timeout",
+            exc_info=exc,
+            extra={**log_extra, "status": status, "timeout_s": timeout},
+        )
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": "LlmTimeoutError",
+                "error.message": _truncate(str(exc) or "LLM request timeout", 256),
+                "provider.http_status": status,
+                "timeout_s": timeout,
+            }
+        )
+        err = LlmTimeoutError(
+            str(exc) or "LLM request timeout",
+            status=None,
+            code="timeout",
+        )
+        yield {"event": "error", "error": str(err)}
+        raise err from exc
     except requests.RequestException as exc:
         latency_ms = (time.perf_counter() - start_ts) * 1000.0
         breaker.record_failure(reason="request_error")

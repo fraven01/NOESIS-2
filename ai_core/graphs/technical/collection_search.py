@@ -108,6 +108,78 @@ class GraphInput(BaseModel):
         return candidate
 
 
+class StrategyState(BaseModel):
+    """State container for search strategy generation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    plan: SearchStrategy | None = None
+    error: str | None = None
+
+
+class SearchResultPayload(BaseModel):
+    """Typed search result with query metadata and scoring fields."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    url: str | None = None
+    title: str
+    snippet: str
+    source: str
+    score: float | None = None
+    is_pdf: bool = False
+    query: str
+    query_index: int
+    position: int
+    embedding_rank_score: float | None = None
+    embedding_similarity: float | None = None
+    heuristic_score: float | None = None
+    detected_date: datetime | None = None
+    version_hint: str | None = None
+    domain_type: str | None = None
+    trust_hint: str | None = None
+
+
+class SearchError(BaseModel):
+    """Structured search error payload."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    query: str | None = None
+    error: str | None = None
+    message: str | None = None
+
+
+class SearchResponseMeta(BaseModel):
+    """Response metadata per query (provider details + query)."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    query: str | None = None
+
+
+class SearchResultsPayload(BaseModel):
+    """Boundary output for search execution results."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    results: list[SearchResultPayload] = Field(default_factory=list)
+    errors: list[SearchError] = Field(default_factory=list)
+    responses: list[SearchResponseMeta] = Field(default_factory=list)
+    embedding_failed: bool | None = None
+
+
+class HybridState(BaseModel):
+    """State container for hybrid scoring results."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    result: HybridResult | None = None
+    candidates: list[SearchCandidate] = Field(default_factory=list)
+    embedding_degraded: bool | None = None
+    error: str | None = None
+
+
 COLLECTION_SEARCH_SCHEMA_ID = "noesis.graphs.collection_search"
 COLLECTION_SEARCH_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
 COLLECTION_SEARCH_IO_VERSION_STRING = COLLECTION_SEARCH_IO_VERSION.as_string()
@@ -137,7 +209,7 @@ class CollectionSearchGraphOutput(BaseModel):
         COLLECTION_SEARCH_IO_VERSION_STRING
     )
     outcome: str
-    search: Mapping[str, Any] | None
+    search: SearchResultsPayload | None
     telemetry: Mapping[str, Any] | None
     ingestion: Mapping[str, Any] | None
     plan: Mapping[str, Any] | None
@@ -278,19 +350,19 @@ class CollectionSearchState(TypedDict):
     This prevents accidental overwrites when nodes only update specific keys.
     """
 
-    input: Mapping[str, Any]  # Raw input used to build GraphInput
+    input: GraphInput
     tool_context: ToolContext
     runtime: Mapping[str, Any]  # Runtime dependencies
 
     # Intermediate state with merge reducers
-    strategy: Optional[Mapping[str, Any]]
+    strategy: StrategyState | None
     search: Annotated[
         MutableMapping[str, Any], _merge_dict
     ]  # keys: results, errors, responses, embedding_failed
     embedding_rank: Annotated[
         MutableMapping[str, Any], _merge_dict
     ]  # keys: scored_count, top_k, failed
-    hybrid: Annotated[MutableMapping[str, Any], _merge_dict]  # keys: result, candidates
+    hybrid: HybridState | None
     hitl: Annotated[MutableMapping[str, Any], _merge_dict]
     ingestion: Annotated[MutableMapping[str, Any], _merge_dict]
 
@@ -300,7 +372,7 @@ class CollectionSearchState(TypedDict):
     transitions: Annotated[list[Mapping[str, Any]], _append_list]
 
     # Phase 5: Plan Output
-    plan: Optional[Mapping[str, Any]]  # Serialized ImplementationPlan
+    plan: ImplementationPlan | None
 
 
 _FRESHNESS_MAP: dict[str, FreshnessMode] = {
@@ -310,6 +382,7 @@ _FRESHNESS_MAP: dict[str, FreshnessMode] = {
 }
 
 MIN_DIVERSITY_BUCKETS = 3
+_DEFAULT_SEARCH_TIMEOUT_S = 30.0
 
 
 # -----------------------------------------------------------------------------
@@ -332,6 +405,22 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _resolve_search_timeout_s() -> float:
+    default = _DEFAULT_SEARCH_TIMEOUT_S
+    try:
+        from django.conf import settings
+    except Exception:
+        return default
+    value = getattr(settings, "SEARCH_WORKER_TIMEOUT_SECONDS", default)
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return default
+    if timeout <= 0:
+        return default
+    return timeout
 
 
 def _record_transition(
@@ -458,17 +547,19 @@ def strategy_node(state: CollectionSearchState) -> dict[str, Any]:
     generator: StrategyGenerator = runtime.get("runtime_strategy_generator")
 
     # Re-validate input to ensure safety
-    try:
-        graph_input = GraphInput.model_validate(raw_input)
-    except ValidationError:
-        # Should have been validated at entry, but safe fallback
-        return {"strategy": {"error": "Invalid input"}}
+    graph_input = raw_input
+    if not isinstance(graph_input, GraphInput):
+        try:
+            graph_input = GraphInput.model_validate(raw_input)
+        except ValidationError:
+            # Should have been validated at entry, but safe fallback
+            return {"strategy": StrategyState(error="Invalid input")}
 
     ids = _get_ids(tool_context, graph_input.collection_scope)
 
     if not generator:
         # Should not happen in production
-        return {"strategy": {"error": "No strategy generator configured"}}
+        return {"strategy": StrategyState(error="No strategy generator configured")}
 
     request = SearchStrategyRequest(
         tenant_id=cast(str, ids["tenant_id"]),
@@ -477,7 +568,6 @@ def strategy_node(state: CollectionSearchState) -> dict[str, Any]:
         purpose=graph_input.purpose,
     )
     strategy = generator(request)
-    plan = strategy.model_dump(mode="json")
 
     meta = dict(ids)
     meta.update(
@@ -488,7 +578,7 @@ def strategy_node(state: CollectionSearchState) -> dict[str, Any]:
     )
     _record_transition(state, "strategy_node", "planned", "search_strategy_ready", meta)
 
-    return {"strategy": {"plan": plan}}
+    return {"strategy": StrategyState(plan=strategy)}
 
 
 def _execute_single_search(
@@ -496,7 +586,7 @@ def _execute_single_search(
     query: str,
     index: int,
     tool_context: ToolContext,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
+) -> tuple[list[SearchResultPayload], SearchResponseMeta | None, SearchError | None]:
     """Execute a single search query and return (results, meta, error).
 
     Args:
@@ -525,36 +615,44 @@ def _execute_single_search(
         )
 
         outcome: ToolOutcome = response.outcome
-        meta = dict(outcome.meta)
-        meta["query"] = query
+        meta_payload = dict(outcome.meta)
+        meta_payload["query"] = query
+        meta = SearchResponseMeta.model_validate(meta_payload)
 
         if outcome.decision == "ok":
-            results = []
+            results: list[SearchResultPayload] = []
             for position, result in enumerate(response.results):
-                normalised = result.model_dump(mode="json")
-                normalised.update(
-                    {
-                        "query": query,
-                        "query_index": index,
-                        "position": position,
-                    }
+                results.append(
+                    SearchResultPayload(
+                        url=str(result.url) if result.url else None,
+                        title=result.title,
+                        snippet=result.snippet,
+                        source=result.source,
+                        score=result.score,
+                        is_pdf=result.is_pdf,
+                        query=query,
+                        query_index=index,
+                        position=position,
+                    )
                 )
-                results.append(normalised)
             return results, meta, None
         else:
-            error = {
-                "query": query,
-                "error": meta.get("error"),
-                "message": outcome.rationale,
-            }
+            meta_error = None
+            if meta.model_extra:
+                meta_error = meta.model_extra.get("error")
+            error = SearchError(
+                query=query,
+                error=meta_error,
+                message=outcome.rationale,
+            )
             return [], meta, error
 
     except SearchProviderError as exc:
-        error = {
-            "query": query,
-            "error": type(exc).__name__,
-            "message": str(exc),
-        }
+        error = SearchError(
+            query=query,
+            error=type(exc).__name__,
+            message=str(exc),
+        )
         return [], None, error
 
 
@@ -562,7 +660,12 @@ async def _execute_parallel_searches(
     worker: WebSearchWorker,
     queries: list[str],
     tool_context: ToolContext,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    total_timeout_s: float | None = None,
+) -> tuple[
+    list[SearchResultPayload],
+    list[SearchResponseMeta],
+    list[SearchError],
+]:
     """Execute multiple search queries in parallel using asyncio.
 
     Args:
@@ -573,7 +676,7 @@ async def _execute_parallel_searches(
     Returns:
         Tuple of (aggregated_results, search_meta, errors).
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     async def run_search(index: int, query: str):
         # Create per-query ToolContext with unique worker_call_id
@@ -591,30 +694,69 @@ async def _execute_parallel_searches(
             query_context,
         )
 
-    # Execute all searches in parallel
-    tasks = [run_search(i, q) for i, q in enumerate(queries)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Execute all searches in parallel with optional total timeout
+    tasks: list[asyncio.Task[Any]] = []
+    task_map: dict[asyncio.Task[Any], tuple[int, str]] = {}
+    for index, query in enumerate(queries):
+        task = asyncio.create_task(run_search(index, query))
+        tasks.append(task)
+        task_map[task] = (index, query)
 
-    aggregated: list[dict[str, Any]] = []
-    search_meta: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
+    done: set[asyncio.Task[Any]]
+    pending: set[asyncio.Task[Any]]
+    if total_timeout_s is not None and total_timeout_s > 0:
+        done, pending = await asyncio.wait(tasks, timeout=total_timeout_s)
+    else:
+        done, pending = await asyncio.wait(tasks)
 
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
+    aggregated: list[SearchResultPayload] = []
+    search_meta: list[SearchResponseMeta] = []
+    errors: list[SearchError] = []
+
+    for task in done:
+        index, query = task_map[task]
+        try:
+            res_list, meta, error = task.result()
+        except Exception as exc:
             errors.append(
-                {
-                    "query": queries[i],
-                    "error": type(result).__name__,
-                    "message": str(result),
-                }
+                SearchError(
+                    query=query,
+                    error=type(exc).__name__,
+                    message=str(exc),
+                )
             )
         else:
-            res_list, meta, error = result
             aggregated.extend(res_list)
             if meta:
                 search_meta.append(meta)
             if error:
                 errors.append(error)
+
+    if pending:
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in pending:
+            _, query = task_map[task]
+            errors.append(
+                SearchError(
+                    query=query,
+                    error="TimeoutError",
+                    message=(
+                        f"Search timed out after {total_timeout_s}s"
+                        if total_timeout_s is not None
+                        else "Search timed out"
+                    ),
+                )
+            )
+        LOGGER.warning(
+            "parallel_search_timeout",
+            extra={
+                "timeout_s": total_timeout_s,
+                "pending": len(pending),
+                "completed": len(done),
+            },
+        )
 
     return aggregated, search_meta, errors
 
@@ -622,22 +764,29 @@ async def _execute_parallel_searches(
 @observe_span(name="node.search")
 def search_node(state: CollectionSearchState) -> dict[str, Any]:
     """Execute parallel web search using asyncio.gather for I/O-bound operations."""
-    strategy_data = state.get("strategy", {}).get("plan")
-    if not strategy_data:
-        return {"search": {"errors": ["No strategy generated"], "results": []}}
+    strategy_state = state.get("strategy")
+    strategy = strategy_state.plan if strategy_state else None
+    if not strategy:
+        return {
+            "search": {
+                "errors": [SearchError(message="No strategy generated")],
+                "results": [],
+            }
+        }
 
     tool_context = state["tool_context"]
     runtime = state["runtime"]
     worker: WebSearchWorker | None = runtime.get("runtime_search_worker")
     if not worker:
-        return {"search": {"errors": ["No search worker configured"], "results": []}}
+        return {
+            "search": {
+                "errors": [SearchError(message="No search worker configured")],
+                "results": [],
+            }
+        }
 
-    try:
-        strategy = SearchStrategy.model_validate(strategy_data)
-    except ValidationError:
-        return {"search": {"errors": ["Invalid strategy data"], "results": []}}
-
-    ids = _get_ids(tool_context, state.get("input", {}).get("collection_scope", ""))
+    graph_input = state["input"]
+    ids = _get_ids(tool_context, graph_input.collection_scope)
 
     # Execute searches in parallel
     try:
@@ -650,20 +799,44 @@ def search_node(state: CollectionSearchState) -> dict[str, Any]:
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(
                     asyncio.run,
-                    _execute_parallel_searches(worker, strategy.queries, tool_context),
+                    _execute_parallel_searches(
+                        worker,
+                        strategy.queries,
+                        tool_context,
+                        total_timeout_s=_resolve_search_timeout_s(),
+                    ),
                 )
                 aggregated, search_meta, errors = future.result()
         except RuntimeError:
             # No running event loop, we can use asyncio.run directly
             aggregated, search_meta, errors = asyncio.run(
-                _execute_parallel_searches(worker, strategy.queries, tool_context)
+                _execute_parallel_searches(
+                    worker,
+                    strategy.queries,
+                    tool_context,
+                    total_timeout_s=_resolve_search_timeout_s(),
+                )
             )
     except Exception as exc:
         LOGGER.exception("parallel_search_failed")
-        return {"search": {"errors": [{"error": str(exc)}], "results": []}}
+        return {
+            "search": {
+                "errors": [
+                    SearchError(error=type(exc).__name__, message=str(exc))
+                ],
+                "results": [],
+            }
+        }
 
     meta = dict(ids)
-    meta.update({"total_results": len(aggregated), "error_count": len(errors)})
+    timeout_count = sum(1 for error in errors if error.error == "TimeoutError")
+    meta.update(
+        {
+            "total_results": len(aggregated),
+            "error_count": len(errors),
+            "timeout_count": timeout_count,
+        }
+    )
     _record_transition(state, "search_node", "searched", "web_search_completed", meta)
 
     return {
@@ -724,12 +897,11 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
     Sets explicit failure status if embedding service is unavailable.
     """
     search_state = state.get("search", {})
-    results = search_state.get("results", [])
+    results: list[SearchResultPayload] = search_state.get("results", [])
     if not results:
         return {"embedding_rank": {"scored_count": 0, "top_k": 0, "failed": False}}
 
-    raw_input = state["input"]
-    graph_input = GraphInput.model_validate(raw_input)
+    graph_input = state["input"]
     query = graph_input.question
     purpose = graph_input.purpose
 
@@ -741,7 +913,7 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
     # Embedding logic
     texts_to_embed = [f"{query} {purpose}".strip()]
     for result in results:
-        combined = f"{result.get('title', '')} {result.get('snippet', '')}".strip()
+        combined = f"{result.title} {result.snippet}".strip()
         texts_to_embed.append(combined)
 
     # Call embedding service with retry
@@ -761,13 +933,17 @@ def embedding_rank_node(state: CollectionSearchState) -> dict[str, Any]:
         # Apply configurable weights
         hybrid_score = (embedding_weight * emb_score) + (heuristic_weight * heu_score)
 
-        scored = dict(result)
-        scored["embedding_rank_score"] = hybrid_score
-        scored["embedding_similarity"] = emb_score
-        scored["heuristic_score"] = heu_score
-        scored_results.append(scored)
+        scored_results.append(
+            result.model_copy(
+                update={
+                    "embedding_rank_score": hybrid_score,
+                    "embedding_similarity": emb_score,
+                    "heuristic_score": heu_score,
+                }
+            )
+        )
 
-    scored_results.sort(key=lambda x: x["embedding_rank_score"], reverse=True)
+    scored_results.sort(key=lambda x: x.embedding_rank_score or 0.0, reverse=True)
     top_results = scored_results[:top_k]
 
     ids = _get_ids(state["tool_context"], graph_input.collection_scope)
@@ -807,9 +983,9 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
     may be compromised.
     """
     search_state = state.get("search", {})
-    results = search_state.get("results", [])
+    results: list[SearchResultPayload] = search_state.get("results", [])
     if not results:
-        return {"hybrid": {}}
+        return {"hybrid": HybridState()}
 
     # Check for upstream embedding failures
     embedding_failed = search_state.get("embedding_failed", False)
@@ -827,56 +1003,58 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
     runtime = state["runtime"]
     executor: HybridScoreExecutor | None = runtime.get("runtime_hybrid_executor")
     if not executor:
-        return {"hybrid": {"error": "No hybrid executor configured"}}
+        return {"hybrid": HybridState(error="No hybrid executor configured")}
 
-    raw_input = state["input"]
-    graph_input = GraphInput.model_validate(raw_input)
+    graph_input = state["input"]
     max_candidates = graph_input.max_candidates
     sliced = results[:max_candidates]
 
     candidates: list[SearchCandidate] = []
-    candidate_lookup: dict[str, dict[str, Any]] = {}
 
     for item in sliced:
         # Construct candidates (simplified for brevity)
-        c_id = f"q{item.get('query_index', 0)}-{item.get('position', 0)}"
+        c_id = f"q{item.query_index}-{item.position}"
         try:
             cand = SearchCandidate(
                 id=c_id,
-                title=item.get("title", ""),
-                snippet=item.get("snippet", ""),
-                url=item.get("url", ""),
-                is_pdf=bool(item.get("is_pdf")),
-                detected_date=item.get("detected_date"),
-                version_hint=item.get("version_hint"),
-                domain_type=item.get("domain_type"),
-                trust_hint=item.get("trust_hint"),
+                title=item.title,
+                snippet=item.snippet,
+                url=item.url,
+                is_pdf=bool(item.is_pdf),
+                detected_date=item.detected_date,
+                version_hint=item.version_hint,
+                domain_type=item.domain_type,
+                trust_hint=item.trust_hint,
             )
         except ValidationError:
             continue
         candidates.append(cand)
-        candidate_lookup[c_id] = item
 
     if not candidates:
-        return {"hybrid": {"result": None}}
+        return {"hybrid": HybridState(result=None)}
 
-    strategy_plan = state.get("strategy", {}).get("plan", {})
-    preferred = strategy_plan.get("preferred_sources", [])
-    disallowed = strategy_plan.get("disallowed_sources", [])
+    strategy_state = state.get("strategy")
+    strategy = strategy_state.plan if strategy_state else None
+    preferred = list(strategy.preferred_sources) if strategy else []
+    disallowed = list(strategy.disallowed_sources) if strategy else []
 
-    scoring_ctx = ScoringContext(
-        question=graph_input.question,
-        purpose="collection_search",
-        jurisdiction="DE",
-        output_target="hybrid_rerank",
-        preferred_sources=preferred,
-        disallowed_sources=disallowed,
-        collection_scope=graph_input.collection_scope,
-        freshness_mode=_FRESHNESS_MAP.get(
+    scoring_ctx_kwargs: dict[str, Any] = {
+        "question": graph_input.question,
+        "purpose": graph_input.purpose,
+        "output_target": "hybrid_rerank",
+        "preferred_sources": preferred,
+        "disallowed_sources": disallowed,
+        "collection_scope": graph_input.collection_scope,
+        "freshness_mode": _FRESHNESS_MAP.get(
             graph_input.quality_mode, FreshnessMode.STANDARD
         ),
-        min_diversity_buckets=MIN_DIVERSITY_BUCKETS,
-    )
+        "min_diversity_buckets": MIN_DIVERSITY_BUCKETS,
+    }
+    jurisdiction_value = tool_context.metadata.get("jurisdiction")
+    if isinstance(jurisdiction_value, str) and jurisdiction_value.strip():
+        scoring_ctx_kwargs["jurisdiction"] = jurisdiction_value
+
+    scoring_ctx = ScoringContext(**scoring_ctx_kwargs)
 
     # Include full tool_context for sub-graph context reconstruction
     # tool_context_from_meta() expects either tool_context or scope_context in meta
@@ -901,7 +1079,7 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
         )
     except Exception as exc:
         LOGGER.exception("hybrid_score_failed")
-        return {"hybrid": {"error": str(exc)}}
+        return {"hybrid": HybridState(error=str(exc))}
 
     ids = _get_ids(tool_context, graph_input.collection_scope)
     meta = dict(ids)
@@ -917,12 +1095,12 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
     )
 
     return {
-        "hybrid": {
-            "result": hybrid_res.model_dump(mode="json"),
-            "candidates": candidate_lookup,
-            "embedding_degraded": embedding_failed
+        "hybrid": HybridState(
+            result=hybrid_res,
+            candidates=candidates,
+            embedding_degraded=embedding_failed
             or embedding_rank_state.get("failed", False),
-        }
+        )
     }
 
 
@@ -935,8 +1113,8 @@ def hitl_node(state: CollectionSearchState) -> dict[str, Any]:
     if not gateway:
         return {"hitl": {"auto_approved": True}}
 
-    hybrid = state.get("hybrid", {})
-    result_data = hybrid.get("result")
+    hybrid_state = state.get("hybrid")
+    result_data = hybrid_state.result if hybrid_state else None
     if not result_data:
         return {"hitl": {"auto_approved": True}}  # Nothing to approve or skip
 
@@ -945,11 +1123,12 @@ def hitl_node(state: CollectionSearchState) -> dict[str, Any]:
     # In a real LangGraph interacting with a human, we'd use an interrupt.
     # Here we mimic the legacy "gateway" pattern.
 
-    ids = _get_ids(tool_context, state["input"]["collection_scope"])
+    graph_input = state["input"]
+    ids = _get_ids(tool_context, graph_input.collection_scope)
     payload = build_hitl_payload(
         ids=ids,
-        input_data=state["input"],
-        result_data=result_data,
+        input_data=graph_input.model_dump(mode="json"),
+        result_data=result_data.model_dump(mode="json"),
     )
 
     decision = gateway.present(payload)
@@ -963,7 +1142,7 @@ def hitl_node(state: CollectionSearchState) -> dict[str, Any]:
     _record_transition(state, "hitl_node", status, "hitl_gateway_checked", meta)
 
     if decision:
-        return {"hitl": {"decision": decision.model_dump(mode="json")}}
+        return {"hitl": {"decision": decision}}
     return {"hitl": {"decision": None}}
 
 
@@ -974,21 +1153,29 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
     if not plan_data:
         return {"ingestion": {"status": "skipped_no_plan"}}
 
-    try:
-        plan = ImplementationPlan.model_validate(plan_data)
-    except ValidationError as exc:
-        LOGGER.exception("plan_validation_failed")
-        return {"ingestion": {"error": f"Invalid plan: {exc}"}}
+    if isinstance(plan_data, ImplementationPlan):
+        plan = plan_data
+    else:
+        try:
+            plan = ImplementationPlan.model_validate(plan_data)
+        except ValidationError as exc:
+            LOGGER.exception("plan_validation_failed")
+            return {"ingestion": {"error": f"Invalid plan: {exc}"}}
 
     # Check execution conditions
-    raw_input = state["input"]
+    graph_input = state["input"]
     hitl_state = state.get("hitl", {})
     decision = hitl_state.get("decision")
-    decision_status = decision.get("status") if decision else None
+    if isinstance(decision, HitlDecision):
+        decision_status = decision.status
+    elif isinstance(decision, Mapping):
+        decision_status = decision.get("status")
+    else:
+        decision_status = None
 
     should_execute = (
-        raw_input.get("execute_plan")
-        or raw_input.get("auto_ingest", False)
+        graph_input.execute_plan
+        or graph_input.auto_ingest
         or decision_status in ("approved", "partial")
     )
 
@@ -1037,7 +1224,7 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
         updated_plan = _update_ingestion_task(plan, result_info)
         return {
             "ingestion": {"status": "triggered", "task_info": result_info},
-            "plan": updated_plan.model_dump(mode="json"),
+            "plan": updated_plan,
         }
     except Exception as exc:
         LOGGER.exception("Crawler dispatch failed")
@@ -1047,32 +1234,38 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
 @observe_span(name="node.build_plan")
 def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
     """Construct and persist the ImplementationPlan."""
-    raw_input = state["input"]
-    graph_input = GraphInput.model_validate(raw_input)
+    graph_input = state["input"]
     tool_context = state["tool_context"]
     ids = _get_ids(tool_context, graph_input.collection_scope)
-    strategy = state.get("strategy", {}).get("plan")
-    hybrid = state.get("hybrid", {})
+    strategy_state = state.get("strategy")
+    hybrid_state = state.get("hybrid")
     hitl = state.get("hitl", {})
     decision_data = hitl.get("decision")
 
     # Determine selection
     selected_urls = []
     reason = None
+    candidate_by_id = (
+        {candidate.id: candidate for candidate in hybrid_state.candidates}
+        if hybrid_state
+        else {}
+    )
     if decision_data:
         # User selection via HITL
-        decision = HitlDecision.model_validate(decision_data)
+        if isinstance(decision_data, HitlDecision):
+            decision = decision_data
+        else:
+            decision = HitlDecision.model_validate(decision_data)
         if decision.status in ("approved", "partial"):
-            candidates = hybrid.get("candidates", {})
             for cid in decision.approved_candidate_ids:
-                c = candidates.get(cid)
-                if c and c.get("url"):
-                    selected_urls.append(c["url"])
+                candidate = candidate_by_id.get(cid)
+                if candidate and candidate.url:
+                    selected_urls.append(candidate.url)
             selected_urls.extend(decision.added_urls)
             reason = decision.rationale
     elif graph_input.auto_ingest:
         # Auto-ingest logic (simplified)
-        results = hybrid.get("result", {}).get("ranked", [])
+        results = hybrid_state.result.ranked if hybrid_state and hybrid_state.result else []
         selected_urls = select_auto_ingest_urls(
             results,
             top_k=graph_input.auto_ingest_top_k,
@@ -1097,8 +1290,8 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
         )
         plan_key = derive_plan_key(scope)
         plan_strategy = (
-            SearchStrategy.model_validate(strategy)
-            if strategy
+            strategy_state.plan
+            if strategy_state and strategy_state.plan
             else fallback_strategy(
                 SearchStrategyRequest(
                     tenant_id=ids["tenant_id"],
@@ -1108,8 +1301,15 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
                 )
             )
         )
-        candidates = [c for c in hybrid.get("candidates", {}).values()]
-        scored_candidates = hybrid.get("result", {}).get("ranked", [])
+        search_results: list[SearchResultPayload] = state.get("search", {}).get(
+            "results", []
+        )
+        candidates = [result.model_dump(mode="json") for result in search_results]
+        scored_candidates = (
+            [item.model_dump(mode="json") for item in hybrid_state.result.ranked]
+            if hybrid_state and hybrid_state.result
+            else []
+        )
         selected_evidence = [
             Evidence(ref_type="url", ref_id=url, summary="selected_url")
             for url in selected_urls
@@ -1118,7 +1318,10 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
         hitl_required = decision_data is None and not graph_input.auto_ingest
         gate_required = decision_data is not None or hitl_required
         if decision_data:
-            decision = HitlDecision.model_validate(decision_data)
+            if isinstance(decision_data, HitlDecision):
+                decision = decision_data
+            else:
+                decision = HitlDecision.model_validate(decision_data)
             hitl_status = decision.status
             hitl_required = False
             hitl_rationale = decision.rationale
@@ -1203,7 +1406,7 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
         LOGGER.error(f"Plan scope failed: {exc}")
         return {"ingestion": {"error": str(exc)}}
 
-    return {"plan": plan.model_dump(mode="json")}
+    return {"plan": plan}
 
 
 # -----------------------------------------------------------------------------
@@ -1273,7 +1476,7 @@ class CollectionSearchAdapter:
             ) from exc
 
         # 2. Extract validated components
-        input_state = boundary.input.model_dump(mode="json")
+        input_state = boundary.input
         tool_context = boundary.tool_context
         runtime: dict[str, Any] = dict(self.dependencies)
 
@@ -1297,12 +1500,13 @@ class CollectionSearchAdapter:
             "strategy": None,
             "search": {},
             "embedding_rank": {},
-            "hybrid": {},
+            "hybrid": None,
             "hitl": {},
             "ingestion": {},
             "meta": {},  # Legacy
             "telemetry": {},  # Legacy
             "transitions": [],
+            "plan": None,
         }
 
         # 3. Invoke Graph
@@ -1326,24 +1530,26 @@ class CollectionSearchAdapter:
         # We need to reconstruct the expected result dict structure
 
         search_res = final_state.get("search", {}) or {}
-        hybrid_state = final_state.get("hybrid", {}) or {}
-        strategy_state = final_state.get("strategy", {}) or {}
+        search_payload = (
+            SearchResultsPayload.model_validate(search_res) if search_res else None
+        )
+        hybrid_state = final_state.get("hybrid")
+        strategy_state = final_state.get("strategy")
 
         fatal_messages: list[str] = []
-        search_errors = search_res.get("errors") or []
-        search_results = search_res.get("results") or []
+        search_errors = search_payload.errors if search_payload else []
+        search_results = search_payload.results if search_payload else []
         if search_errors and not search_results:
-            first_error = (
-                search_errors[0] if isinstance(search_errors, Sequence) else ""
-            )
-            detail = f": {first_error}" if first_error else ""
+            first_error = search_errors[0]
+            error_detail = first_error.message or first_error.error
+            detail = f": {error_detail}" if error_detail else ""
             fatal_messages.append(f"search_failed{detail}")
 
-        strategy_error = strategy_state.get("error")
+        strategy_error = strategy_state.error if strategy_state else None
         if strategy_error:
             fatal_messages.append(f"strategy_failed: {strategy_error}")
 
-        hybrid_error = hybrid_state.get("error")
+        hybrid_error = hybrid_state.error if hybrid_state else None
         if hybrid_error:
             fatal_messages.append(f"hybrid_score_failed: {hybrid_error}")
 
@@ -1351,13 +1557,26 @@ class CollectionSearchAdapter:
         error_message = "; ".join(fatal_messages) if fatal_messages else None
 
         # Construct summary result
+        hitl_payload = final_state.get("hitl")
+        if isinstance(hitl_payload, Mapping):
+            decision = hitl_payload.get("decision")
+            if isinstance(decision, HitlDecision):
+                hitl_payload = {
+                    **hitl_payload,
+                    "decision": decision.model_dump(mode="json"),
+                }
+
+        plan_payload = final_state.get("plan")
+        if isinstance(plan_payload, ImplementationPlan):
+            plan_payload = plan_payload.model_dump(mode="json")
+
         result_payload = CollectionSearchGraphOutput(
             outcome=outcome,
-            search=search_res,
+            search=search_payload,
             telemetry=final_state.get("telemetry"),
             ingestion=final_state.get("ingestion"),
-            plan=final_state.get("plan"),
-            hitl=final_state.get("hitl"),
+            plan=plan_payload,
+            hitl=hitl_payload,
             error=error_message,
         ).model_dump(mode="json")
 
@@ -1386,13 +1605,15 @@ def build_graph() -> CollectionSearchAdapter:
         def run(self, *, scoring_context, candidates, tenant_context) -> HybridResult:
             state = {
                 "query": scoring_context.question,
-                "candidates": [c.model_dump() for c in candidates],
+                "candidates": list(candidates),
             }
-            meta = {"scoring_context": scoring_context.model_dump(), **tenant_context}
+            meta = {"scoring_context": scoring_context, **tenant_context}
             if "query" not in meta:
                 meta["query"] = scoring_context.question
             _, result = hybrid_run(state, meta)
             payload = result.get("result") if isinstance(result, Mapping) else None
+            if isinstance(payload, HybridResult):
+                return payload
             return HybridResult.model_validate(payload or result)
 
     search_worker = get_web_search_worker()

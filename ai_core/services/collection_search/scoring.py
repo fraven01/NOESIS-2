@@ -22,16 +22,19 @@ def cosine_similarity(vec_a: Sequence[float], vec_b: Sequence[float]) -> float:
     return dot_product / (norm_a * norm_b)
 
 
-def calculate_generic_heuristics(
-    result: Mapping[str, Any],
-    query: str,
-) -> float:
+def _result_value(result: Any, key: str) -> Any:
+    if isinstance(result, Mapping):
+        return result.get(key)
+    return getattr(result, key, None)
+
+
+def calculate_generic_heuristics(result: Any, query: str) -> float:
     """Calculate generic quality heuristics for a search result (0-100 score)."""
     score = 0.0
 
-    title = str(result.get("title") or "").lower()
-    snippet = str(result.get("snippet") or "").lower()
-    url = str(result.get("url") or "").lower()
+    title = str(_result_value(result, "title") or "").lower()
+    snippet = str(_result_value(result, "snippet") or "").lower()
+    url = str(_result_value(result, "url") or "").lower()
     query_lower = query.lower()
 
     # 1. Title relevance (0-30 points)
@@ -56,7 +59,7 @@ def calculate_generic_heuristics(
         score -= 20.0
 
     # 5. Source position boost (small bonus for early results)
-    position = result.get("position", 0)
+    position = _result_value(result, "position") or 0
     if position < 3:
         score += 5.0
 
