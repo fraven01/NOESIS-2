@@ -248,6 +248,27 @@ def _coerce_str(value: object) -> str | None:
     return text or None
 
 
+def _resolve_url_hint(metadata: Mapping[str, object]) -> str | None:
+    for key in ("origin_uri", "source_url", "url", "external_url", "origin_url"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _resolve_source_label(metadata: Mapping[str, object]) -> str | None:
+    source = _coerce_str(metadata.get("source"))
+    if source and source.lower() not in {"crawler", "web"}:
+        return source
+    title = _coerce_str(metadata.get("title"))
+    if title:
+        return title
+    url_hint = _resolve_url_hint(metadata)
+    if url_hint:
+        return url_hint
+    return source
+
+
 def _format_range(start: int | None, end: int | None, prefix: str) -> str | None:
     if start is None:
         return None
@@ -257,7 +278,7 @@ def _format_range(start: int | None, end: int | None, prefix: str) -> str | None
 
 
 def _build_citation(metadata: Mapping[str, object]) -> str | None:
-    source = _coerce_str(metadata.get("source"))
+    source = _resolve_source_label(metadata)
     if not source:
         return None
 
@@ -318,20 +339,24 @@ def _build_citation(metadata: Mapping[str, object]) -> str | None:
             location_parts.append(section_value)
 
     if not location_parts:
-        chunk_id = _coerce_str(metadata.get("chunk_id"))
-        doc_id = _coerce_str(metadata.get("document_id"))
-        external_id = _coerce_str(metadata.get("external_id"))
-        hash_id = _coerce_str(metadata.get("hash"))
-        if chunk_id:
-            short = chunk_id[:8] if len(chunk_id) > 12 else chunk_id
-            location_parts.append(f"Chunk {short}")
-        elif doc_id:
-            location_parts.append(f"Dok-ID {doc_id}")
-        elif external_id:
-            location_parts.append(f"Dok {external_id}")
-        elif hash_id:
-            short = hash_id[:8] if len(hash_id) > 12 else hash_id
-            location_parts.append(f"Hash {short}")
+        url_hint = _resolve_url_hint(metadata)
+        if url_hint:
+            location_parts.append(url_hint)
+        else:
+            chunk_id = _coerce_str(metadata.get("chunk_id"))
+            doc_id = _coerce_str(metadata.get("document_id"))
+            external_id = _coerce_str(metadata.get("external_id"))
+            hash_id = _coerce_str(metadata.get("hash"))
+            if chunk_id:
+                short = chunk_id[:8] if len(chunk_id) > 12 else chunk_id
+                location_parts.append(f"Chunk {short}")
+            elif doc_id:
+                location_parts.append(f"Dok-ID {doc_id}")
+            elif external_id:
+                location_parts.append(f"Dok {external_id}")
+            elif hash_id:
+                short = hash_id[:8] if len(hash_id) > 12 else hash_id
+                location_parts.append(f"Hash {short}")
 
     if location_parts:
         return " · ".join([source, *location_parts])
@@ -341,11 +366,12 @@ def _build_citation(metadata: Mapping[str, object]) -> str | None:
 
 def _chunk_to_match(chunk: Chunk) -> Dict[str, Any]:
     metadata = dict(chunk.meta or {})
+    source_label = _resolve_source_label(metadata) or ""
     match: Dict[str, Any] = {
         "id": _extract_id(metadata),
         "text": chunk.content or "",
         "score": _extract_score(metadata),
-        "source": metadata.get("source", ""),
+        "source": source_label,
         "hash": metadata.get("hash"),
     }
     citation = _build_citation(metadata)

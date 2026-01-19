@@ -5,7 +5,11 @@ Top-to-bottom order within each section is priority order.
 Prefer linking each item to concrete code paths (and optionally to an issue).
 
 ## Next up (highest leverage)
-- [ ] Review later: framework analysis graph convergence (`ai_core/graphs/business/framework_analysis_graph.py`)
+
+- [ ] **Framework Analysis Graph Convergence**: Migriere Business-Graph von Custom DSL zu LangGraph `StateGraph` mit Patterns der technischen Graphen (TypedDict State, Protocols, Error Handling, Observability).
+  - **Details:** [framework-analysis-convergence.md](framework-analysis-convergence.md)
+  - **Pointers:** `ai_core/graphs/business/framework_analysis_graph.py`, `ai_core/graphs/technical/collection_search.py` (Referenz)
+  - **Acceptance:** LangGraph StateGraph; TypedDict mit Reducers; Service Protocols für DI/Testing; Graceful Degradation statt Exception-Abbruch; `emit_event()` Observability; Boundary Validation mit schema_version
 
 ## Agentic AI-First System (target state)
 
@@ -126,27 +130,27 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 ### P1 - Core Implementation (High Value)
 
-- [ ] **SOTA-1: Define RagResponse schema for structured CoT outputs**:
+- [x] **SOTA-1: Define RagResponse schema for structured CoT outputs**:
   - **Details:** Create Pydantic models `RagResponse`, `RagReasoning`, `SourceRef` for structured LLM outputs with Chain-of-Thought reasoning, relevance scores, and follow-up suggestions.
   - **Pointers:** `ai_core/rag/schemas.py` (new), `ai_core/nodes/compose.py:ComposeOutput`
   - **Acceptance:** Schema passes `model_json_schema()` export; unit tests for round-trip serialization; documented in `ai_core/rag/README.md`
   - **Effort:** S (0.5 Sprint)
 
-- [ ] **SOTA-2: Create answer.v2 prompt with JSON output enforcement**:
+- [x] **SOTA-2: Create answer.v2 prompt with JSON output enforcement**:
   - **Details:** New prompt template forcing CoT reasoning and JSON-only output matching `RagResponse` schema. Includes explicit steps: Analyze, Identify Gaps, Synthesize.
   - **Pointers:** `ai_core/prompts/retriever/answer.v2.md` (new), `ai_core/prompts/retriever/answer.v1.md` (reference)
   - **Acceptance:** Prompt produces valid JSON for 95%+ test cases; few-shot examples for edge cases; version tracked in `ai_core/infra/prompts.py`
   - **Effort:** S (0.5 Sprint)
   - **Depends on:** SOTA-1
 
-- [ ] **SOTA-3: Backend refactoring for structured compose output**:
-  - **Details:** Update `compose.py` to use v2 prompt with `response_format={"type": "json_object"}`; parse JSON into `RagResponse`; graceful fallback on parse failure; propagate debug metadata (latency, tokens, model, cost).
+- [x] **SOTA-3: Backend refactoring for structured compose output**:
+  - **Details:** Update `compose.py` to use v2 prompt with `response_format={"type": "json_object"}`; parse JSON into `RagResponse`; graceful fallback on parse failure; propagate debug metadata (latency, tokens, model, cost) with DEBUG/staff-only visibility.
   - **Pointers:** `ai_core/nodes/compose.py:_run`, `ai_core/llm/client.py:call` (line 326), `ai_core/services/rag_query.py`, `theme/views_chat.py:chat_submit`
-  - **Acceptance:** v2 path activated via `RAG_CHAT_SOTA` feature flag; fallback to v1 on JSON error; all fields propagated to view; integration tests; Langfuse spans include `prompt_version: v2`
+  - **Acceptance:** v2 path replaces v1 (no feature flag); fallback to v1 on JSON error; all fields propagated to view; integration tests; Langfuse spans include `prompt_version: v2`
   - **Effort:** M (1 Sprint)
   - **Depends on:** SOTA-1, SOTA-2
 
-- [ ] **SOTA-4: Frontend "Glass Box" chat message display**:
+- [x] **SOTA-4: Frontend "Glass Box" chat message display**:
   - **Details:** New `chat_message_debug.html` partial with collapsible sections: Final Answer (default), Thinking Process, Sources & Evidence with relevance bars, Debug footer (staff only).
   - **Pointers:** `theme/templates/theme/partials/chat_message.html`, `theme/templates/theme/partials/chat_message_debug.html` (new), `theme/views_chat.py:chat_submit`
   - **Acceptance:** Tabs/toggles work with Alpine.js; relevance bars 0-100%; debug footer staff-only; suggested follow-ups as clickable chips; responsive layout

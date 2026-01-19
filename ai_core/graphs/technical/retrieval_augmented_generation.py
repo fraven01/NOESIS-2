@@ -17,10 +17,11 @@ from ai_core.rag import rerank as rag_rerank
 from ai_core.rag import semantic_cache
 from ai_core.rag import standalone_question as rag_standalone
 from ai_core.rag import strategy as rag_strategy
+from ai_core.rag.schemas import RagReasoning, SourceRef
 from ai_core.tool_contracts import ContextError, NotFoundError, ToolContext
 from ai_core.tool_contracts.base import tool_context_from_meta
 from langgraph.graph import END, StateGraph
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ def _trim_history(history: list[dict[str, str]], *, limit: int) -> list[dict[str
 
 
 RAG_SCHEMA_ID = "noesis.graphs.retrieval_augmented_generation"
-RAG_IO_VERSION = GraphIOVersion(major=1, minor=0, patch=0)
+RAG_IO_VERSION = GraphIOVersion(major=1, minor=1, patch=0)
 RAG_IO_VERSION_STRING = RAG_IO_VERSION.as_string()
 
 
@@ -111,6 +112,10 @@ class RetrievalAugmentedGenerationOutput(BaseModel):
     prompt_version: str | None
     retrieval: Mapping[str, Any]
     snippets: list[dict[str, Any]]
+    reasoning: RagReasoning | None = None
+    used_sources: list[SourceRef] = Field(default_factory=list)
+    suggested_followups: list[str] = Field(default_factory=list)
+    debug_meta: Mapping[str, Any] | None = None
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -591,12 +596,20 @@ def _build_compiled_graph(
 
         answer = cached_payload.get("answer")
         prompt_version = cached_payload.get("prompt_version")
+        reasoning = cached_payload.get("reasoning")
+        used_sources = cached_payload.get("used_sources") or []
+        suggested_followups = cached_payload.get("suggested_followups") or []
+        debug_meta = cached_payload.get("debug_meta")
 
         result_payload = RetrievalAugmentedGenerationOutput(
             answer=answer,
             prompt_version=prompt_version,
             retrieval=retrieval_payload,
             snippets=snippets_payload,
+            reasoning=reasoning,
+            used_sources=used_sources,
+            suggested_followups=suggested_followups,
+            debug_meta=debug_meta,
         ).model_dump(mode="json")
 
         working_state["answer"] = answer
@@ -930,6 +943,10 @@ def _build_compiled_graph(
             prompt_version=compose_result.prompt_version,
             retrieval=retrieval_payload,
             snippets=snippets_payload,
+            reasoning=compose_result.reasoning,
+            used_sources=compose_result.used_sources or [],
+            suggested_followups=compose_result.suggested_followups or [],
+            debug_meta=compose_result.debug_meta,
         ).model_dump(mode="json")
 
         if result_payload["prompt_version"] is None:
@@ -946,6 +963,21 @@ def _build_compiled_graph(
             working_state["answer"] = compose_result.answer
             working_state["retrieval"] = retrieval_payload
             working_state["snippets"] = snippets_payload
+            if compose_result.reasoning is not None:
+                working_state["reasoning"] = compose_result.reasoning.model_dump(
+                    mode="json"
+                )
+            if compose_result.used_sources is not None:
+                working_state["used_sources"] = [
+                    source.model_dump(mode="json")
+                    for source in compose_result.used_sources
+                ]
+            if compose_result.suggested_followups is not None:
+                working_state["suggested_followups"] = list(
+                    compose_result.suggested_followups
+                )
+            if compose_result.debug_meta is not None:
+                working_state["debug_meta"] = dict(compose_result.debug_meta)
         graph_input = graph_state.get("graph_input") or _coerce_graph_input(
             working_state
         )

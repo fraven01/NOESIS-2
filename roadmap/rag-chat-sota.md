@@ -15,10 +15,10 @@
 
 ## 1. Architectural Philosophy (The "Glass Box" Approach)
 
-Since this is a *Developer Workbench* tool, we prioritize **transparency** over "magic". The chat should not just give an answer, but explain *how* it got there.
+Since this is a *Developer Workbench* tool (DEBUG-only), we prioritize **transparency** over "magic". The chat should not just give an answer, but explain *how* it got there.
 
 - **Structured Intelligence**: The LLM never returns raw strings. It returns a `RagResponse` object.
-- **Chain-of-Thought (CoT)**: We force the model to "think" before answering to improve accuracy and allow devs to debug reasoning errors.
+- **Chain-of-Thought (CoT)**: We force the model to "think" before answering to improve accuracy and allow devs to debug reasoning errors (dev-only visibility).
 - **Rich Metadata**: Tokens, latency, model usage, and exact source relevance scores are first-class citizens in the UI.
 
 ---
@@ -169,9 +169,7 @@ Return ONLY valid JSON matching this schema:
 
 **Challenge**: The current implementation uses `client.call_stream`. Standard `json_object` mode often buffers the response or makes partial parsing difficult.
 
-**Strategy**: Use **XML-like Tags** or **Server-Sent Events (SSE)** for streaming.
-*   *Option A (Preferred for SOTA)*: Stream `<reasoning>...</reasoning>` then `<answer>...</answer>`. This allows the UI to render the "Thinking" block in real-time before the answer commands appear.
-*   *Option B*: Buffer full JSON (high latency, breaks "alive" feeling).
+**Strategy**: Prefer JSON-only output for consistency with the app. Streaming may be limited or buffered; do not introduce XML/tag streaming without explicit approval.
 
 **Task 3.1**: Update `ComposeOutput` model
 
@@ -186,15 +184,15 @@ class ComposeOutput(BaseModel):
     reasoning: RagReasoning | None = None
     used_sources: list[SourceRef] | None = None
     suggested_followups: list[str] | None = None
+    # For v2, prefer answer_markdown from RagResponse; answer remains for v1 compatibility
     # Debug metadata
     debug_meta: dict[str, Any] | None = None  # latency, tokens, model, cost
 ```
 
 **Task 3.2**: Update `_run_stream()` in `compose.py`
 
-1. update prompt to use tags: `<thought>`, `<answer>`, `<meta>`.
-2. Implement a state-machine parser in the Python generator to yield chunks typed by section (e.g. `yield {"section": "reasoning", "delta": "..."}`).
-3. Or: Stream raw text and let the Frontend (Alpine.js) parse the tags (Simpler backend, more complex frontend).
+1. Update prompt to produce strict JSON per `RagResponse` (no tags).
+2. Parse JSON in `_run` (non-streamed) or buffer until complete when streaming; do not add tag parsing without explicit approval.
 
 **Task 3.3**: Update `RagQueryService.execute()` to return full payload
 
@@ -202,7 +200,7 @@ Ensure `theme/views_chat.py` receives all new fields from compose output.
 
 **Acceptance Criteria:**
 
-- [ ] v2 path activated via `RAG_CHAT_SOTA` feature flag
+- [ ] v2 path replaces v1 (no feature flag)
 - [ ] Streaming is NOT broken; users see tokens as they appear
 - [ ] Graceful fallback on parse failure
 - [ ] All new fields propagated to view layer
@@ -248,7 +246,7 @@ Structure:
 - [ ] Final Answer tab is default view
 - [ ] Thinking/Sources sections collapse properly
 - [ ] Relevance bars render correctly (0-100%)
-- [ ] Debug footer visible only for `is_staff` or `DEBUG=True`
+- [ ] Debug footer visible only for `is_staff` or `DEBUG=True` (no debug metadata leakage in non-debug views)
 - [ ] Suggested follow-ups rendered as clickable chips
 - [ ] Responsive on mobile viewports
 
@@ -256,7 +254,7 @@ Structure:
 
 **Task 5.1**: Unit tests
 
-- `ai_core/tests/nodes/test_compose_v2.py` - JSON/XML parsing, fallback
+- `ai_core/tests/nodes/test_compose_v2.py` - JSON parsing, fallback
 - `ai_core/tests/rag/test_schemas.py` - Schema validation
 
 **Task 5.2**: Integration tests
@@ -305,11 +303,10 @@ Structure:
 
 ## 5. Feature Flags & Rollout
 
-1. **Development**: `RAG_CHAT_SOTA=true` in `.env`
-2. **Staging**: Enable for all staff users
-3. **Production**: Gradual rollout via tenant feature flag
+1. **Development**: Replace the existing chat with v2 (DEBUG-only)
+2. **Staging/Production**: Not applicable unless explicitly enabled later
 
-Fallback: If v2 JSON parsing fails, return v1 plain-text response with warning in debug footer.
+Fallback: If v2 JSON parsing fails, return v1 plain-text response with warning in debug footer (DEBUG/staff only).
 
 ---
 
@@ -327,9 +324,9 @@ Fallback: If v2 JSON parsing fails, return v1 plain-text response with warning i
 | Risk | Mitigation |
 |------|------------|
 | LLM fails to produce valid JSON | Graceful fallback to v1; log failures for prompt iteration |
-| Latency increase from CoT | Monitor via Langfuse; use Streaming + XML tags to show "Thinking" immediately |
+| Latency increase from CoT | Monitor via Langfuse; accept buffered JSON if streaming is constrained |
 | Frontend complexity (Alpine+HTMX) | Incremental rollout; keep state logic in dedicated `chat_logic.js` file if it grows too large. Use standard Tailwind components. |
-| Breaking existing workflows | Feature flag; v1 remains default until validated |
+| Breaking existing workflows | Replace v1 in DEBUG-only dev workbench; no feature flag |
 | Streaming "Jumpiness" | Ensure the UI smooths out DOM updates when switching from "Thinking" to "Answer" |
 
 ---

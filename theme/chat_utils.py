@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+import re
 
 
 DEFAULT_HISTORY_LIMIT = 6
@@ -107,9 +108,26 @@ def build_hybrid_config(request) -> dict[str, float | int | None]:
     return build_hybrid_config_from_payload(getattr(request, "POST", None))
 
 
-def build_snippet_items(snippets: list[dict]) -> list[dict[str, object]]:
+def _resolve_citation_label(snippet: Mapping[str, object]) -> str:
+    raw_label = snippet.get("citation")
+    if isinstance(raw_label, str) and raw_label.strip():
+        return raw_label.strip()
+    for key in ("source", "id"):
+        candidate = snippet.get(key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return "Source"
+
+
+def build_snippet_items(
+    snippets: list[dict],
+    *,
+    limit: int | None = None,
+) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
-    for snippet in snippets[:3]:
+    if limit is None or limit <= 0:
+        limit = 3
+    for snippet in snippets[:limit]:
         document_id = snippet.get("document_id")
         if not isinstance(document_id, str):
             meta = snippet.get("meta")
@@ -130,9 +148,36 @@ def build_snippet_items(snippets: list[dict]) -> list[dict[str, object]]:
                 "title": str(text)[:200],
                 "score_percent": int(score_value * 100),
                 "download_url": download_url,
+                "citation_label": _resolve_citation_label(snippet),
             }
         )
     return items
+
+
+_CITATION_RE = re.compile(r"\[([^\[\]]+)\]")
+
+
+def link_citations(answer: str, snippets: list[dict[str, object]]) -> str:
+    if not answer:
+        return answer
+    label_map: dict[str, str] = {}
+    for snippet in snippets:
+        label = snippet.get("citation_label")
+        url = snippet.get("download_url")
+        if isinstance(label, str) and label.strip() and isinstance(url, str) and url:
+            label_map[label.strip()] = url
+
+    if not label_map:
+        return answer
+
+    def _replace(match: re.Match[str]) -> str:
+        label = match.group(1).strip()
+        url = label_map.get(label)
+        if not url:
+            return match.group(0)
+        return f'<a class="hover:text-indigo-600 underline" href="{url}" target="_blank">[{label}]</a>'
+
+    return _CITATION_RE.sub(_replace, answer)
 
 
 def _build_download_url(document_id: str | None) -> str | None:

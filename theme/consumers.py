@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from django.conf import settings
 from pydantic import ValidationError
 from structlog.stdlib import get_logger
 
@@ -14,6 +15,7 @@ from ai_core.services.rag_query import RagQueryService
 from theme.chat_utils import (
     build_hybrid_config_from_payload,
     build_snippet_items,
+    link_citations,
     load_history,
 )
 from theme.websocket_payloads import RagChatPayload
@@ -113,13 +115,41 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
 
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
-        snippet_items = build_snippet_items(snippets)
+        retrieval_meta = result_payload.get("retrieval") or {}
+        try:
+            top_k = int(retrieval_meta.get("top_k_effective") or 0)
+        except (TypeError, ValueError):
+            top_k = 0
+        snippet_limit = top_k or len(snippets) or None
+        snippet_items = build_snippet_items(snippets, limit=snippet_limit)
+        answer = link_citations(answer, snippet_items)
+        reasoning = result_payload.get("reasoning")
+        if not isinstance(reasoning, dict):
+            reasoning = None
+        used_sources = result_payload.get("used_sources")
+        if not isinstance(used_sources, list):
+            used_sources = []
+        if snippet_limit and snippet_limit > 0:
+            used_sources = used_sources[:snippet_limit]
+        suggested_followups = result_payload.get("suggested_followups")
+        if not isinstance(suggested_followups, list):
+            suggested_followups = []
+        debug_meta = result_payload.get("debug_meta")
+        user = self.scope.get("user")
+        show_debug = bool(settings.DEBUG) or bool(getattr(user, "is_staff", False))
+        if not show_debug:
+            debug_meta = None
 
         await self.send_json(
             {
                 "event": "final",
                 "answer": answer,
                 "snippets": snippet_items,
+                "reasoning": reasoning,
+                "used_sources": used_sources,
+                "suggested_followups": suggested_followups,
+                "debug_meta": debug_meta,
+                "show_debug": show_debug,
                 "thread_id": thread_id,
                 "case_id": case_id,
                 "collection_id": collection_id,

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, Iterable, Mapping
+import json
+from pathlib import Path
 
 from ai_core.infra.mask_prompt import mask_prompt, mask_response
 from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.prompts import load
 from ai_core.infra.observability import observe_span
 from ai_core.llm import client
+from ai_core.rag.schemas import RagReasoning, RagResponse, SourceRef
 from ai_core.tool_contracts import ToolContext
 from ai_core.tool_contracts import (
     RateLimitedError as ToolRateLimitedError,
@@ -14,7 +17,7 @@ from ai_core.tool_contracts import (
     UpstreamServiceError,
 )
 from ai_core.llm.client import LlmClientError, RateLimitError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 class ComposeInput(BaseModel):
@@ -38,6 +41,10 @@ class ComposeOutput(BaseModel):
     prompt_version: str | None
     snippets: list[Mapping[str, Any]] | None = None
     retrieval: Mapping[str, Any] | None = None
+    reasoning: RagReasoning | None = None
+    used_sources: list[SourceRef] | None = None
+    suggested_followups: list[str] | None = None
+    debug_meta: dict[str, Any] | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -103,6 +110,83 @@ def _format_snippet_context(snippets: Iterable[Mapping[str, Any]]) -> str:
     return "\n".join(formatted)
 
 
+def _build_prompt_text(
+    prompt_text: str,
+    *,
+    question: str,
+    snippets_text: str,
+) -> str:
+    return f"{prompt_text}\n\nQuestion: {question}\nContext:\n{snippets_text}"
+
+
+def _load_prompt_version(alias: str, *, version: str) -> Dict[str, str]:
+    prompts_dir = Path(__file__).resolve().parents[1] / "prompts"
+    prompt_file = prompts_dir / f"{alias}.v{version}.md"
+    if not prompt_file.exists():
+        raise FileNotFoundError(f"Prompt {alias}.v{version}.md not found")
+    text = prompt_file.read_text(encoding="utf-8")
+    return {"version": f"v{version}", "text": text}
+
+
+def _mask_rag_response(
+    response: RagResponse,
+    *,
+    pii_config: Mapping[str, Any],
+) -> RagResponse:
+    masked_analysis = mask_response(response.reasoning.analysis, config=pii_config)
+    masked_gaps = [
+        mask_response(gap, config=pii_config) if gap else gap
+        for gap in response.reasoning.gaps
+    ]
+    masked_answer = mask_response(response.answer_markdown, config=pii_config)
+    masked_followups = [
+        mask_response(item, config=pii_config) if item else item
+        for item in response.suggested_followups
+    ]
+    return response.model_copy(
+        update={
+            "reasoning": response.reasoning.model_copy(
+                update={"analysis": masked_analysis, "gaps": masked_gaps}
+            ),
+            "answer_markdown": masked_answer,
+            "suggested_followups": masked_followups,
+        }
+    )
+
+
+def _build_debug_meta(result: Mapping[str, Any]) -> dict[str, Any]:
+    usage = result.get("usage")
+    cost_usd = result.get("cost_usd")
+    if cost_usd is None and isinstance(usage, Mapping):
+        cost = usage.get("cost")
+        if isinstance(cost, Mapping):
+            for key in ("usd", "USD", "total"):
+                raw_value = cost.get(key)
+                try:
+                    cost_usd = float(raw_value)
+                    break
+                except (TypeError, ValueError):
+                    continue
+    return {
+        "latency_ms": result.get("latency_ms"),
+        "usage": usage,
+        "model": result.get("model"),
+        "cost_usd": cost_usd,
+        "cost": result.get("cost"),
+        "cache_hit": result.get("cache_hit"),
+    }
+
+
+def _parse_rag_response(
+    raw_text: str,
+    *,
+    pii_config: Mapping[str, Any],
+) -> RagResponse:
+    payload = json.loads(raw_text)
+    response = RagResponse.model_validate(payload)
+    return _mask_rag_response(response, pii_config=pii_config)
+
+
 @observe_span(name="compose")
 def _run(
     prompt: Dict[str, str],
@@ -116,7 +200,11 @@ def _run(
     ]
     snippets_text = _format_snippet_context(snippets_data)
     question = params.question or ""
-    full_prompt = f"{prompt['text']}\n\nQuestion: {question}\nContext:\n{snippets_text}"
+    full_prompt = _build_prompt_text(
+        prompt["text"],
+        question=question,
+        snippets_text=snippets_text,
+    )
     pii_config = get_pii_config()
     masked = mask_prompt(full_prompt, config=pii_config)
     if stream_callback is not None:
@@ -129,7 +217,12 @@ def _run(
         )
 
     try:
-        result = client.call("synthesize", masked, metadata)
+        result = client.call(
+            "synthesize",
+            masked,
+            metadata,
+            response_format={"type": "json_object"},
+        )
     except RateLimitError as exc:
         raise ToolRateLimitedError(str(getattr(exc, "detail", "rate limited"))) from exc
     except LlmClientError as exc:
@@ -144,8 +237,51 @@ def _run(
             raise ToolTimeoutError(message) from exc
         # For remaining 4xx/5xx, surface as upstream dependency error
         raise UpstreamServiceError(message) from exc
-    answer = mask_response(result["text"], config=pii_config)
-    return ComposeOutput(answer=answer, prompt_version=prompt["version"])
+    text_payload = result.get("text") or ""
+    debug_meta = _build_debug_meta(result)
+    try:
+        rag_response = _parse_rag_response(text_payload, pii_config=pii_config)
+    except (json.JSONDecodeError, ValidationError):
+        fallback_prompt = _load_prompt_version("retriever/answer", version="1")
+        fallback_meta = dict(metadata)
+        fallback_meta["prompt_version"] = fallback_prompt["version"]
+        fallback_full = _build_prompt_text(
+            fallback_prompt["text"],
+            question=question,
+            snippets_text=snippets_text,
+        )
+        fallback_masked = mask_prompt(fallback_full, config=pii_config)
+        try:
+            fallback_result = client.call("synthesize", fallback_masked, fallback_meta)
+        except RateLimitError as exc:
+            raise ToolRateLimitedError(
+                str(getattr(exc, "detail", "rate limited"))
+            ) from exc
+        except LlmClientError as exc:
+            status = getattr(exc, "status", None)
+            try:
+                code = int(status) if isinstance(status, int) else int(str(status))
+            except Exception:
+                code = None
+            message = str(getattr(exc, "detail", None) or exc) or "LLM error"
+            if code in {408, 504}:
+                raise ToolTimeoutError(message) from exc
+            raise UpstreamServiceError(message) from exc
+        answer = mask_response(fallback_result.get("text") or "", config=pii_config)
+        return ComposeOutput(
+            answer=answer,
+            prompt_version=fallback_prompt["version"],
+            debug_meta=_build_debug_meta(fallback_result),
+        )
+
+    return ComposeOutput(
+        answer=rag_response.answer_markdown,
+        prompt_version=prompt["version"],
+        reasoning=rag_response.reasoning,
+        used_sources=rag_response.used_sources,
+        suggested_followups=rag_response.suggested_followups,
+        debug_meta=debug_meta,
+    )
 
 
 def _run_stream(
@@ -158,15 +294,22 @@ def _run_stream(
 ) -> ComposeOutput:
     pii_config = get_pii_config()
     answer_parts: list[str] = []
+    final_meta: dict[str, Any] = {}
+    snippets_data = [
+        snippet for snippet in params.snippets if isinstance(snippet, Mapping)
+    ]
+    snippets_text = _format_snippet_context(snippets_data)
+    question = params.question or ""
     try:
         for chunk in client.call_stream("synthesize", masked_prompt, metadata):
             if chunk.get("event") == "delta":
                 text = chunk.get("text") or ""
                 if text:
                     answer_parts.append(text)
-                    stream_callback(text)
             elif chunk.get("event") == "error":
                 raise LlmClientError(chunk.get("error") or "LLM error")
+            elif chunk.get("event") == "final":
+                final_meta = dict(chunk)
     except RateLimitError as exc:
         raise ToolRateLimitedError(str(getattr(exc, "detail", "rate limited"))) from exc
     except LlmClientError as exc:
@@ -180,5 +323,61 @@ def _run_stream(
             raise ToolTimeoutError(message) from exc
         raise UpstreamServiceError(message) from exc
 
-    answer = mask_response("".join(answer_parts), config=pii_config)
-    return ComposeOutput(answer=answer, prompt_version=prompt["version"])
+    raw_text = "".join(answer_parts)
+    debug_meta = {
+        "latency_ms": final_meta.get("latency_ms"),
+        "usage": final_meta.get("usage"),
+        "model": final_meta.get("model"),
+        "cost_usd": final_meta.get("cost_usd"),
+        "cost": final_meta.get("cost"),
+        "cache_hit": final_meta.get("cache_hit"),
+        "finish_reason": final_meta.get("finish_reason"),
+    }
+    try:
+        rag_response = _parse_rag_response(raw_text, pii_config=pii_config)
+    except (json.JSONDecodeError, ValidationError):
+        fallback_prompt = _load_prompt_version("retriever/answer", version="1")
+        fallback_meta = dict(metadata)
+        fallback_meta["prompt_version"] = fallback_prompt["version"]
+        fallback_full = _build_prompt_text(
+            fallback_prompt["text"],
+            question=question,
+            snippets_text=snippets_text,
+        )
+        fallback_masked = mask_prompt(fallback_full, config=pii_config)
+        try:
+            fallback_result = client.call("synthesize", fallback_masked, fallback_meta)
+        except RateLimitError as exc:
+            raise ToolRateLimitedError(
+                str(getattr(exc, "detail", "rate limited"))
+            ) from exc
+        except LlmClientError as exc:
+            status = getattr(exc, "status", None)
+            try:
+                code = int(status) if isinstance(status, int) else int(str(status))
+            except Exception:
+                code = None
+            message = str(getattr(exc, "detail", None) or exc) or "LLM error"
+            if code in {408, 504}:
+                raise ToolTimeoutError(message) from exc
+            raise UpstreamServiceError(message) from exc
+        answer = mask_response(fallback_result.get("text") or "", config=pii_config)
+        if answer:
+            stream_callback(answer)
+        return ComposeOutput(
+            answer=answer,
+            prompt_version=fallback_prompt["version"],
+            debug_meta=_build_debug_meta(fallback_result),
+        )
+
+    answer = rag_response.answer_markdown
+    if answer:
+        stream_callback(answer)
+    return ComposeOutput(
+        answer=answer,
+        prompt_version=prompt["version"],
+        reasoning=rag_response.reasoning,
+        used_sources=rag_response.used_sources,
+        suggested_followups=rag_response.suggested_followups,
+        debug_meta=debug_meta or None,
+    )

@@ -1,0 +1,114 @@
+<div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100 text-sm text-slate-700 max-w-[80%] space-y-3"
+     x-data="{ activeTab: 'answer' }">
+    <div class="flex flex-wrap gap-2">
+        <button type="button"
+                class="px-2.5 py-1 rounded-full text-xs font-semibold border"
+                :class="activeTab === 'answer' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200'"
+                @click="activeTab = 'answer'">
+            Final Answer
+        </button>
+        <button type="button"
+                class="px-2.5 py-1 rounded-full text-xs font-semibold border"
+                :class="activeTab === 'reasoning' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200'"
+                @click="activeTab = 'reasoning'">
+            Thinking Process
+        </button>
+        <button type="button"
+                class="px-2.5 py-1 rounded-full text-xs font-semibold border"
+                :class="activeTab === 'sources' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200'"
+                @click="activeTab = 'sources'">
+            Sources & Evidence
+        </button>
+    </div>
+
+    <div x-show="activeTab === 'answer'" x-cloak class="space-y-2">
+        <div class="prose prose-sm max-w-none text-slate-700">
+            {{ answer|safe }}
+        </div>
+        {% if suggested_followups %}
+        <div class="flex flex-wrap gap-2 pt-2">
+            {% for followup in suggested_followups %}
+            <button type="button"
+                    class="text-xs px-2 py-1 rounded-full border border-slate-200 text-slate-600 hover:border-indigo-300 hover:text-indigo-700">
+                {{ followup }}
+            </button>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div x-show="activeTab === 'reasoning'" x-cloak class="space-y-2">
+        {% if reasoning %}
+        <div class="text-xs text-slate-600">
+            {{ reasoning.analysis|default:"No reasoning provided." }}
+        </div>
+        {% if reasoning.gaps %}
+        <div class="pt-2">
+            <p class="text-[11px] font-semibold text-slate-500 mb-1">Gaps:</p>
+            <ul class="list-disc pl-4 text-[11px] text-slate-500 space-y-1">
+                {% for gap in reasoning.gaps %}
+                <li>{{ gap }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        {% else %}
+        <p class="text-xs text-slate-500">No reasoning provided.</p>
+        {% endif %}
+    </div>
+
+    <div x-show="activeTab === 'sources'" x-cloak class="space-y-3">
+        {% if used_sources %}
+        <div class="space-y-2">
+            <p class="text-[11px] font-semibold text-slate-500">LLM-Used Sources</p>
+            {% for source in used_sources %}
+            <div class="space-y-1">
+                <div class="flex items-center justify-between text-[11px] text-slate-600">
+                    <span class="truncate">{{ source.label }}</span>
+                    <span class="font-medium">{{ source.score_percent }}%</span>
+                </div>
+                <progress class="w-full h-1.5 rounded-full overflow-hidden accent-indigo-500 bg-slate-100"
+                          value="{{ source.score_percent }}" max="100"></progress>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if snippets %}
+        <div class="pt-2 border-t border-slate-100">
+            <p class="text-[11px] font-semibold text-slate-500 mb-1">Retrieved Snippets</p>
+            <ul class="space-y-1">
+                {% for snippet in snippets %}
+                <li class="text-xs text-slate-400 truncate" title="{{ snippet.title }}">
+                    - {% if snippet.download_url %}
+                    <a class="hover:text-indigo-600 underline" href="{{ snippet.download_url }}" target="_blank">
+                        {{ snippet.source }}
+                    </a>
+                    {% else %}
+                    {{ snippet.source }}
+                    {% endif %}
+                    ({{ snippet.score_percent }}%)
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+
+    {% if debug_meta %}
+    <div class="pt-2 border-t border-slate-100 text-[11px] text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
+        {% if debug_meta.latency_ms %}
+        <span>{{ debug_meta.latency_ms|floatformat:0 }}ms</span>
+        {% endif %}
+        {% if debug_meta.usage.total_tokens %}
+        <span>{{ debug_meta.usage.total_tokens }} tokens</span>
+        {% endif %}
+        {% if debug_meta.model %}
+        <span>{{ debug_meta.model }}</span>
+        {% endif %}
+        {% if debug_meta.cost_usd %}
+        <span>${{ debug_meta.cost_usd|floatformat:4 }}</span>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from django.conf import settings
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
@@ -17,6 +18,7 @@ from theme.chat_utils import (
     build_hybrid_config,
     build_snippet_items,
     coerce_optional_text,
+    link_citations,
 )
 
 logger = get_logger(__name__)
@@ -28,6 +30,36 @@ def _views():
     from theme import views as theme_views
 
     return theme_views
+
+
+def _build_used_source_items(
+    used_sources: object,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, object]]:
+    if not isinstance(used_sources, list):
+        return []
+    if limit is not None and limit > 0:
+        sources = used_sources[:limit]
+    else:
+        sources = used_sources
+    items: list[dict[str, object]] = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        label = source.get("label") or source.get("id") or "Source"
+        try:
+            relevance = float(source.get("relevance_score", 0))
+        except (TypeError, ValueError):
+            relevance = 0.0
+        items.append(
+            {
+                "label": str(label),
+                "score_percent": max(0, min(100, int(relevance * 100))),
+                "id": source.get("id"),
+            }
+        )
+    return items
 
 
 @require_POST
@@ -120,7 +152,30 @@ def chat_submit(request):
 
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
-        snippet_items = build_snippet_items(snippets)
+        retrieval_meta = result_payload.get("retrieval") or {}
+        try:
+            top_k = int(retrieval_meta.get("top_k_effective") or 0)
+        except (TypeError, ValueError):
+            top_k = 0
+        snippet_limit = top_k or len(snippets) or None
+        snippet_items = build_snippet_items(snippets, limit=snippet_limit)
+        answer = link_citations(answer, snippet_items)
+        reasoning = result_payload.get("reasoning")
+        if not isinstance(reasoning, dict):
+            reasoning = None
+        used_sources = _build_used_source_items(
+            result_payload.get("used_sources"),
+            limit=snippet_limit,
+        )
+        suggested_followups = result_payload.get("suggested_followups")
+        if not isinstance(suggested_followups, list):
+            suggested_followups = []
+        debug_meta = result_payload.get("debug_meta")
+        show_debug = bool(settings.DEBUG) or bool(
+            getattr(getattr(request, "user", None), "is_staff", False)
+        )
+        if not show_debug:
+            debug_meta = None
 
         return render(
             request,
@@ -129,6 +184,11 @@ def chat_submit(request):
                 "message": message,
                 "answer": answer,
                 "snippets": snippet_items,
+                "reasoning": reasoning,
+                "used_sources": used_sources,
+                "suggested_followups": suggested_followups,
+                "debug_meta": debug_meta,
+                "show_debug": show_debug,
                 "tenant_id": tenant_id,
                 "tenant_schema": tenant_schema or scope.tenant_schema,
                 "case_id": case_id,
