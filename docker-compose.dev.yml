@@ -300,3 +300,7 @@ volumes:
     driver: local
   pip-cache:
     driver: local
+
+networks:
+  default:
+    name: noesis-2_default

@@ -22,9 +22,13 @@ class TestChunkQualityEvaluator:
         sample_chunks,
     ):
         """Test basic quality evaluation."""
-        evaluator = ChunkQualityEvaluator(model="gpt-5-nano")
+        evaluator = ChunkQualityEvaluator(model="quality-eval")
 
-        with patch("litellm.completion", side_effect=mock_llm_judge):
+        def fake_call(*_args, **_kwargs):
+            response = mock_llm_judge("quality-eval", [{"content": "test"}])
+            return {"text": response.choices[0].message.content}
+
+        with patch("ai_core.llm.client.call", side_effect=fake_call):
             scores = evaluator.evaluate(sample_chunks)
 
         # Should produce one score per chunk
@@ -46,11 +50,15 @@ class TestChunkQualityEvaluator:
     ):
         """Test that sample_rate controls evaluation frequency."""
         evaluator = ChunkQualityEvaluator(
-            model="gpt-5-nano",
+            model="quality-eval",
             sample_rate=0.0,  # Sample 0% (skip all)
         )
 
-        with patch("litellm.completion", side_effect=mock_llm_judge):
+        def fake_call(*_args, **_kwargs):
+            response = mock_llm_judge("quality-eval", [{"content": "test"}])
+            return {"text": response.choices[0].message.content}
+
+        with patch("ai_core.llm.client.call", side_effect=fake_call):
             scores = evaluator.evaluate(sample_chunks)
 
         # Should still return scores (default scores)
@@ -65,12 +73,12 @@ class TestChunkQualityEvaluator:
         sample_chunks,
     ):
         """Test that evaluator handles LLM errors gracefully."""
-        evaluator = ChunkQualityEvaluator(model="gpt-5-nano")
+        evaluator = ChunkQualityEvaluator(model="quality-eval")
 
-        def mock_llm_error(*args, **kwargs):
+        def mock_llm_error(*_args, **_kwargs):
             raise Exception("LLM API error")
 
-        with patch("litellm.completion", side_effect=mock_llm_error):
+        with patch("ai_core.llm.client.call", side_effect=mock_llm_error):
             scores = evaluator.evaluate(sample_chunks)
 
         # Should return default scores (not crash)
@@ -85,9 +93,13 @@ class TestChunkQualityEvaluator:
         sample_chunks,
     ):
         """Test adding quality scores to chunk metadata."""
-        evaluator = ChunkQualityEvaluator(model="gpt-5-nano")
+        evaluator = ChunkQualityEvaluator(model="quality-eval")
 
-        with patch("litellm.completion", side_effect=mock_llm_judge):
+        def fake_call(*_args, **_kwargs):
+            response = mock_llm_judge("quality-eval", [{"content": "test"}])
+            return {"text": response.choices[0].message.content}
+
+        with patch("ai_core.llm.client.call", side_effect=fake_call):
             scores = evaluator.evaluate(sample_chunks)
             updated_chunks = evaluator.add_quality_to_chunks(sample_chunks, scores)
 
@@ -109,7 +121,7 @@ class TestChunkQualityEvaluator:
         sample_quality_scores,
     ):
         """Test that mismatched chunk/score counts emit warning."""
-        evaluator = ChunkQualityEvaluator(model="gpt-5-nano")
+        evaluator = ChunkQualityEvaluator(model="quality-eval")
 
         # Intentionally mismatch: 3 chunks, 2 scores
         mismatched_scores = sample_quality_scores[:2]

@@ -35,6 +35,21 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 ### P0 - Critical Quick Wins (High Impact, Medium-High Effort)
 
+- [x] **INC-20260119-001: Async-First Web Search (Gateway Timeout Prevention)**:
+  - **Details:** Synchronous blocking view caused 504 Gateway Timeout when LLM latency exceeded 60s. View should return `202 Accepted` + `task_id` immediately; frontend polls for status or uses WebSockets (HTMX `hx-ws`).
+  - **Pointers:** `theme/views_web_search.py:237` (`submit_business_graph(..., timeout_s=60)`), `theme/helpers/tasks.py:72` (`async_result.get(timeout=timeout)`)
+  - **Acceptance:** `web_search` view returns `202 Accepted` with `task_id` for async execution; polling endpoint or WebSocket support for result retrieval; no synchronous blocking on graph execution; tests cover async flow
+
+- [x] **INC-20260119-001: Remove DEBUG 360s LLM Timeout Override**:
+  - **Details:** DEBUG mode enables 360s timeout for LLM calls, allowing unbounded blocking that exceeds infrastructure idle timeouts (60s firewall/gateway). Trace 56683b33 showed 88.5s LLM call causing cascading failures.
+  - **Pointers:** `ai_core/services/collection_search/strategy.py:317-318` (`dev_timeout_s = 360.0`), `llm_worker/graphs/hybrid_search_and_score.py:1088-1090` (`timeout_s = max(..., 360)`)
+  - **Acceptance:** DEBUG timeout override removed or capped at 90s max; LLM calls fail gracefully within infrastructure timeout limits; fallback strategies activated on timeout
+
+- [x] **INC-20260119-001: DB Connection Management for Long-Running Tasks**:
+  - **Details:** Celery worker held DB connection idle during 88.5s LLM call, causing `psycopg2.OperationalError` when connection was severed by firewall idle timeout (60s). Need `close_old_connections()` before/after blocking IO.
+  - **Pointers:** `ai_core/graphs/technical/collection_search.py` (LLM call sites), `llm_worker/graphs/hybrid_search_and_score.py:_run_llm_rerank`, `tests/chaos/perf_smoke.py` (only current usage of `close_old_connections`)
+  - **Acceptance:** `django.db.close_old_connections()` called before long-running LLM/IO operations; fresh connection acquired for persistence (`vector_sync`); tests cover connection recovery after long blocking operations
+
 - [x] **Collection Search timeouts and stall protection**:
   - **Details:** `roadmap/collection-search-review.md`
   - **Pointers:** `ai_core/llm/client.py:391`, `ai_core/llm/client.py:738`, `ai_core/graphs/technical/collection_search.py:561`, `ai_core/graphs/technical/collection_search.py:650`, `llm_worker/graphs/hybrid_search_and_score.py:1116`, `llm_worker/graphs/score_results.py:353`
@@ -104,7 +119,50 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 - [ ] **Robust Sentence Tokenizer**: Current splitting is fragile (`text.split(".")`) – breaks on abbreviations ("Dr."), decimals ("3.14"), URLs. Extract shared tokenizer to `ai_core/rag/chunking/utils.py` using regex with negative lookahead or `nltk.sent_tokenize`. (pointers: `agentic_chunker.py:347`, `late_chunker.py` sentence splitting)
 
-### Observability Cleanup
+## SOTA Developer RAG Chat (Pre-MVP)
+
+**Roadmap**: [rag-chat-sota.md](rag-chat-sota.md)
+**Total Effort**: ~3-4 Sprints (Medium-High Complexity)
+
+### P1 - Core Implementation (High Value)
+
+- [ ] **SOTA-1: Define RagResponse schema for structured CoT outputs**:
+  - **Details:** Create Pydantic models `RagResponse`, `RagReasoning`, `SourceRef` for structured LLM outputs with Chain-of-Thought reasoning, relevance scores, and follow-up suggestions.
+  - **Pointers:** `ai_core/rag/schemas.py` (new), `ai_core/nodes/compose.py:ComposeOutput`
+  - **Acceptance:** Schema passes `model_json_schema()` export; unit tests for round-trip serialization; documented in `ai_core/rag/README.md`
+  - **Effort:** S (0.5 Sprint)
+
+- [ ] **SOTA-2: Create answer.v2 prompt with JSON output enforcement**:
+  - **Details:** New prompt template forcing CoT reasoning and JSON-only output matching `RagResponse` schema. Includes explicit steps: Analyze, Identify Gaps, Synthesize.
+  - **Pointers:** `ai_core/prompts/retriever/answer.v2.md` (new), `ai_core/prompts/retriever/answer.v1.md` (reference)
+  - **Acceptance:** Prompt produces valid JSON for 95%+ test cases; few-shot examples for edge cases; version tracked in `ai_core/infra/prompts.py`
+  - **Effort:** S (0.5 Sprint)
+  - **Depends on:** SOTA-1
+
+- [ ] **SOTA-3: Backend refactoring for structured compose output**:
+  - **Details:** Update `compose.py` to use v2 prompt with `response_format={"type": "json_object"}`; parse JSON into `RagResponse`; graceful fallback on parse failure; propagate debug metadata (latency, tokens, model, cost).
+  - **Pointers:** `ai_core/nodes/compose.py:_run`, `ai_core/llm/client.py:call` (line 326), `ai_core/services/rag_query.py`, `theme/views_chat.py:chat_submit`
+  - **Acceptance:** v2 path activated via `RAG_CHAT_SOTA` feature flag; fallback to v1 on JSON error; all fields propagated to view; integration tests; Langfuse spans include `prompt_version: v2`
+  - **Effort:** M (1 Sprint)
+  - **Depends on:** SOTA-1, SOTA-2
+
+- [ ] **SOTA-4: Frontend "Glass Box" chat message display**:
+  - **Details:** New `chat_message_debug.html` partial with collapsible sections: Final Answer (default), Thinking Process, Sources & Evidence with relevance bars, Debug footer (staff only).
+  - **Pointers:** `theme/templates/theme/partials/chat_message.html`, `theme/templates/theme/partials/chat_message_debug.html` (new), `theme/views_chat.py:chat_submit`
+  - **Acceptance:** Tabs/toggles work with Alpine.js; relevance bars 0-100%; debug footer staff-only; suggested follow-ups as clickable chips; responsive layout
+  - **Effort:** M-L (1.5 Sprints)
+  - **Depends on:** SOTA-3
+
+### P2 - Testing & Polish
+
+- [ ] **SOTA-5: Test coverage for SOTA RAG Chat**:
+  - **Details:** Unit tests for JSON parsing/fallback; integration tests for full request cycle; E2E with Playwright for UI interactions.
+  - **Pointers:** `ai_core/tests/nodes/test_compose_v2.py` (new), `ai_core/tests/rag/test_schemas.py` (new), `theme/tests/test_chat_submit_v2.py` (new)
+  - **Acceptance:** Test coverage >= 80% for new code; E2E test for collapsible sections; malformed JSON fallback tested
+  - **Effort:** S (0.5 Sprint)
+  - **Depends on:** SOTA-3, SOTA-4
+
+## Observability Cleanup
 
 
 ### Hygiene

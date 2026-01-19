@@ -317,8 +317,20 @@ def _coerce_max_tokens(value: Any) -> int | None:
         return None
     if numeric <= 0:
         return None
-    if numeric > 8000:
-        numeric = 8000
+    if numeric > 12000:
+        numeric = 12000
+    return numeric
+
+
+def _coerce_timeout(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric) or numeric <= 0:
+        return None
     return numeric
 
 
@@ -332,9 +344,15 @@ def _should_retry_with_default(exc: LlmClientError) -> bool:
 
 
 def _temperature_for_label(label: str, base_value: str) -> str | None:
-    """Return a temperature compatible with the given model label."""
+    """Return a temperature compatible with the resolved model."""
+    from ai_core.llm.routing import resolve as resolve_model_label
 
-    if "gpt-5" in label:
+    try:
+        resolved = resolve_model_label(label)
+    except ValueError:
+        resolved = label
+
+    if "gpt-5" in resolved:
         return None
     return base_value
 
@@ -378,6 +396,7 @@ def run_score_results(
 
     temperature_value = _coerce_temperature(config_data.get("temperature"))
     max_tokens_value = _coerce_max_tokens(config_data.get("max_tokens"))
+    timeout_value = _coerce_timeout(config_data.get("timeout_s"))
     labels_to_try: list[str] = []
     for candidate in (model_label, DEFAULT_MODEL_LABEL, "default"):
         candidate_text = str(candidate).strip()
@@ -404,7 +423,12 @@ def run_score_results(
                     _temporary_env_var("LITELLM_TEMPERATURE", candidate_temperature)
                 )
             try:
-                response = llm_client.call(candidate_label, prompt, metadata)
+                response = llm_client.call(
+                    candidate_label,
+                    prompt,
+                    metadata,
+                    timeout_s=timeout_value,
+                )
             except ValueError:
                 logger.warning(
                     "score_results.invalid_model_preset",

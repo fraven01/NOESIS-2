@@ -16,6 +16,7 @@ from ai_core.infra.observability import update_observation
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
 from common.validators import normalise_str_sequence, optional_str, require_trimmed_str
+from django.conf import settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -310,6 +311,13 @@ def llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
         "trace_id": None,
         "prompt_version": "collection_search_strategy_v3",
     }
+    # Dev/testing override: allow larger outputs + longer timeouts for diagnostics.
+    dev_timeout_s: float | None = None
+    dev_extra_params: dict[str, Any] | None = None
+    if getattr(settings, "DEBUG", False):
+        dev_timeout_s = 90.0
+        dev_extra_params = {"max_tokens": 12000}
+
     try:
         llm_start = time.time()
         response = llm_client.call(
@@ -317,6 +325,8 @@ def llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
             prompt,
             metadata,
             response_format={"type": "json_object"},
+            extra_params=dev_extra_params,
+            timeout_s=dev_timeout_s,
         )
         llm_latency = time.time() - llm_start
 

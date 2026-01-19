@@ -18,7 +18,7 @@ def _sample_results():
 def test_run_score_results_sorts_rankings(monkeypatch):
     calls: dict[str, object] = {}
 
-    def fake_call(label, prompt, metadata):
+    def fake_call(label, prompt, metadata, **_kwargs):
         calls["label"] = label
         calls["prompt"] = prompt
         calls["metadata"] = metadata
@@ -160,7 +160,7 @@ def test_run_graph_routes_score_results(monkeypatch):
 def test_run_score_results_fallbacks_on_invalid_model(monkeypatch):
     attempts: list[str] = []
 
-    def fake_call(label, prompt, metadata):
+    def fake_call(label, prompt, metadata, **_kwargs):
         attempts.append(label)
         if len(attempts) == 1:
             raise LlmClientError("Invalid model", status=400)
@@ -198,7 +198,7 @@ def test_run_score_results_fallbacks_on_invalid_model(monkeypatch):
 def test_run_score_results_applies_max_tokens(monkeypatch):
     captured: dict[str, str | None] = {}
 
-    def fake_call(label, prompt, metadata):
+    def fake_call(label, prompt, metadata, **_kwargs):
         captured["max_tokens"] = os.getenv("LITELLM_MAX_TOKENS")
         return {
             "text": json.dumps(
@@ -234,7 +234,7 @@ def test_run_score_results_applies_max_tokens(monkeypatch):
 def test_run_score_results_tries_default_label(monkeypatch):
     attempts: list[str] = []
 
-    def fake_call(label, prompt, metadata):
+    def fake_call(label, prompt, metadata, **_kwargs):
         attempts.append(label)
         if label != "default":
             raise LlmClientError("Invalid model", status=400)
@@ -272,7 +272,7 @@ def test_run_score_results_tries_default_label(monkeypatch):
 def test_run_score_results_sets_temperature_for_gpt5(monkeypatch):
     recorded_temps: list[str | None] = []
 
-    def fake_call(label, prompt, metadata):
+    def fake_call(label, prompt, metadata, **_kwargs):
         recorded_temps.append(os.environ.get("LITELLM_TEMPERATURE"))
         return {
             "text": json.dumps(
@@ -295,10 +295,11 @@ def test_run_score_results_sets_temperature_for_gpt5(monkeypatch):
         }
 
     monkeypatch.setattr("ai_core.llm.client.call", fake_call)
+    monkeypatch.delenv("LITELLM_TEMPERATURE", raising=False)
 
     run_score_results(
         data={"query": "alpha", "results": _sample_results()},
-        config={"model_preset": "openai/gpt-5-nano", "temperature": 0.05},
+        config={"model_preset": "fast", "temperature": 0.05},
     )
 
     assert recorded_temps == [None]

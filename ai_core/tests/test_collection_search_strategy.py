@@ -44,7 +44,14 @@ def test_fallback_strategy_generates_richer_queries() -> None:
 def test_llm_strategy_generator_requests_json_mode(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_call(label, prompt, metadata, response_format=None, extra_params=None):
+    def fake_call(
+        label,
+        prompt,
+        metadata,
+        response_format=None,
+        extra_params=None,
+        timeout_s=None,
+    ):
         captured["label"] = label
         captured["response_format"] = response_format
         return {

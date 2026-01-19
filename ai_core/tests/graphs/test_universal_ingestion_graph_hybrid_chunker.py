@@ -42,7 +42,7 @@ def hybrid_chunker_with_quality_config():
         late_chunk_model="oai-embed-large",
         late_chunk_max_tokens=8000,
         enable_quality_metrics=True,
-        quality_model="gpt-5-nano",
+        quality_model="quality-eval",
         max_chunk_tokens=450,
         overlap_tokens=80,
         similarity_threshold=0.7,
@@ -503,11 +503,11 @@ class TestHybridChunkerIntegration:
         chunker = HybridChunker(hybrid_chunker_with_quality_config)
 
         with patch("ai_core.rag.embeddings.get_embedding_client") as mock_embed:
-            with patch("litellm.completion") as mock_llm:
+            with patch("ai_core.llm.client.call") as mock_call:
                 mock_embed.return_value = stub_embedding_client
 
                 # Mock LLM to raise exception
-                mock_llm.side_effect = Exception("LLM service unavailable")
+                mock_call.side_effect = Exception("LLM service unavailable")
 
                 # Should still return chunks (quality evaluation is optional)
                 chunks, stats = chunker.chunk(

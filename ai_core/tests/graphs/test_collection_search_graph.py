@@ -125,6 +125,112 @@ class TestCollectionSearchGraph:
             "tool_context": tool_context,
         }
 
+    def test_strategy_node_closes_db_connections(self, cs_module, monkeypatch) -> None:
+        close_calls: list[str] = []
+        monkeypatch.setattr(
+            cs_module,
+            "close_old_connections",
+            lambda: close_calls.append("closed"),
+        )
+
+        def _fake_generator(request):
+            return cs_module.SearchStrategy(
+                queries=["q1", "q2", "q3"],
+                policies_applied=(),
+                preferred_sources=(),
+                disallowed_sources=(),
+            )
+
+        from ai_core.contracts import BusinessContext, ScopeContext
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(
+            workflow_id="wf-1",
+            case_id="case-1",
+        )
+        tool_context = scope.to_tool_context(business=business)
+
+        state = {
+            "input": cs_module.GraphInput(
+                question="Test query",
+                collection_scope="collection-1",
+                purpose="test",
+            ),
+            "tool_context": tool_context,
+            "runtime": {"runtime_strategy_generator": _fake_generator},
+            "transitions": [],
+            "telemetry": {},
+        }
+
+        cs_module.strategy_node(state)
+        assert len(close_calls) >= 2
+
+    def test_hybrid_score_node_closes_db_connections(
+        self, cs_module, monkeypatch
+    ) -> None:
+        close_calls: list[str] = []
+        monkeypatch.setattr(
+            cs_module,
+            "close_old_connections",
+            lambda: close_calls.append("closed"),
+        )
+
+        from ai_core.contracts import BusinessContext, ScopeContext
+        from llm_worker.schemas import HybridResult
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(
+            workflow_id="wf-1",
+            case_id="case-1",
+        )
+        tool_context = scope.to_tool_context(business=business)
+
+        class _FakeExecutor:
+            def run(self, *, scoring_context, candidates, tenant_context):
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="ok",
+                    recommended_ingest=[],
+                )
+
+        state = {
+            "input": cs_module.GraphInput(
+                question="Test query",
+                collection_scope="collection-1",
+                purpose="test",
+            ),
+            "tool_context": tool_context,
+            "runtime": {"runtime_hybrid_executor": _FakeExecutor()},
+            "search": {
+                "results": [
+                    cs_module.SearchResultPayload(
+                        url="https://example.com",
+                        title="Title",
+                        snippet="Snippet",
+                        source="web",
+                        query="Test query",
+                        query_index=0,
+                        position=0,
+                    )
+                ]
+            },
+            "embedding_rank": {},
+        }
+
+        cs_module.hybrid_score_node(state)
+        assert len(close_calls) >= 2
+
     def _tool_context_meta(self) -> dict[str, Any]:
         from ai_core.contracts import BusinessContext, ScopeContext
 
@@ -268,8 +374,10 @@ class TestCollectionSearchGraph:
 
         assert result.get("plan") is not None
         plan_metadata = self._plan_metadata(result["plan"])
-        assert plan_metadata.get("hitl", {}).get("required") is True
-        assert result.get("ingestion", {}).get("status") == "planned_only"
+        # With auto_ingest=True (default), HITL is not required
+        assert plan_metadata.get("hitl", {}).get("required") is False
+        # auto_ingest enabled but no URLs meet threshold → skipped_no_selection
+        assert result.get("ingestion", {}).get("status") == "skipped_no_selection"
 
     def test_search_failure_aborts_flow(self, cs_module) -> None:
         from ai_core.tools.web_search import (
@@ -724,7 +832,8 @@ class TestCollectionSearchGraph:
 
         assert result["embedding_rank"]["scored_count"] == 1
 
-    def test_auto_ingest_disabled_by_default(self, cs_module) -> None:
+    def test_auto_ingest_skips_when_no_results(self, cs_module) -> None:
+        """Test that auto_ingest (enabled by default) skips when no results meet threshold."""
         from ai_core.tools.web_search import (
             WebSearchResponse,
             ToolOutcome,
@@ -781,7 +890,9 @@ class TestCollectionSearchGraph:
         meta = self._tool_context_meta()
         state, result = graph.run(initial_state, meta=meta)
 
-        assert result.get("ingestion", {}).get("status") == "planned_only"
+        # With auto_ingest=True (default), but no results meeting threshold,
+        # the status should be "skipped_no_selection" instead of "planned_only"
+        assert result.get("ingestion", {}).get("status") == "skipped_no_selection"
 
     def test_trigger_ingestion_flow(self, cs_module) -> None:
         """Test that approved plan triggers ingestion via CrawlerManager."""

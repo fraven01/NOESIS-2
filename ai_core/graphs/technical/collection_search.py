@@ -54,6 +54,7 @@ from llm_worker.schemas import (
     SearchCandidate,
 )
 from ai_core.schemas import CrawlerRunRequest, CrawlerOriginConfig
+from django.db import close_old_connections
 
 LOGGER = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class GraphInput(BaseModel):
     max_candidates: int = Field(default=20, ge=5, le=40)
     purpose: str = Field(min_length=1)
     execute_plan: bool = Field(default=False)
-    auto_ingest: bool = Field(default=False)
+    auto_ingest: bool = Field(default=True)
     auto_ingest_top_k: int = Field(default=10, ge=1, le=20)
     auto_ingest_min_score: float = Field(default=60.0, ge=0.0, le=100.0)
 
@@ -399,6 +400,7 @@ _EMBEDDING_WEIGHT_PROFILES: dict[str, float] = {
 
 MIN_DIVERSITY_BUCKETS = 3
 _DEFAULT_SEARCH_TIMEOUT_S = 30.0
+_EMBEDDING_TEXT_CHAR_LIMIT = 32000
 
 
 # -----------------------------------------------------------------------------
@@ -506,16 +508,29 @@ def _resolve_embedding_weight(graph_input: GraphInput) -> tuple[float, str]:
     return profile_weight, f"profile:{quality_mode}"
 
 
+def _close_old_connections_safe() -> None:
+    try:
+        close_old_connections()
+    except Exception:
+        LOGGER.debug("collection_search.db_connection_cleanup_failed", exc_info=True)
+
+
 def _build_embedding_texts(
     query: str, purpose: str, results: Sequence[SearchResultPayload]
 ) -> list[str]:
     """Build embedding inputs without diluting the query with long purpose text."""
-    texts = [query.strip()]
+
+    def _truncate(text: str) -> str:
+        if len(text) <= _EMBEDDING_TEXT_CHAR_LIMIT:
+            return text
+        return text[:_EMBEDDING_TEXT_CHAR_LIMIT]
+
+    texts = [_truncate(query.strip())]
     if purpose.strip():
-        texts.append(purpose.strip())
+        texts.append(_truncate(purpose.strip()))
     for result in results:
         combined = f"{result.title} {result.snippet}".strip()
-        texts.append(combined)
+        texts.append(_truncate(combined))
     return texts
 
 
@@ -663,7 +678,9 @@ def strategy_node(state: CollectionSearchState) -> dict[str, Any]:
         quality_mode=graph_input.quality_mode,
         purpose=graph_input.purpose,
     )
+    _close_old_connections_safe()
     strategy = generator(request)
+    _close_old_connections_safe()
 
     meta = dict(ids)
     meta.update(
@@ -1155,6 +1172,7 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
         "business_context": business_payload,
     }
 
+    _close_old_connections_safe()
     try:
         hybrid_res = executor.run(
             scoring_context=scoring_ctx,
@@ -1164,6 +1182,8 @@ def hybrid_score_node(state: CollectionSearchState) -> dict[str, Any]:
     except Exception as exc:
         LOGGER.exception("hybrid_score_failed")
         return {"hybrid": HybridState(error=str(exc))}
+    finally:
+        _close_old_connections_safe()
 
     ids = _get_ids(tool_context, graph_input.collection_scope)
     meta = dict(ids)
@@ -1295,12 +1315,17 @@ def trigger_ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
     )
 
     # Prepare Meta for Context
+    scope_payload = tool_context.scope.model_dump(mode="json", exclude_none=True)
+    business_payload = tool_context.business.model_dump(mode="json", exclude_none=True)
     meta = {
         "tenant_id": tool_context.scope.tenant_id,
         "trace_id": tool_context.scope.trace_id,
         "case_id": tool_context.business.case_id,
         "user_id": tool_context.scope.user_id,
         "ingestion_run_id": tool_context.scope.ingestion_run_id or str(uuid4()),
+        "scope_context": scope_payload,
+        "business_context": business_payload,
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
     }
 
     try:
@@ -1348,7 +1373,7 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
             selected_urls.extend(decision.added_urls)
             reason = decision.rationale
     elif graph_input.auto_ingest:
-        # Auto-ingest logic (simplified)
+        # Auto-ingest logic: select URLs from ranked results meeting score threshold
         results = (
             hybrid_state.result.ranked if hybrid_state and hybrid_state.result else []
         )
@@ -1356,6 +1381,7 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
             results,
             top_k=graph_input.auto_ingest_top_k,
             min_score=graph_input.auto_ingest_min_score,
+            candidate_by_id=candidate_by_id,
         )
         reason = "auto_ingest"
 

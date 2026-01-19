@@ -122,3 +122,7 @@ volumes:
     driver: local
   staticfiles:
     driver: local
+
+networks:
+  default:
+    name: noesis-2_default

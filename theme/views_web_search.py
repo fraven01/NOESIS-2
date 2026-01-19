@@ -6,10 +6,15 @@ from uuid import uuid4
 from opentelemetry import trace
 from opentelemetry.trace import format_trace_id
 
+from celery.result import AsyncResult
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import render
+from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET
 from django.views.decorators.http import require_POST
+from pydantic import ValidationError
 from structlog.stdlib import get_logger
 
 from ai_core.contracts import BusinessContext, ScopeContext
@@ -19,11 +24,114 @@ from ai_core.graphs.technical.collection_search import (
 from theme.helpers.tasks import submit_business_graph
 from ai_core.schemas import CrawlerRunRequest
 from common.logging import bind_log_context
+from common.task_result import TaskResult
 from crawler.manager import CrawlerManager
 from customers.tenant_context import TenantRequiredError
 from theme.validators import SearchQualityParams
 
 logger = get_logger(__name__)
+_WEB_SEARCH_CACHE_TTL_S = 900
+_WEB_SEARCH_PENDING_STATES = {"PENDING", "RECEIVED", "STARTED", "RETRY"}
+
+
+def _cache_web_search_request(task_id: str, payload: dict[str, object]) -> None:
+    cache.set(f"web_search:request:{task_id}", payload, timeout=_WEB_SEARCH_CACHE_TTL_S)
+
+
+def _load_web_search_request(task_id: str) -> dict[str, object]:
+    cached = cache.get(f"web_search:request:{task_id}")
+    return cached if isinstance(cached, dict) else {}
+
+
+def _cache_web_search_rerank(task_id: str, payload: dict[str, object]) -> None:
+    cache.set(f"web_search:rerank:{task_id}", payload, timeout=_WEB_SEARCH_CACHE_TTL_S)
+
+
+def _load_web_search_rerank(task_id: str) -> dict[str, object]:
+    cached = cache.get(f"web_search:rerank:{task_id}")
+    return cached if isinstance(cached, dict) else {}
+
+
+def _normalize_task_payload(payload: object) -> dict[str, object]:
+    if isinstance(payload, dict):
+        try:
+            task_result = TaskResult.model_validate(payload)
+        except ValidationError:
+            return payload
+        normalized: dict[str, object] = {
+            "status": task_result.status,
+            "data": dict(task_result.data or {}),
+        }
+        if task_result.error:
+            normalized["error"] = task_result.error
+        return normalized
+    return {"status": "error", "error": "invalid_task_result", "data": {}}
+
+
+def _build_collection_search_response(
+    response_payload: dict[str, object], trace_id: str
+) -> dict[str, object]:
+    data_res = response_payload.get("data") or {}
+    if not isinstance(data_res, dict):
+        data_res = {}
+
+    search_payload = data_res.get("search") or {}
+    if not isinstance(search_payload, dict):
+        search_payload = {}
+
+    results = search_payload.get("results", []) or []
+    telemetry_payload = data_res.get("telemetry")
+    if telemetry_payload:
+        telemetry_payload = dict(telemetry_payload)
+        if "responses" in search_payload:
+            telemetry_payload["search_responses"] = search_payload["responses"]
+
+    return {
+        "outcome": data_res.get("outcome"),
+        "results": results,
+        "search": search_payload,
+        "telemetry": telemetry_payload,
+        "trace_id": trace_id,
+    }
+
+
+def _build_web_acquisition_response(
+    response_payload: dict[str, object], trace_id: str
+) -> dict[str, object]:
+    if response_payload.get("status") == "error":
+        error_payload = response_payload.get("error")
+        return {
+            "outcome": "error",
+            "results": [],
+            "telemetry": {},
+            "trace_id": trace_id,
+            "error": error_payload,
+        }
+
+    result_state = response_payload.get("data", {})
+    if not isinstance(result_state, dict):
+        result_state = {}
+
+    output = result_state.get("output", {})
+    if not isinstance(output, dict):
+        output = {}
+
+    decision = output.get("decision", "error")
+    error_msg = output.get("error")
+    search_results = output.get("search_results") or []
+
+    response_data: dict[str, object] = {
+        "outcome": "completed" if decision in ("acquired", "no_results") else "error",
+        "results": search_results,
+        "telemetry": {},
+        "trace_id": trace_id,
+    }
+
+    if error_msg:
+        response_data["error"] = error_msg
+        response_data["outcome"] = "error"
+
+    return response_data
 
 
 def _views():
@@ -119,8 +227,14 @@ def web_search(request):
         search_type = "web_acquisition"
     quality_params = SearchQualityParams.model_validate(data)
 
+    rerank_requested = str(data.get("rerank") or "").lower() in ("1", "true", "on")
+    request_data = {
+        "quality_mode": quality_params.quality_mode,
+        "max_candidates": quality_params.max_candidates,
+        "purpose": str(data.get("purpose") or "").strip() or None,
+    }
+
     if search_type == "collection_search":
-        # Collection Search Graph Execution
         purpose = str(data.get("purpose") or "").strip()
         if not purpose:
             return views._json_error_response(
@@ -130,7 +244,14 @@ def web_search(request):
             )
 
         quality_mode = quality_params.quality_mode
-        auto_ingest = str(data.get("auto_ingest") or "").lower() == "on"
+
+        # Auto-ingest settings (default: enabled)
+        auto_ingest_raw = data.get("auto_ingest")
+        auto_ingest = str(auto_ingest_raw or "").lower() in ("on", "true", "1")
+        if auto_ingest_raw is None:
+            auto_ingest = True
+        auto_ingest_min_score = float(data.get("auto_ingest_min_score", 60.0))
+        auto_ingest_top_k = int(data.get("auto_ingest_top_k", 10))
 
         graph_input = {
             "question": query,
@@ -138,10 +259,11 @@ def web_search(request):
             "purpose": purpose,
             "quality_mode": quality_mode,
             "auto_ingest": auto_ingest,
+            "auto_ingest_min_score": auto_ingest_min_score,
+            "auto_ingest_top_k": auto_ingest_top_k,
         }
 
         try:
-            # Validate input using Pydantic model
             CollectionSearchGraphInput.model_validate(graph_input)
         except Exception as exc:
             logger.info("web_search.collection.invalid_input", error=str(exc))
@@ -151,49 +273,13 @@ def web_search(request):
                 code="invalid_request",
             )
 
-    # Execution logic consolidated below to handle both search types cleanly
-
-    response_data = {}
-
-    if search_type == "collection_search":
-        # ... Collection Search Logic (Existing) ...
-        # Copied from original file context
-        purpose = str(data.get("purpose") or "").strip()
-        if not purpose:
-            return views._json_error_response(
-                "Purpose is required for Collection Search",
-                status_code=400,
-                code="missing_purpose",
-            )
-
-        quality_mode = quality_params.quality_mode
-        auto_ingest = str(data.get("auto_ingest") or "").lower() == "on"
-
-        graph_input = {
-            "question": query,
-            "collection_scope": collection_id,
-            "purpose": purpose,
-            "quality_mode": quality_mode,
-            "auto_ingest": auto_ingest,
-        }
-        try:
-            CollectionSearchGraphInput.model_validate(graph_input)
-        except Exception as exc:
-            return views._json_error_response(
-                f"Invalid input: {str(exc)}",
-                status_code=400,
-                code="invalid_request",
-            )
-
-        # BREAKING CHANGE (Option A - Strict Separation):
-        # Build ScopeContext and BusinessContext for Collection Search
         col_scope = ScopeContext(
             tenant_id=tenant_id,
             tenant_schema=tenant_id,
             trace_id=trace_id,
             invocation_id=str(uuid4()),
             run_id=run_id,
-            user_id=user_id,  # Pre-MVP ID Contract
+            user_id=user_id,
         )
 
         col_business = BusinessContext(
@@ -204,7 +290,6 @@ def web_search(request):
 
         col_tool_context = col_scope.to_tool_context(business=col_business)
 
-        # Build GraphIOSpec-compliant request (Hard Enforcement)
         boundary_request = {
             "schema_id": "noesis.graphs.collection_search",
             "schema_version": "1.0.0",
@@ -212,51 +297,14 @@ def web_search(request):
             "tool_context": col_tool_context.model_dump(mode="json"),
         }
 
-        response_payload, completed = submit_business_graph(
+        response_payload, _completed = submit_business_graph(
             graph_name="collection_search",
             tool_context=col_tool_context,
             state=boundary_request,
-            timeout_s=60,
         )
-        if not completed:
-            return views._json_error_response(
-                "Search timed out.", status_code=504, code="timeout"
-            )
-
-        if response_payload.get("status") == "error":
-            return views._json_error_response(
-                f"Worker Error: {response_payload.get('error')}",
-                status_code=500,
-                code="internal_error",
-            )
-
-        # CollectionSearchGraphOutput has fields directly on data_res:
-        # schema_id, schema_version, outcome, search, telemetry, ingestion, plan, hitl, error
-        data_res = response_payload.get("data") or {}
-
-        # Extract fields directly from CollectionSearchGraphOutput schema
-        # Use `or {}` pattern because fields can be explicitly None
-        search_payload = data_res.get("search") or {}
-        results = search_payload.get("results", [])
-        telemetry_payload = data_res.get("telemetry")
-        if telemetry_payload:
-            telemetry_payload = dict(telemetry_payload)
-            if "responses" in search_payload:
-                telemetry_payload["search_responses"] = search_payload["responses"]
-
-        response_data = {
-            "outcome": data_res.get("outcome"),
-            "results": results,
-            "search": search_payload,
-            "telemetry": telemetry_payload,
-            "trace_id": trace_id,
-        }
-
     else:
-        # Web Acquisition Graph (Search Only)
         from ai_core.tool_contracts import ToolContext
 
-        # Parse configurable parameters from request
         try:
             top_n = int(data.get("top_n", 5))
             if top_n < 1 or top_n > 20:
@@ -272,7 +320,6 @@ def web_search(request):
             },
         }
 
-        # Build ToolContext
         business = BusinessContext(
             workflow_id="web-acquisition-manual",
             case_id=case_id,
@@ -292,94 +339,239 @@ def web_search(request):
             metadata={},
         )
 
-        # Acquisition State
         graph_state = {
             "input": input_payload,
             "tool_context": tool_context.model_dump(mode="json"),
         }
 
-        # M-2: Async Worker
-        response_payload, completed = submit_business_graph(
+        response_payload, _completed = submit_business_graph(
             graph_name="web_acquisition",
             tool_context=tool_context,
             state=graph_state,
-            timeout_s=60,
         )
-        if not completed:
-            return views._json_error_response(
-                "Acquisition timed out.", status_code=504, code="timeout"
-            )
 
-        if response_payload.get("status") == "error":
-            # Treat as graph execution error
-            result_state = {
-                "output": {"decision": "error", "error": response_payload.get("error")}
-            }
-        else:
-            result_state = response_payload.get("data", {})
+    task_id = (
+        response_payload.get("task_id") if isinstance(response_payload, dict) else None
+    )
+    if not task_id:
+        return views._json_error_response(
+            "Task submission failed",
+            status_code=500,
+            code="internal_error",
+        )
 
-        output = result_state.get("output", {})
-        decision = output.get("decision", "error")
-        error_msg = output.get("error")
-        search_results = output.get("search_results") or []
-
-        response_data = {
-            # P2 Fix: Both 'acquired' and 'no_results' are successful completion states
-            "outcome": (
-                "completed" if decision in ("acquired", "no_results") else "error"
-            ),
-            "results": search_results,
-            "telemetry": {},
+    _cache_web_search_request(
+        task_id,
+        {
+            "search_type": search_type,
+            "query": query,
+            "collection_id": collection_id,
+            "case_id": case_id,
             "trace_id": trace_id,
-        }
+            "run_id": run_id,
+            "request_data": request_data,
+            "rerank": rerank_requested,
+        },
+    )
 
-        if error_msg:
-            response_data["error"] = error_msg
-            response_data["outcome"] = "error"
-
-            if decision == "error":
-                logger.warning(
-                    "web_search.acquisition_failed", extra={"error": error_msg}
-                )
-
-    # Common Logic
-    # Use `or []` pattern to handle None/empty results safely across both branches
-    results = response_data.get("results") or []
-    search_payload = response_data.get("search") or {}
-    trace_id = response_data.get("trace_id")
-
+    status_url = request.build_absolute_uri(
+        reverse("web-search-status", kwargs={"task_id": task_id})
+    )
     logger.info(
-        "web_search.rendering",
-        result_count=len(results),
-        response_keys=list(response_data.keys()),
+        "web_search.queued",
+        task_id=task_id,
         search_type=search_type,
         hx_request=bool(request.headers.get("HX-Request")),
     )
 
-    if data.get("rerank"):
-        try:
-            rerank_meta, reranked_results = views._run_rerank_workflow(
-                request_data=data,
-                query=query,
-                collection_id=collection_id,
-                results=results,
-                tenant_id=tenant_id,
-                case_id=case_id,
-                trace_id=trace_id,
-                run_id=run_id,
-                user_id=user_id,
-            )
-        except Exception:  # pragma: no cover - defensive
-            logger.exception("web_search.rerank_failed")
-            rerank_meta = {
-                "status": "failed",
-                "message": "Rerank konnte nicht gestartet werden.",
-            }
-            reranked_results = None
+    if request.headers.get("HX-Request"):
+        return render(
+            request,
+            "theme/partials/_web_search_pending.html",
+            {
+                "task_id": task_id,
+                "poll_url": status_url,
+            },
+            status=202,
+        )
 
-        response_data["rerank"] = rerank_meta
-        if reranked_results is not None:
-            response_data["results"] = reranked_results
+    return JsonResponse(
+        {
+            "status": "queued",
+            "task_id": task_id,
+            "status_url": status_url,
+            "trace_id": trace_id,
+        },
+        status=202,
+    )
+
+
+@require_GET
+def web_search_status(request, task_id: str):
+    """Poll the web search task status and render results when complete."""
+    views = _views()
+    blocked = views._rag_tools_gate(json_response=True)
+    if blocked is not None:
+        return blocked
+
+    cached = _load_web_search_request(task_id)
+    search_type = str(
+        cached.get("search_type") or request.GET.get("search_type") or "web_acquisition"
+    ).strip()
+    search_type = search_type.lower()
+    if search_type in {"external_knowledge", "external-knowledge"}:
+        search_type = "web_acquisition"
+
+    query = str(cached.get("query") or request.GET.get("query") or "").strip()
+    collection_id = cached.get("collection_id") or request.GET.get("collection_id")
+    case_id = cached.get("case_id") or request.GET.get("case_id")
+    trace_id = str(cached.get("trace_id") or request.GET.get("trace_id") or uuid4())
+    run_id = str(cached.get("run_id") or request.GET.get("run_id") or uuid4())
+    request_data = cached.get("request_data") or {}
+    rerank_requested = bool(cached.get("rerank") or request.GET.get("rerank"))
+
+    status_url = request.build_absolute_uri(
+        reverse("web-search-status", kwargs={"task_id": task_id})
+    )
+
+    async_result = AsyncResult(task_id)
+    state = async_result.state
+    if state in _WEB_SEARCH_PENDING_STATES:
+        if request.headers.get("HX-Request"):
+            return render(
+                request,
+                "theme/partials/_web_search_pending.html",
+                {
+                    "task_id": task_id,
+                    "poll_url": status_url,
+                },
+                status=202,
+            )
+        return JsonResponse(
+            {
+                "status": "queued",
+                "task_id": task_id,
+                "status_url": status_url,
+                "state": state,
+            },
+            status=202,
+        )
+
+    if state in ("FAILURE", "REVOKED"):
+        error_message = "Search task failed."
+        if request.headers.get("HX-Request"):
+            return render(
+                request,
+                "theme/partials/_web_search_error.html",
+                {"message": error_message},
+                status=500,
+            )
+        return views._json_error_response(
+            error_message,
+            status_code=500,
+            code="internal_error",
+        )
+
+    if state != "SUCCESS":
+        if request.headers.get("HX-Request"):
+            return render(
+                request,
+                "theme/partials/_web_search_pending.html",
+                {
+                    "task_id": task_id,
+                    "poll_url": status_url,
+                },
+                status=202,
+            )
+        return JsonResponse(
+            {
+                "status": "queued",
+                "task_id": task_id,
+                "status_url": status_url,
+                "state": state,
+            },
+            status=202,
+        )
+
+    response_payload = _normalize_task_payload(async_result.result)
+    if response_payload.get("status") == "error":
+        error_message = f"Worker Error: {response_payload.get('error')}"
+        if request.headers.get("HX-Request"):
+            return render(
+                request,
+                "theme/partials/_web_search_error.html",
+                {"message": error_message},
+                status=500,
+            )
+        return views._json_error_response(
+            error_message,
+            status_code=500,
+            code="internal_error",
+        )
+
+    if search_type == "collection_search":
+        response_data = _build_collection_search_response(response_payload, trace_id)
+    else:
+        response_data = _build_web_acquisition_response(response_payload, trace_id)
+
+    if rerank_requested and collection_id:
+        rerank_cached = _load_web_search_rerank(task_id)
+        if rerank_cached:
+            response_data["rerank"] = rerank_cached.get("meta")
+            cached_results = rerank_cached.get("results")
+            if cached_results is not None:
+                response_data["results"] = cached_results
+        else:
+            try:
+                scope = views._scope_context_from_request(request)
+            except TenantRequiredError as exc:
+                return views._tenant_required_response(exc)
+
+            user = getattr(request, "user", None)
+            user_id = (
+                str(user.pk)
+                if user
+                and getattr(user, "is_authenticated", False)
+                and getattr(user, "pk", None) is not None
+                else None
+            )
+
+            try:
+                rerank_meta, reranked_results = views._run_rerank_workflow(
+                    request_data=request_data,
+                    query=query,
+                    collection_id=collection_id,
+                    results=response_data.get("results") or [],
+                    tenant_id=scope.tenant_id,
+                    case_id=case_id,
+                    trace_id=trace_id,
+                    run_id=run_id,
+                    user_id=user_id,
+                )
+            except Exception:  # pragma: no cover - defensive
+                logger.exception("web_search.rerank_failed")
+                rerank_meta = {
+                    "status": "failed",
+                    "message": "Rerank could not be started.",
+                }
+                reranked_results = None
+
+            response_data["rerank"] = rerank_meta
+            if reranked_results is not None:
+                response_data["results"] = reranked_results
+
+            _cache_web_search_rerank(
+                task_id,
+                {
+                    "meta": rerank_meta,
+                    "results": reranked_results,
+                },
+            )
+    elif rerank_requested:
+        response_data["rerank"] = {
+            "status": "skipped",
+            "message": "Rerank skipped: missing collection_id.",
+        }
 
     if request.headers.get("HX-Request"):
         return render(
@@ -388,7 +580,7 @@ def web_search(request):
             {
                 "results": response_data.get("results"),
                 "search": response_data.get("search"),
-                "trace_id": trace_id,
+                "trace_id": response_data.get("trace_id"),
                 "collection_id": collection_id,
                 "case_id": case_id,
             },

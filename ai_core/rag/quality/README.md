@@ -26,7 +26,7 @@ This package implements **4-phase quality metrics** to progressively build evalu
 ```python
 from ai_core.rag.quality import ChunkQualityEvaluator
 
-evaluator = ChunkQualityEvaluator(model="gpt-5-nano")
+evaluator = ChunkQualityEvaluator(model="quality-eval")
 
 chunks = [
     {"chunk_id": "uuid-123", "text": "...", "parent_ref": "section:intro"},
@@ -81,7 +81,7 @@ chunk["metadata"]["quality"] = {
 ```python
 from ai_core.rag.quality import PseudoQueryGenerator
 
-generator = PseudoQueryGenerator(model="gpt-5-nano")
+generator = PseudoQueryGenerator(model="simple-query")
 
 chunk = {"chunk_id": "uuid-123", "text": "..."}
 
@@ -206,7 +206,7 @@ from ai_core.rag.chunking import HybridChunker, ChunkerConfig
 config = ChunkerConfig(
     mode=ChunkerMode.LATE,
     enable_quality_metrics=True,  # Enable Phase 1
-    quality_model="gpt-5-nano",
+    quality_model="quality-eval",
 )
 
 chunker = HybridChunker(config)
@@ -226,12 +226,12 @@ Settings in `config/settings.py` (will be `ai_core/settings.py` after migration)
 ```python
 # Quality Metrics
 RAG_ENABLE_QUALITY_METRICS = True
-RAG_QUALITY_EVAL_MODEL = "gpt-5-nano"
+RAG_QUALITY_EVAL_MODEL = "quality-eval"
 RAG_QUALITY_EVAL_SAMPLE_RATE = 1.0  # 0.0-1.0 (sample 100% of chunks)
 
 # Phase 2: Pseudo Queries
 RAG_PSEUDO_QUERY_COUNT = 5  # queries per chunk
-RAG_PSEUDO_QUERY_MODEL = "gpt-5-nano"
+RAG_PSEUDO_QUERY_MODEL = "simple-query"
 
 # Phase 4: Retrieval Metrics
 RAG_RETRIEVAL_METRICS_ENABLED = False  # Enable after Phase 3

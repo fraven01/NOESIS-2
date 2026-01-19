@@ -14,6 +14,7 @@ from theme.views import (
     start_rerank_workflow,
     web_search,
     web_search_ingest_selected,
+    web_search_status,
 )
 
 
@@ -119,28 +120,7 @@ def test_rag_tools_rejects_spoofed_headers():
 def test_web_search_uses_external_knowledge_graph(mock_submit, tenant_pool):
     """Test that web_search view uses Generic Worker for search."""
 
-    mock_submit.return_value = (
-        {
-            "status": "success",
-            "data": {
-                "output": {
-                    "decision": "acquired",
-                    "search_results": [
-                        {
-                            "url": "https://example.com",
-                            "title": "Test",
-                            "snippet": "Test snippet",
-                        }
-                    ],
-                    "selected_result": None,
-                    "ingestion_result": None,
-                    "error": None,
-                    "auto_ingest": False,
-                }
-            },
-        },
-        True,
-    )
+    mock_submit.return_value = ({"task_id": "task-123"}, False)
 
     tenant = tenant_pool["alpha"]
 
@@ -163,10 +143,10 @@ def test_web_search_uses_external_knowledge_graph(mock_submit, tenant_pool):
 
     response = web_search(request)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     response_data = json.loads(response.content)
-    assert response_data["outcome"] == "completed"
-    assert "results" in response_data
+    assert response_data["status"] == "queued"
+    assert response_data["task_id"] == "task-123"
     assert "trace_id" in response_data
 
     # Verify that submit was called with correct parameters
@@ -187,28 +167,7 @@ def test_web_search_htmx_returns_partial(mock_submit, tenant_pool):
     """Test that web_search returns HTML partial for HTMX requests."""
     tenant = tenant_pool["alpha"]
 
-    mock_submit.return_value = (
-        {
-            "status": "success",
-            "data": {
-                "output": {
-                    "decision": "acquired",
-                    "search_results": [
-                        {
-                            "url": "https://example.com",
-                            "title": "HTMX Result",
-                            "snippet": "Snippet",
-                        }
-                    ],
-                    "selected_result": None,
-                    "ingestion_result": None,
-                    "error": None,
-                    "auto_ingest": False,
-                }
-            },
-        },
-        True,
-    )
+    mock_submit.return_value = ({"task_id": "task-htmx"}, False)
 
     factory = RequestFactory()
     # Simulate HTMX request with form-encoded data (default for hx-post)
@@ -230,12 +189,11 @@ def test_web_search_htmx_returns_partial(mock_submit, tenant_pool):
 
     response = web_search(request)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     content = response.content.decode()
-    # Should return the partial, not JSON
-    assert "HTMX Result" in content
-    assert "class=" in content  # Basic HTML check
-    assert "Snippet" in content
+    # Should return the pending partial, not JSON
+    assert "Search queued" in content
+    assert "hx-get" in content
 
 
 @pytest.mark.slow
@@ -246,22 +204,7 @@ def test_web_search_defaults_to_manual_collection(mock_submit, tenant_pool):
     tenant = tenant_pool["alpha"]
     tenant_id = tenant.schema_name
 
-    mock_submit.return_value = (
-        {
-            "status": "success",
-            "data": {
-                "output": {
-                    "decision": "no_results",
-                    "search_results": [],
-                    "selected_result": None,
-                    "ingestion_result": None,
-                    "error": None,
-                    "auto_ingest": False,
-                }
-            },
-        },
-        True,
-    )
+    mock_submit.return_value = ({"task_id": "task-manual"}, False)
 
     factory = RequestFactory()
     request = factory.post(
@@ -282,7 +225,7 @@ def test_web_search_defaults_to_manual_collection(mock_submit, tenant_pool):
 
     response = web_search(request)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     mock_submit.assert_called_once()
     manual_id = str(manual_collection_uuid(tenant_id))
 
@@ -338,73 +281,58 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
 @pytest.mark.slow
 @pytest.mark.django_db
 @pytest.mark.xdist_group("tenant_ops")
-@patch("theme.views.llm_routing.resolve")
-@patch("theme.views.submit_business_graph")
+@patch("theme.views._run_rerank_workflow")
+@patch("theme.views_web_search.AsyncResult")
 @patch("theme.views_web_search.submit_business_graph")
 def test_web_search_rerank_applies_scores(
-    mock_submit_graph, mock_submit_task, mock_resolve, settings, tenant_pool
+    mock_submit_graph, mock_async_result, mock_rerank, tenant_pool
 ):
-    settings.RERANK_MODEL_PRESET = "meta/llama-3.1-70b-instruct"
-
-    def fake_resolve(label: str):
-        if label == "meta/llama-3.1-70b-instruct":
-            raise ValueError("unknown label")
-        return "resolved-model"
-
-    mock_resolve.side_effect = fake_resolve
-
     cache.clear()
     tenant = tenant_pool["alpha"]
 
-    # Mock the initial search graph call (M-2)
-    mock_submit_graph.return_value = (
-        {
-            "status": "success",
-            "data": {
-                "output": {
-                    "decision": "acquired",
-                    "search_results": [
-                        {
-                            "document_id": "doc-a",
-                            "title": "Alpha",
-                            "snippet": "Snippet A",
-                            "source": "crawler",
-                            "url": "https://a.example",
-                            "score": 0.3,
-                        },
-                        {
-                            "document_id": "doc-b",
-                            "title": "Beta",
-                            "snippet": "Snippet B",
-                            "source": "crawler",
-                            "url": "https://b.example",
-                            "score": 0.2,
-                        },
-                    ],
-                    "selected_result": None,
-                    "ingestion_result": None,
-                    "error": None,
-                    "auto_ingest": False,
-                }
-            },
-        },
-        True,
-    )
-
-    # Mock the rerank worker call
-    mock_submit_task.return_value = (
-        {
-            "task_id": "task-1",
-            "data": {
-                "ranked": [
-                    {"id": "doc-b", "score": 88, "reasons": ["präzise"]},
-                    {"id": "doc-a", "score": 40, "reasons": []},
+    mock_submit_graph.return_value = ({"task_id": "task-1"}, False)
+    mock_async_result.return_value.state = "SUCCESS"
+    mock_async_result.return_value.result = {
+        "status": "success",
+        "data": {
+            "output": {
+                "decision": "acquired",
+                "search_results": [
+                    {
+                        "document_id": "doc-a",
+                        "title": "Alpha",
+                        "snippet": "Snippet A",
+                        "source": "crawler",
+                        "url": "https://a.example",
+                        "score": 0.3,
+                    },
+                    {
+                        "document_id": "doc-b",
+                        "title": "Beta",
+                        "snippet": "Snippet B",
+                        "source": "crawler",
+                        "url": "https://b.example",
+                        "score": 0.2,
+                    },
                 ],
-                "latency_s": 0.5,
-                "model": "demo",
-            },
+                "selected_result": None,
+                "ingestion_result": None,
+                "error": None,
+                "auto_ingest": False,
+            }
         },
-        True,
+    }
+    mock_rerank.return_value = (
+        {"status": "succeeded"},
+        [
+            {
+                "document_id": "doc-b",
+                "title": "Beta",
+                "snippet": "Snippet B",
+                "url": "https://b.example",
+                "rerank": {"score": 88},
+            }
+        ],
     )
 
     factory = RequestFactory()
@@ -415,9 +343,6 @@ def test_web_search_rerank_applies_scores(
     )
     request.tenant = tenant
 
-    request.tenant = tenant
-
-    # Auth setup
     User = get_user_model()
     user = User.objects.create_user(
         "staff8", "staff@example.com", "password", is_staff=True
@@ -425,54 +350,62 @@ def test_web_search_rerank_applies_scores(
     request.user = user
 
     response = web_search(request)
-    data = json.loads(response.content)
+    assert response.status_code == 202
+    payload = json.loads(response.content)
+    task_id = payload["task_id"]
 
-    assert response.status_code == 200
+    status_request = factory.get(
+        reverse("web-search-status", kwargs={"task_id": task_id})
+    )
+    status_request.tenant = tenant
+    status_request.user = user
+
+    status_response = web_search_status(status_request, task_id=task_id)
+    data = json.loads(status_response.content)
+
+    assert status_response.status_code == 200
     assert data["rerank"]["status"] == "succeeded"
     assert data["results"][0]["title"] == "Beta"
     assert data["results"][0]["rerank"]["score"] == 88
-    assert data["results"][0]["rerank"]["score"] == 88
-
-    # Verify graph input
-    call_kwargs = mock_submit_task.call_args.kwargs
-    graph_state = call_kwargs["state"]
-    # Provide backward compatibility check or simply check known fields
-    assert graph_state["input"]["search"]["results"][0]["document_id"] == "doc-a"
 
 
 @pytest.mark.slow
 @pytest.mark.django_db
 @pytest.mark.xdist_group("tenant_ops")
-@patch("theme.views.submit_business_graph", return_value=({"task_id": "task-q"}, False))
+@patch("theme.views._run_rerank_workflow")
+@patch("theme.views_web_search.AsyncResult")
 @patch("theme.views_web_search.submit_business_graph")
 def test_web_search_rerank_returns_queue_status(
-    mock_submit_graph, _mock_submit_task, tenant_pool
+    mock_submit_graph, mock_async_result, mock_rerank, tenant_pool
 ):
     cache.clear()
     tenant = tenant_pool["alpha"]
 
-    mock_submit_graph.return_value = (
-        {
-            "status": "success",
-            "data": {
-                "output": {
-                    "decision": "acquired",
-                    "search_results": [
-                        {
-                            "document_id": "doc-a",
-                            "title": "Alpha",
-                            "snippet": "Snippet A",
-                            "url": "https://a.example",
-                        }
-                    ],
-                    "selected_result": None,
-                    "ingestion_result": None,
-                    "error": None,
-                    "auto_ingest": False,
-                }
-            },
+    mock_submit_graph.return_value = ({"task_id": "task-q"}, False)
+    mock_async_result.return_value.state = "SUCCESS"
+    mock_async_result.return_value.result = {
+        "status": "success",
+        "data": {
+            "output": {
+                "decision": "acquired",
+                "search_results": [
+                    {
+                        "document_id": "doc-a",
+                        "title": "Alpha",
+                        "snippet": "Snippet A",
+                        "url": "https://a.example",
+                    }
+                ],
+                "selected_result": None,
+                "ingestion_result": None,
+                "error": None,
+                "auto_ingest": False,
+            }
         },
-        True,
+    }
+    mock_rerank.return_value = (
+        {"status": "queued", "status_url": "/api/llm/tasks/task-q/"},
+        None,
     )
 
     factory = RequestFactory()
@@ -483,9 +416,6 @@ def test_web_search_rerank_returns_queue_status(
     )
     request.tenant = tenant
 
-    request.tenant = tenant
-
-    # Auth setup
     User = get_user_model()
     user = User.objects.create_user(
         "staff9", "staff@example.com", "password", is_staff=True
@@ -493,9 +423,20 @@ def test_web_search_rerank_returns_queue_status(
     request.user = user
 
     response = web_search(request)
-    data = json.loads(response.content)
+    assert response.status_code == 202
+    payload = json.loads(response.content)
+    task_id = payload["task_id"]
 
-    assert response.status_code == 200
+    status_request = factory.get(
+        reverse("web-search-status", kwargs={"task_id": task_id})
+    )
+    status_request.tenant = tenant
+    status_request.user = user
+
+    status_response = web_search_status(status_request, task_id=task_id)
+    data = json.loads(status_response.content)
+
+    assert status_response.status_code == 200
     assert data["rerank"]["status"] == "queued"
     assert data["rerank"]["status_url"].endswith("/api/llm/tasks/task-q/")
 

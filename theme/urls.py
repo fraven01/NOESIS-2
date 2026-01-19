@@ -29,6 +29,11 @@ urlpatterns = [
     path("document-space/", views.document_space, name="document-space"),
     path("rag-tools/web-search/", views.web_search, name="web-search"),
     path(
+        "rag-tools/web-search/status/<str:task_id>/",
+        views.web_search_status,
+        name="web-search-status",
+    ),
+    path(
         "rag-tools/web-search/ingest-selected/",
         views.web_search_ingest_selected,
         name="web-search-ingest-selected",

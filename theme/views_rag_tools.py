@@ -275,12 +275,26 @@ def start_rerank_workflow(request):
         quality_mode = SearchQualityParams.model_validate(data).quality_mode
         max_candidates = SearchQualityParams.model_validate(data).max_candidates
 
+        # Auto-ingest settings (default: enabled)
+        auto_ingest_raw = data.get("auto_ingest")
+        # Handle checkbox: "on" = True, absent/empty = False
+        auto_ingest = str(auto_ingest_raw or "").lower() in ("on", "true", "1")
+        # If not explicitly set, use graph default (True)
+        if auto_ingest_raw is None:
+            auto_ingest = True
+
+        auto_ingest_min_score = float(data.get("auto_ingest_min_score", 60.0))
+        auto_ingest_top_k = int(data.get("auto_ingest_top_k", 10))
+
         graph_state = {
             "question": query,
             "collection_scope": collection_id,
             "quality_mode": quality_mode,
             "max_candidates": max_candidates,
             "purpose": purpose,
+            "auto_ingest": auto_ingest,
+            "auto_ingest_min_score": auto_ingest_min_score,
+            "auto_ingest_top_k": auto_ingest_top_k,
         }
 
         col_tool_context = tool_context

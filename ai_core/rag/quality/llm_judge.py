@@ -13,6 +13,7 @@ Model: quality-eval label (resolves via MODEL_ROUTING.yaml → gpt-5-nano defaul
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Mapping
 
-from ai_core.llm.routing import resolve as resolve_model_label
+from ai_core.llm.routing import load_map, resolve as resolve_model_label
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ class ChunkQualityEvaluator:
             sample_rate: Sample rate for evaluation (0.0-1.0, 1.0 = all chunks)
             max_workers: Maximum parallel workers for evaluation
         """
+        self.model_label = model
         # Resolve MODEL_ROUTING.yaml label to actual model name
         try:
             self.model = resolve_model_label(model)
@@ -114,12 +116,43 @@ class ChunkQualityEvaluator:
                 extra={"label": model, "resolved_model": self.model},
             )
         except ValueError:
-            # If not a label, assume it's already a model name (backward compat)
-            self.model = model
-            logger.debug(
-                "quality_eval_model_direct",
-                extra={"model": model},
-            )
+            mapping = load_map()
+            mapped_label = None
+            for label, model_id in mapping.items():
+                if str(model_id) == model:
+                    mapped_label = label
+                    break
+            if mapped_label:
+                self.model_label = mapped_label
+                self.model = mapping[mapped_label]
+                logger.warning(
+                    "quality_eval_model_mapped",
+                    extra={
+                        "model_id": model,
+                        "label": mapped_label,
+                        "resolved_model": self.model,
+                    },
+                )
+            else:
+                fallback_label = "quality-eval"
+                try:
+                    self.model_label = fallback_label
+                    self.model = resolve_model_label(fallback_label)
+                    logger.warning(
+                        "quality_eval_model_fallback",
+                        extra={
+                            "label": fallback_label,
+                            "resolved_model": self.model,
+                            "requested_model": model,
+                        },
+                    )
+                except ValueError:
+                    self.model = model
+                    self.model_label = model
+                    logger.error(
+                        "quality_eval_model_unresolved",
+                        extra={"requested_model": model},
+                    )
 
         self.timeout = timeout
         self.sample_rate = sample_rate
@@ -178,7 +211,12 @@ class ChunkQualityEvaluator:
             # Preserve input ordering while evaluating in parallel.
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {
-                    executor.submit(self._evaluate_chunk, chunks[index], context): index
+                    executor.submit(
+                        contextvars.copy_context().run,
+                        self._evaluate_chunk,
+                        chunks[index],
+                        context,
+                    ): index
                     for index in indices_to_eval
                 }
                 for future in as_completed(future_map):
@@ -245,7 +283,7 @@ class ChunkQualityEvaluator:
 
         # Call LLM via central client (includes circuit breaker, observability)
         response = call(
-            self.model,
+            self.model_label,
             prompt,
             metadata,
             response_format={"type": "json_object"},

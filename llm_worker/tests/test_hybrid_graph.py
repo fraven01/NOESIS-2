@@ -272,6 +272,43 @@ def test_llm_timeout_falls_back(
     assert any("hybrid.llm_timeout" in record.getMessage() for record in caplog.records)
 
 
+def test_llm_rerank_closes_db_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph = build_hybrid_graph()
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "llm_worker.graphs.hybrid_search_and_score.close_old_connections",
+        lambda: calls.append("closed"),
+    )
+    monkeypatch.setattr(
+        "llm_worker.graphs.hybrid_search_and_score.run_score_results",
+        lambda *_args, **_kwargs: {
+            "evaluations": [
+                {
+                    "candidate_id": "doc-1",
+                    "score": 88,
+                    "reason": "ok",
+                    "gap_tags": [],
+                    "risk_flags": [],
+                    "facet_coverage": {},
+                }
+            ],
+            "top_k": [],
+        },
+    )
+
+    graph._run_llm_rerank(
+        query="policy",
+        candidates=[{"id": "doc-1", "snippet": "Policy overview"}],
+        meta=_base_meta(),
+        scoring_context=None,
+        rag_facets={},
+        rag_summaries=[],
+    )
+
+    assert len(calls) >= 2
+
+
 def test_llm_cache_avoids_second_call(monkeypatch: pytest.MonkeyPatch) -> None:
     call_counter = {"count": 0}
 

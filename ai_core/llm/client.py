@@ -325,6 +325,7 @@ def call(
     *,
     response_format: Dict[str, Any] | None = None,
     extra_params: Dict[str, Any] | None = None,
+    timeout_s: float | None = None,
 ) -> Dict[str, Any]:
     """Call the LLM via LiteLLM proxy using a routing ``label``.
 
@@ -421,7 +422,10 @@ def call(
     resp: requests.Response | None = None
     attempt_headers = headers.copy()
     attempt_headers[IDEMPOTENCY_KEY_HEADER] = idempotency_key
-    timeout = _resolve_timeouts(label, cfg, stream=False)
+    if timeout_s is not None and timeout_s > 0:
+        timeout = (timeout_s, timeout_s)
+    else:
+        timeout = _resolve_timeouts(label, cfg, stream=False)
     breaker = get_litellm_circuit_breaker()
     if not breaker.allow_request():
         retry_after_ms = None
@@ -731,6 +735,7 @@ def call_stream(
     metadata: Dict[str, Any],
     *,
     extra_params: Dict[str, Any] | None = None,
+    timeout_s: float | None = None,
 ) -> Iterator[StreamChunk]:
     """Stream tokens from the LLM via LiteLLM proxy (streaming mode).
 
@@ -821,7 +826,10 @@ def call_stream(
     resp: requests.Response | None = None
     attempt_headers = headers.copy()
     attempt_headers[IDEMPOTENCY_KEY_HEADER] = idempotency_key
-    timeout = _resolve_timeouts(label, cfg, stream=True)
+    if timeout_s is not None and timeout_s > 0:
+        timeout = (timeout_s, timeout_s)
+    else:
+        timeout = _resolve_timeouts(label, cfg, stream=True)
     breaker = get_litellm_circuit_breaker()
     if not breaker.allow_request():
         retry_after_ms = None

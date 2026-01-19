@@ -535,6 +535,7 @@ from theme.views_documents import (  # noqa: E402,F401
 from theme.views_web_search import (  # noqa: E402,F401
     web_search,
     web_search_ingest_selected,
+    web_search_status,
 )
 from theme.views_ingestion import (  # noqa: E402,F401
     crawler_submit,

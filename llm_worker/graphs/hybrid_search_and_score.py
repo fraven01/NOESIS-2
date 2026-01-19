@@ -17,6 +17,7 @@ from uuid import UUID, uuid5
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db import close_old_connections
 
 from ai_core.infra.observability import update_observation
 from ai_core.nodes import retrieve
@@ -124,6 +125,13 @@ _URL_SPLIT_PATTERN = re.compile(r"https?://")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 _WORD_PATTERN = re.compile(r"[\w\u00C0-\u024F]+", re.UNICODE)
 _CUSTOM_FACET_KEYS = {"custom_facets", "facet_scores", "facets"}
+
+
+def _close_old_connections_safe() -> None:
+    try:
+        close_old_connections()
+    except Exception:
+        logger.debug("hybrid.db_connection_cleanup_failed", exc_info=True)
 
 
 def _ensure_mutable(mapping: Mapping[str, Any] | None) -> MutableMapping[str, Any]:
@@ -1085,6 +1093,18 @@ class HybridSearchAndScoreGraph:
         score_config["prompt_version"] = meta.get("prompt_version") or "hybrid-score.v1"
         score_config["model_preset"] = meta.get("model_preset") or "fast"
         score_config["max_tokens"] = meta.get("max_tokens") or 2000
+        if getattr(settings, "DEBUG", False):
+            score_config["max_tokens"] = max(score_config["max_tokens"], 12000)
+            timeout_value = meta.get("timeout_s")
+            if timeout_value is not None:
+                try:
+                    timeout_value = float(timeout_value)
+                except (TypeError, ValueError):
+                    timeout_value = None
+            if timeout_value is not None:
+                if timeout_value < 0:
+                    timeout_value = 0.0
+                score_config["timeout_s"] = min(timeout_value, 90.0)
         if scoring_context:
             score_config["scoring_context_payload"] = scoring_context.model_dump(
                 mode="json"
@@ -1105,6 +1125,7 @@ class HybridSearchAndScoreGraph:
                 for summary in rag_summaries[:3]
             ]
 
+        _close_old_connections_safe()
         try:
             response = run_score_results(payload, config=score_config)
         except TimeoutError:
@@ -1156,6 +1177,8 @@ class HybridSearchAndScoreGraph:
                     "llm_items": len(fallback),
                 },
             )
+        finally:
+            _close_old_connections_safe()
 
         ranked_payload = response.get("evaluations") or response.get("ranked") or []
         ranked_items = self._build_llm_items(
