@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID, uuid5
 
+from ai_core.rag.chunking.utils import split_sentences
+
 logger = logging.getLogger(__name__)
 
 
@@ -334,6 +336,68 @@ class LateChunker:
 
         return runs
 
+    def _merge_short_runs(
+        self,
+        runs: List[TextRun],
+        *,
+        min_tokens: int,
+    ) -> List[TextRun]:
+        if not runs:
+            return []
+        if min_tokens <= 0:
+            return runs
+
+        merged: list[TextRun] = []
+        carry_text = ""
+
+        for run in runs:
+            run_text = run.text or ""
+            if carry_text:
+                if run_text:
+                    run_text = f"{carry_text}\n\n{run_text}"
+                else:
+                    run_text = carry_text
+            token_count = self._count_tokens(run_text)
+
+            if token_count < min_tokens:
+                carry_text = run_text
+                continue
+
+            merged.append(
+                TextRun(
+                    index=run.index,
+                    section_path=run.section_path,
+                    segments=run.segments,
+                    text=run_text,
+                    page_index=run.page_index,
+                )
+            )
+            carry_text = ""
+
+        if carry_text:
+            if merged:
+                last = merged[-1]
+                merged[-1] = TextRun(
+                    index=last.index,
+                    section_path=last.section_path,
+                    segments=last.segments,
+                    text=f"{last.text}\n\n{carry_text}",
+                    page_index=last.page_index,
+                )
+            else:
+                last_run = runs[-1]
+                merged.append(
+                    TextRun(
+                        index=last_run.index,
+                        section_path=last_run.section_path,
+                        segments=last_run.segments,
+                        text=carry_text,
+                        page_index=last_run.page_index,
+                    )
+                )
+
+        return merged
+
     def _finalize_text_run(
         self,
         index: int,
@@ -418,11 +482,7 @@ class LateChunker:
 
     def _split_sentences(self, text: str) -> List[str]:
         """Split text into sentences (simple heuristic for now)."""
-        import re
-
-        # Simple sentence splitter (can be replaced with NLTK/spaCy later)
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        return [s.strip() for s in sentences if s.strip()]
+        return split_sentences(text)
 
     def _create_sentence_windows(
         self,
@@ -915,6 +975,7 @@ class LateChunker:
         sentences: List[str],
         boundaries: List[LateBoundary],
         document_id: UUID,
+        chunker_label: str = "late",
     ) -> List[Mapping[str, Any]]:
         """Build adaptive text chunks with structure-aware metadata."""
         chunks: list[Mapping[str, Any]] = []
@@ -940,7 +1001,7 @@ class LateChunker:
                 "parent_ref": parent_ref,
                 "section_path": section_path,
                 "metadata": {
-                    "chunker": "late",
+                    "chunker": chunker_label,
                     "kind": "text",
                     "sentence_range": (boundary.start_idx, boundary.end_idx),
                     "similarity_score": boundary.similarity_score,
@@ -991,35 +1052,25 @@ class LateChunker:
         )
         chunks: list[Mapping[str, Any]] = []
         namespace_id = self._resolve_chunk_namespace_id(context)
-        for idx, block in enumerate(parsed.text_blocks):
-            text = block.text.strip()
-            if not text:
+        runs = self._build_text_runs(parsed)
+        min_tokens = max(40, self.target_tokens // 6)
+        runs = self._merge_short_runs(runs, min_tokens=min_tokens)
+        for run in runs:
+            if not run.text:
                 continue
-            section_path = list(block.section_path) if block.section_path else []
-            parent_ref = (
-                ">".join(block.section_path) if block.section_path else f"block:{idx}"
-            )
-            chunk_text = text[:2048]
-            chunk_id = self._build_adaptive_chunk_id(
+            sentences = self._split_sentences(run.text)
+            if not sentences:
+                continue
+            boundaries = self._detect_boundaries(sentences, context)
+            run_chunks = self._build_chunks_adaptive(
+                run=run,
+                sentences=sentences,
+                boundaries=boundaries,
                 document_id=namespace_id,
-                chunk_text=chunk_text,
-                kind="text",
-                parent_ref=parent_ref,
-                locator=f"fallback:{idx}",
+                chunker_label="late-fallback",
             )
-            chunk = {
-                "chunk_id": chunk_id,
-                "text": chunk_text,
-                "parent_ref": parent_ref,
-                "section_path": section_path,
-                "metadata": {
-                    "chunker": "late-fallback",
-                    "kind": "text",
-                },
-            }
-            if block.page_index is not None:
-                chunk["page_index"] = block.page_index
-            chunks.append(chunk)
+            if run_chunks:
+                chunks.extend(run_chunks)
         return chunks
 
     def _build_asset_chunks(
@@ -1196,29 +1247,27 @@ class LateChunker:
             extra={"document_id": str(context.metadata.document_id)},
         )
 
-        # Simple fallback: use block-based chunking (like SimpleDocumentChunker)
-        chunks = []
+        chunks: list[Mapping[str, Any]] = []
         namespace_id = self._resolve_chunk_namespace_id(context)
-        for idx, block in enumerate(parsed.text_blocks):
-            text = block.text.strip()
-            if not text:
+        runs = self._build_text_runs(parsed)
+        min_tokens = max(40, self.target_tokens // 6)
+        runs = self._merge_short_runs(runs, min_tokens=min_tokens)
+        for run in runs:
+            if not run.text:
                 continue
-
-            locator = f"fallback:{idx}"
-            chunk_id = str(uuid5(namespace_id, f"chunk:{locator}"))
-
-            chunk = {
-                "chunk_id": chunk_id,
-                "text": text[:2048],  # Truncate like SimpleDocumentChunker
-                "parent_ref": f"block:{idx}",
-                "section_path": list(block.section_path) if block.section_path else [],
-                "metadata": {
-                    "chunker": "late-fallback",
-                    "kind": block.kind,
-                },
-            }
-
-            chunks.append(chunk)
+            sentences = self._split_sentences(run.text)
+            if not sentences:
+                continue
+            boundaries = self._detect_boundaries(sentences, context)
+            run_chunks = self._build_chunks_adaptive(
+                run=run,
+                sentences=sentences,
+                boundaries=boundaries,
+                document_id=namespace_id,
+                chunker_label="late-fallback",
+            )
+            if run_chunks:
+                chunks.extend(run_chunks)
 
         return chunks
 

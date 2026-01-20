@@ -490,6 +490,11 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=3, minute=0),
         "options": {"queue": "default"},
     },
+    "rag-rerank-weight-update": {
+        "task": "ai_core.tasks.rag_feedback.update_weights",
+        "schedule": timedelta(hours=6),
+        "options": {"queue": "default"},
+    },
 }
 
 

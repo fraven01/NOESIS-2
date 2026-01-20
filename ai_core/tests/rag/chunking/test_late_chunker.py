@@ -140,6 +140,88 @@ class TestLateChunker:
         for chunk in chunks:
             assert chunk["metadata"]["chunker"] == "late-fallback"
 
+    def test_late_chunker_fallback_does_not_truncate(
+        self,
+        stub_embedding_client,
+        sample_processing_context,
+    ):
+        """Fallback chunking should avoid hard truncation."""
+        from documents.pipeline import ParsedResult, ParsedTextBlock
+
+        long_text = "A" * 3000
+        parsed = ParsedResult(
+            text_blocks=[
+                ParsedTextBlock(
+                    kind="paragraph",
+                    text=long_text,
+                    section_path=("Long Section",),
+                    page_index=None,
+                )
+            ],
+            assets=[],
+            statistics={"block.count": 1},
+        )
+
+        chunker = LateChunker(
+            model="oai-embed-large",
+            max_tokens=10,  # Force fallback
+            target_tokens=450,
+        )
+
+        with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
+            mock_get_client.return_value = stub_embedding_client
+
+            chunks = chunker.chunk(parsed, sample_processing_context)
+
+        assert len(chunks) > 0
+        assert any(len(chunk["text"]) > 2048 for chunk in chunks)
+        assert all(chunk["metadata"]["chunker"] == "late-fallback" for chunk in chunks)
+
+    def test_late_chunker_fallback_merges_heading_only_sections(
+        self,
+        stub_embedding_client,
+        sample_processing_context,
+    ):
+        """Fallback merges tiny heading-only sections into following content."""
+        from documents.pipeline import ParsedResult, ParsedTextBlock
+
+        heading = "Konzernbetriebsvereinbarung"
+        paragraph = "This is a paragraph that should absorb the heading."
+        parsed = ParsedResult(
+            text_blocks=[
+                ParsedTextBlock(
+                    kind="heading",
+                    text=heading,
+                    section_path=("Heading",),
+                    page_index=None,
+                ),
+                ParsedTextBlock(
+                    kind="paragraph",
+                    text=paragraph,
+                    section_path=("Body",),
+                    page_index=None,
+                ),
+            ],
+            assets=[],
+            statistics={"block.count": 2},
+        )
+
+        chunker = LateChunker(
+            model="oai-embed-large",
+            max_tokens=10,
+            target_tokens=450,
+        )
+
+        with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
+            mock_get_client.return_value = stub_embedding_client
+            chunks = chunker.chunk(parsed, sample_processing_context)
+
+        assert len(chunks) > 0
+        assert any(
+            heading in chunk["text"] and paragraph in chunk["text"] for chunk in chunks
+        )
+        assert all(chunk["metadata"]["chunker"] == "late-fallback" for chunk in chunks)
+
     def test_late_chunker_handles_empty_blocks(
         self,
         stub_embedding_client,

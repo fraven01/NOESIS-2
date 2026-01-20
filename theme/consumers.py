@@ -14,6 +14,7 @@ from ai_core.tool_contracts import ContextError
 from ai_core.services.rag_query import RagQueryService
 from theme.chat_utils import (
     build_hybrid_config_from_payload,
+    build_passage_items_for_workbench,
     build_snippet_items,
     link_citations,
     load_history,
@@ -116,6 +117,11 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
         retrieval_meta = result_payload.get("retrieval") or {}
+        passages = build_passage_items_for_workbench(snippets)
+        if passages:
+            retrieval_meta = dict(retrieval_meta)
+            retrieval_meta["passages"] = passages
+            result_payload["retrieval"] = retrieval_meta
         try:
             top_k = int(retrieval_meta.get("top_k_effective") or 0)
         except (TypeError, ValueError):
@@ -139,6 +145,15 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
         show_debug = bool(settings.DEBUG) or bool(getattr(user, "is_staff", False))
         if not show_debug:
             debug_meta = None
+        else:
+            if isinstance(passages, list) and passages:
+                debug_meta = dict(debug_meta or {})
+                debug_meta["passages"] = passages
+            if isinstance(retrieval_meta, dict):
+                reference_expansion = retrieval_meta.get("reference_expansion")
+                if isinstance(reference_expansion, dict):
+                    debug_meta = dict(debug_meta or {})
+                    debug_meta["reference_expansion"] = reference_expansion
 
         await self.send_json(
             {

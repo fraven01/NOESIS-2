@@ -89,6 +89,8 @@ class ChunkMeta(BaseModel):
     lifecycle_state: str | None = None
     chunker: str | None = None
     chunker_mode: str | None = None
+    reference_ids: list[str] | None = None
+    reference_labels: list[str] | None = None
     trace_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")

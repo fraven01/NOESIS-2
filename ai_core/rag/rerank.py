@@ -10,6 +10,12 @@ from ai_core.infra.prompts import load
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tool_contracts import ToolContext
+from ai_core.infra.observability import update_observation
+from ai_core.rag.rerank_features import (
+    extract_rerank_features,
+    resolve_weight_profile,
+    summarise_features,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +167,28 @@ def rerank_chunks(
     materialized = [dict(chunk) for chunk in chunks if isinstance(chunk, Mapping)]
     if not materialized:
         return RerankResult(chunks=[], mode="off")
+
+    try:
+        quality_mode = os.getenv("RAG_RERANK_QUALITY_MODE")
+        features = extract_rerank_features(
+            materialized,
+            context=context,
+            quality_mode=quality_mode,
+        )
+        feature_summary = summarise_features(features)
+        if feature_summary:
+            weights = resolve_weight_profile(quality_mode, context=context)
+            update_observation(
+                metadata={
+                    "rag.rerank_features.weights": weights,
+                    "rag.rerank_features.summary": feature_summary,
+                }
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "rag.rerank_features.failed",
+            extra={"error": type(exc).__name__, "message": str(exc)},
+        )
 
     resolved_mode = (
         str(mode).strip().lower()

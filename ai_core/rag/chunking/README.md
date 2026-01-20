@@ -97,7 +97,7 @@ HybridChunker (Main Implementation)
 
 **Strategy**: Use LLM to detect semantic boundaries in complex documents.
 
-> **⚠️ MVP Status (2025-12-30)**: AgenticChunker infrastructure is complete (rate limiting, fallback, cost tracking), but **LLM boundary detection is not yet activated**. Currently raises `NotImplementedError` and immediately falls back to LateChunker. Phase 2.5 will activate the LLM integration with structured prompts.
+> **Status (2026-01-20)**: AgenticChunker now calls the LLM for boundary detection with structured JSON output. Rate limiting, token budgeting, and automatic fallback to LateChunker remain in place.
 
 **Algorithm** (when LLM activated):
 1. Send document to LLM with boundary detection prompt

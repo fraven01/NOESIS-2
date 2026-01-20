@@ -449,6 +449,46 @@ def _deduplicate_matches(matches: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
     return ordered_matches
 
 
+def _summarise_source_mix(matches: list[Dict[str, Any]]) -> dict[str, int]:
+    vector_only = 0
+    lexical_only = 0
+    both = 0
+    neither = 0
+
+    for match in matches:
+        meta = match.get("meta")
+        if not isinstance(meta, Mapping):
+            meta = {}
+        vscore = meta.get("vscore", 0.0)
+        lscore = meta.get("lscore", 0.0)
+        try:
+            vscore_val = float(vscore)
+        except (TypeError, ValueError):
+            vscore_val = 0.0
+        try:
+            lscore_val = float(lscore)
+        except (TypeError, ValueError):
+            lscore_val = 0.0
+
+        has_vector = vscore_val > 0.0
+        has_lexical = lscore_val > 0.0
+        if has_vector and has_lexical:
+            both += 1
+        elif has_vector:
+            vector_only += 1
+        elif has_lexical:
+            lexical_only += 1
+        else:
+            neither += 1
+
+    return {
+        "vector_only": vector_only,
+        "lexical_only": lexical_only,
+        "both": both,
+        "neither": neither,
+    }
+
+
 def _extract_document_id(match: Mapping[str, Any]) -> str | None:
     doc_id = _coerce_str(match.get("id"))
     if doc_id:
@@ -854,6 +894,18 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         final_matches,
         context=context,
         permission_type="VIEW",
+    )
+    source_mix = _summarise_source_mix(final_matches)
+    logger.debug(
+        "rag.retrieve.source_mix",
+        extra={
+            "tenant_id": tenant_id,
+            "case_id": case_id,
+            "vector_only": source_mix["vector_only"],
+            "lexical_only": source_mix["lexical_only"],
+            "both": source_mix["both"],
+            "neither": source_mix["neither"],
+        },
     )
 
     if parent_context:

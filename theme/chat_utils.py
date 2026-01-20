@@ -133,6 +133,15 @@ def build_snippet_items(
             meta = snippet.get("meta")
             if isinstance(meta, dict):
                 document_id = meta.get("document_id")
+                chunk_id = meta.get("chunk_id")
+            else:
+                chunk_id = None
+        else:
+            meta = snippet.get("meta")
+            if isinstance(meta, dict):
+                chunk_id = meta.get("chunk_id")
+            else:
+                chunk_id = None
         download_url = _build_download_url(
             document_id if isinstance(document_id, str) else None
         )
@@ -149,6 +158,93 @@ def build_snippet_items(
                 "score_percent": int(score_value * 100),
                 "download_url": download_url,
                 "citation_label": _resolve_citation_label(snippet),
+                "document_id": document_id,
+                "chunk_id": chunk_id,
+            }
+        )
+    return items
+
+
+def build_passage_items_for_workbench(snippets: object) -> list[dict[str, object]]:
+    if not isinstance(snippets, list):
+        return []
+
+    try:
+        from ai_core.rag.passage_assembly import assemble_passages
+        from ai_core.rag.schemas import Chunk
+    except Exception:
+        return []
+
+    chunks: list[Chunk] = []
+    reference_map: dict[str, dict[str, list[str]]] = {}
+    for index, snippet in enumerate(snippets):
+        if not isinstance(snippet, dict):
+            continue
+        meta = snippet.get("meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        chunk_id = meta.get("chunk_id") or snippet.get("id") or f"snippet-{index}"
+        document_id = meta.get("document_id") or snippet.get("id")
+        section_path = meta.get("section_path") or []
+        if isinstance(section_path, str):
+            section_path = [section_path]
+        chunk_index = meta.get("chunk_index")
+        if chunk_index is None:
+            chunk_index = index
+        chunk_meta = {
+            "chunk_id": chunk_id,
+            "document_id": document_id,
+            "section_path": section_path,
+            "chunk_index": chunk_index,
+            "score": snippet.get("score", 0.0),
+        }
+        parent_ids = meta.get("parent_ids")
+        if parent_ids is not None:
+            chunk_meta["parent_ids"] = parent_ids
+        reference_ids = meta.get("reference_ids") or meta.get("references")
+        if isinstance(reference_ids, list):
+            cleaned_ids = [
+                str(value).strip()
+                for value in reference_ids
+                if isinstance(value, (str, int, float))
+            ]
+        else:
+            cleaned_ids = []
+        reference_labels = meta.get("reference_labels")
+        if isinstance(reference_labels, list):
+            cleaned_labels = [
+                str(value).strip()
+                for value in reference_labels
+                if isinstance(value, (str, int, float))
+            ]
+        else:
+            cleaned_labels = []
+        reference_map[str(chunk_id)] = {
+            "reference_ids": [value for value in cleaned_ids if value],
+            "reference_labels": [value for value in cleaned_labels if value],
+        }
+        chunks.append(Chunk(content=str(snippet.get("text") or ""), meta=chunk_meta))
+
+    passages = assemble_passages(chunks)
+    items: list[dict[str, object]] = []
+    for passage in passages:
+        passage_reference_ids: list[str] = []
+        passage_reference_labels: list[str] = []
+        for chunk_id in passage.chunk_ids:
+            entry = reference_map.get(str(chunk_id))
+            if not entry:
+                continue
+            passage_reference_ids.extend(entry.get("reference_ids", []))
+            passage_reference_labels.extend(entry.get("reference_labels", []))
+        items.append(
+            {
+                "passage_id": passage.passage_id,
+                "score": passage.score,
+                "section_path": list(passage.section_path),
+                "chunk_ids": list(passage.chunk_ids),
+                "text": passage.text,
+                "reference_ids": list(dict.fromkeys(passage_reference_ids)),
+                "reference_labels": list(dict.fromkeys(passage_reference_labels)),
             }
         )
     return items

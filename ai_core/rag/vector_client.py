@@ -48,7 +48,7 @@ from .query_builder import (
 )
 from .lexical_search import run_lexical_search
 from .routing_rules import is_collection_routing_enabled
-from .score_fusion import fuse_candidates
+from .hybrid_fusion import fuse_candidates
 from .vector_search import run_vector_search
 from .vector_utils import (
     _normalise_vector,

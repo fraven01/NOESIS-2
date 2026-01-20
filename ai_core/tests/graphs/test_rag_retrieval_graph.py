@@ -154,3 +154,52 @@ def test_document_id_scoping_overrides_filters() -> None:
     assert captured_filters
     assert captured_filters[0]["id"] == "doc-123"
     assert captured_filters[0]["type"] == "framework"
+
+
+def test_reference_expansion_adds_matches(monkeypatch) -> None:
+    context = _tool_context()
+
+    class StubRetrieve:
+        def __call__(self, _context, params):
+            if params.filters and params.filters.get("id") == "doc-ref":
+                return _retrieve_output(
+                    [
+                        {
+                            "id": "ref-chunk",
+                            "text": "ref-1",
+                            "score": 0.65,
+                            "meta": {"document_id": "doc-ref"},
+                        }
+                    ]
+                )
+            return _retrieve_output(
+                [
+                    {
+                        "id": "seed-chunk",
+                        "text": "seed",
+                        "score": 0.7,
+                        "meta": {"reference_ids": ["doc-ref"]},
+                    }
+                ]
+            )
+
+    monkeypatch.setenv("RAG_REFERENCE_EXPANSION", "1")
+    monkeypatch.setenv("RAG_REFERENCE_EXPANSION_LIMIT", "3")
+    monkeypatch.setenv("RAG_REFERENCE_EXPANSION_TOP_K", "5")
+
+    graph = RagRetrievalGraph(retrieve_node=StubRetrieve())
+    state = {
+        "schema_id": "noesis.graphs.rag_retrieval",
+        "schema_version": "1.0.0",
+        "tool_context": context,
+        "queries": ["alpha"],
+        "retrieve": {"hybrid": {"alpha": 0.7, "top_k": 10}},
+        "use_rerank": False,
+    }
+
+    result = graph.invoke(state)
+
+    ids = {match["id"] for match in result["matches"]}
+    assert "seed-chunk" in ids
+    assert "ref-chunk" in ids
+    assert result["retrieval_meta"]["reference_expansion"]["reference_count"] == 1

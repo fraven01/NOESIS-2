@@ -46,15 +46,19 @@ Date: 2025-12-30
 """
 
 import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ai_core.rag.chunking.late_chunker import LateChunker
+from ai_core.rag.chunking.utils import split_sentences
+from ai_core.llm import client as llm_client
+from ai_core.llm.client import LlmClientError, LlmTimeoutError, RateLimitError
 from documents.pipeline import DocumentProcessingContext, ParsedResult
 
 logger = logging.getLogger(__name__)
@@ -313,7 +317,11 @@ class AgenticChunker:
 
         # Attempt LLM boundary detection
         try:
-            boundaries = self._detect_boundaries_llm(sentences, document_text)
+            boundaries = self._detect_boundaries_llm(
+                sentences,
+                document_text,
+                context,
+            )
 
             # Record successful call
             self.rate_limiter.record_call(int(estimated_tokens))
@@ -344,15 +352,17 @@ class AgenticChunker:
                 continue
 
             # Split on sentence boundaries
-            for sent in text.replace("!", ".").replace("?", ".").split("."):
-                sent = sent.strip()
+            for sent in split_sentences(text):
                 if sent and len(sent) > 10:  # Minimum sentence length
                     sentences.append(sent)
 
         return sentences
 
     def _detect_boundaries_llm(
-        self, sentences: list[str], document_text: str
+        self,
+        sentences: list[str],
+        document_text: str,
+        context: DocumentProcessingContext,
     ) -> list[int]:
         """
         Detect chunk boundaries using LLM.
@@ -367,16 +377,140 @@ class AgenticChunker:
         Raises:
             Exception: On LLM failure (timeout, invalid response, etc.)
         """
-        # TODO: Implement actual LLM call with structured output
-        # For now, MVP implementation returns empty boundaries
-        # (will fallback to LateChunker)
+        if not sentences:
+            return []
 
-        # Mock LLM call for MVP
-        logger.warning(
-            "AgenticChunker LLM boundary detection not yet implemented (MVP), "
-            "falling back to LateChunker"
+        _ = document_text
+
+        indexed_text = "\n".join(
+            f"{idx}: {sentence}" for idx, sentence in enumerate(sentences)
         )
-        raise NotImplementedError("LLM boundary detection not yet implemented")
+        prompt = BOUNDARY_DETECTION_PROMPT.format(document_text=indexed_text)
+
+        metadata = {
+            "tenant_id": getattr(context.metadata, "tenant_id", None),
+            "case_id": getattr(context.metadata, "case_id", None),
+            "trace_id": context.trace_id or getattr(context.metadata, "trace_id", None),
+            "prompt_version": "agentic_chunk_boundaries_v1",
+        }
+
+        def _extract_payload(text: str) -> dict[str, Any]:
+            cleaned = (text or "").strip()
+            if cleaned.startswith("```") and cleaned.endswith("```"):
+                lines = cleaned.splitlines()
+                if len(lines) >= 3:
+                    cleaned = "\n".join(lines[1:-1]).strip()
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                raise ValueError("llm payload missing json object")
+            fragment = cleaned[start : end + 1]
+            data = json.loads(fragment)
+            if not isinstance(data, dict):
+                raise ValueError("llm payload must be a json object")
+            return data
+
+        def _normalize_boundaries(
+            response: BoundaryDetectionResponse,
+        ) -> list[int]:
+            total_sentences = len(sentences)
+            if response.metadata.total_sentences != total_sentences:
+                logger.warning(
+                    "agentic_chunker_sentence_count_mismatch",
+                    extra={
+                        "expected": total_sentences,
+                        "reported": response.metadata.total_sentences,
+                    },
+                )
+
+            candidates: list[int] = []
+            for boundary in response.boundaries:
+                if boundary.confidence < self.confidence_threshold:
+                    continue
+                idx = boundary.sentence_idx
+                if idx <= 0 or idx >= total_sentences:
+                    continue
+                candidates.append(idx)
+
+            candidates = sorted(set(candidates))
+
+            filtered: list[int] = []
+            last_idx = 0
+            for idx in candidates:
+                if idx - last_idx < self.min_chunk_sentences:
+                    continue
+                while idx - last_idx > self.max_chunk_sentences:
+                    insert_idx = last_idx + self.max_chunk_sentences
+                    filtered.append(insert_idx)
+                    last_idx = insert_idx
+                filtered.append(idx)
+                last_idx = idx
+
+            while total_sentences - last_idx > self.max_chunk_sentences:
+                insert_idx = last_idx + self.max_chunk_sentences
+                filtered.append(insert_idx)
+                last_idx = insert_idx
+
+            if filtered and total_sentences - filtered[-1] < self.min_chunk_sentences:
+                filtered.pop()
+
+            return sorted(set(filtered))
+
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = llm_client.call(
+                    self.model,
+                    prompt,
+                    metadata,
+                    response_format={"type": "json_object"},
+                    timeout_s=self.timeout,
+                )
+                payload = _extract_payload(str(response.get("text") or ""))
+                parsed = BoundaryDetectionResponse.model_validate(payload)
+                boundaries = _normalize_boundaries(parsed)
+                logger.info(
+                    "agentic_chunker_boundaries_detected",
+                    extra={
+                        "boundary_count": len(boundaries),
+                        "sentence_count": len(sentences),
+                        "document_id": str(context.metadata.document_id),
+                    },
+                )
+                return boundaries
+            except RateLimitError as exc:
+                logger.warning(
+                    "agentic_chunker_llm_rate_limited",
+                    extra={
+                        "document_id": str(context.metadata.document_id),
+                        "error": str(exc),
+                    },
+                )
+                raise
+            except (
+                LlmClientError,
+                LlmTimeoutError,
+                ValueError,
+                ValidationError,
+            ) as exc:
+                last_error = exc
+                logger.warning(
+                    "agentic_chunker_llm_attempt_failed",
+                    extra={
+                        "attempt": attempt + 1,
+                        "max_retries": self.max_retries,
+                        "document_id": str(context.metadata.document_id),
+                        "error": str(exc),
+                    },
+                )
+                if attempt < self.max_retries:
+                    time.sleep(1)
+                    continue
+                break
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("agentic chunker failed without exception")
 
     def _build_chunks_from_boundaries(
         self,

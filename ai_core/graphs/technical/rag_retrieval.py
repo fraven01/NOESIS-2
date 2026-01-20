@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping, MutableMapping, Protocol, Sequence, Literal
 
+from common.logging import get_logger
+
+from ai_core.infra.observability import update_observation
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.nodes import retrieve
 from ai_core.rag import rerank as rag_rerank
+from ai_core.rag.query_planner import plan_query
 from ai_core.tool_contracts import ToolContext
 
 
@@ -56,6 +63,9 @@ RAG_RETRIEVAL_IO = GraphIOSpec(
     input_model=RagRetrievalGraphInput,
     output_model=RagRetrievalGraphOutput,
 )
+
+
+logger = get_logger(__name__)
 
 
 class RetrieveNode(Protocol):
@@ -181,6 +191,64 @@ def _coerce_int(value: object) -> int | None:
     return candidate
 
 
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coerce_positive_int(value: object, *, default: int) -> int:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        return default
+    return candidate if candidate > 0 else default
+
+
+def _normalize_reference_id(value: str) -> str | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        return str(uuid.UUID(candidate))
+    except Exception:
+        return candidate
+
+
+def _extract_reference_ids(match: Mapping[str, Any]) -> list[str]:
+    meta = match.get("meta")
+    if not isinstance(meta, Mapping):
+        return []
+    raw = meta.get("reference_ids") or meta.get("references")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return []
+    references: list[str] = []
+    for entry in raw:
+        try:
+            text = str(entry).strip()
+        except Exception:
+            text = ""
+        if not text:
+            continue
+        normalized = _normalize_reference_id(text)
+        if normalized:
+            references.append(normalized)
+    return references
+
+
+def _collect_reference_ids(matches: Sequence[Mapping[str, Any]]) -> list[str]:
+    seen: set[str] = set()
+    collected: list[str] = []
+    for match in matches:
+        for ref_id in _extract_reference_ids(match):
+            if ref_id in seen:
+                continue
+            seen.add(ref_id)
+            collected.append(ref_id)
+    return collected
+
+
 @dataclass(frozen=True)
 class RagRetrievalGraph:
     """Graph executing multi-query retrieval with optional rerank."""
@@ -207,6 +275,18 @@ class RagRetrievalGraph:
         context = graph_input.tool_context
         queries = _coerce_queries(graph_input.queries)
         document_id = graph_input.document_id
+        plan = plan_query(
+            queries[0],
+            context=context,
+            doc_class=graph_input.retrieve.doc_class,
+            filters=graph_input.retrieve.filters,
+        )
+        if len(queries) > 1:
+            plan = plan.model_copy(
+                update={"queries": list(queries), "planner": "manual"}
+            )
+        elif plan.queries:
+            queries = plan.queries
 
         outputs: list[retrieve.RetrieveOutput] = []
         errors: list[Exception] = []
@@ -235,9 +315,86 @@ class RagRetrievalGraph:
 
         deduped = _dedupe_matches(matches)
         retrieval_meta = _aggregate_retrieval_meta(outputs, deduped)
+        retrieval_meta["query_plan"] = plan.model_dump(mode="json", exclude_none=True)
+        try:
+            logger.info(
+                "rag.retrieval.query_plan",
+                extra={
+                    "planner": plan.planner,
+                    "doc_type": plan.doc_type,
+                    "queries": plan.queries,
+                    "constraints": plan.constraints.model_dump(
+                        mode="json", exclude_none=True
+                    ),
+                },
+            )
+            update_observation(
+                metadata={
+                    "rag.query_plan.planner": plan.planner,
+                    "rag.query_plan.doc_type": plan.doc_type,
+                    "rag.query_plan.query_count": len(plan.queries),
+                }
+            )
+        except Exception:
+            pass
+
+        reference_meta: dict[str, Any] | None = None
+        if _env_flag("RAG_REFERENCE_EXPANSION", default=False):
+            ref_start = time.monotonic()
+            reference_ids = _collect_reference_ids(deduped)
+            ref_limit = _coerce_positive_int(
+                os.getenv("RAG_REFERENCE_EXPANSION_LIMIT", "5"), default=5
+            )
+            reference_ids = reference_ids[:ref_limit]
+            ref_matches: list[Mapping[str, Any]] = []
+            ref_errors = 0
+            if reference_ids:
+                ref_query = " | ".join(queries)
+                ref_top_k = _coerce_positive_int(
+                    os.getenv("RAG_REFERENCE_EXPANSION_TOP_K", "3"), default=3
+                )
+                for ref_id in reference_ids:
+                    params_payload = dict(base_payload)
+                    params_payload["query"] = ref_query
+                    ref_filters = dict(params_payload.get("filters") or {})
+                    ref_filters["id"] = ref_id
+                    params_payload["filters"] = ref_filters
+                    params_payload["top_k"] = ref_top_k
+                    params = retrieve.RetrieveInput.model_validate(params_payload)
+                    try:
+                        retrieve_output = self.retrieve_node(context, params)
+                    except Exception:
+                        ref_errors += 1
+                        continue
+                    ref_matches.extend(retrieve_output.matches)
+            if ref_matches:
+                deduped = _dedupe_matches([*deduped, *ref_matches])
+            reference_meta = {
+                "reference_ids": reference_ids,
+                "reference_count": len(reference_ids),
+                "expanded_matches": len(ref_matches),
+                "errors": ref_errors,
+                "took_ms": int((time.monotonic() - ref_start) * 1000),
+            }
+            retrieval_meta["reference_expansion"] = reference_meta
+            try:
+                logger.info(
+                    "rag.retrieval.reference_expansion",
+                    extra=reference_meta,
+                )
+                update_observation(
+                    metadata={
+                        "rag.reference_expansion.count": len(reference_ids),
+                        "rag.reference_expansion.matches": len(ref_matches),
+                    }
+                )
+            except Exception:
+                pass
+
         top_k = _coerce_int(retrieval_meta.get("top_k_effective"))
         if top_k and top_k > 0:
             deduped = deduped[:top_k]
+        retrieval_meta["matches_returned"] = len(deduped)
 
         rerank_meta: dict[str, Any] | None = None
         snippets = deduped

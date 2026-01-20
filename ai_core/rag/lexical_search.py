@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Callable, Iterable, List, Sequence
 
 from psycopg2 import Error as PsycopgError, sql
@@ -40,6 +41,7 @@ def run_lexical_search(
     extract_score_from_row: Callable[[object], object | None],
     logger,
 ) -> LexicalSearchOutcome:
+    started_at = time.perf_counter()
     applied_trgm_limit_value: float | None = None
     fallback_limit_used_value: float | None = None
     fallback_tried_limits: List[float] = []
@@ -654,6 +656,20 @@ def run_lexical_search(
             "rag.debug.rows.lexical.final",
             count=len(lexical_rows),
             first_len=(len(lexical_rows[0]) if lexical_rows else 0),
+        )
+    except Exception:
+        pass
+    try:
+        duration_ms = int(round((time.perf_counter() - started_at) * 1000))
+        logger.info(
+            "rag.hybrid.lexical_summary",
+            tenant_id=tenant,
+            case_id=case_id,
+            count=len(lexical_rows),
+            duration_ms=duration_ms,
+            requested_trgm_limit=requested_trgm_limit,
+            applied_trgm_limit=applied_trgm_limit_value,
+            lexical_query_variant=lexical_query_variant,
         )
     except Exception:
         pass

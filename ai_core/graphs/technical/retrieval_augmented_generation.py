@@ -17,6 +17,7 @@ from ai_core.rag import rerank as rag_rerank
 from ai_core.rag import semantic_cache
 from ai_core.rag import standalone_question as rag_standalone
 from ai_core.rag import strategy as rag_strategy
+from ai_core.rag.feedback import enqueue_used_source_feedback
 from ai_core.rag.schemas import RagReasoning, SourceRef
 from ai_core.tool_contracts import ContextError, NotFoundError, ToolContext
 from ai_core.tool_contracts.base import tool_context_from_meta
@@ -982,6 +983,16 @@ def _build_compiled_graph(
             working_state
         )
         base_query = _resolve_base_query(graph_input)
+        if base_query and compose_result.used_sources:
+            try:
+                enqueue_used_source_feedback(
+                    context=context,
+                    query_text=base_query,
+                    snippets=snippets_payload,
+                    used_sources=compose_result.used_sources,
+                )
+            except Exception:
+                pass
         if base_query and compose_result.answer:
             cache = semantic_cache.get_semantic_cache()
             cache.store(

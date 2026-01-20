@@ -48,6 +48,7 @@ from noesis2.api import (
     curl_code_sample,
     default_extend_schema,
 )
+from noesis2.api.errors import JSON_ERROR_STATUSES, default_error_responses
 from noesis2.api.serializers import (
     IntakeRequestSerializer,
     IntakeResponseSerializer,
@@ -80,6 +81,7 @@ from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import (
     GuardrailSignals,
 )
+from ai_core.rag.feedback import enqueue_click_feedback
 
 # Re-export normalize_meta so tests can monkeypatch via ai_core.views
 from ai_core.graph.schemas import normalize_meta as normalize_meta  # noqa: F401
@@ -1092,6 +1094,40 @@ RAG_INGESTION_RUN_SCHEMA = {
     "extensions": RAG_INGESTION_RUN_CURL,
 }
 
+RAG_FEEDBACK_REQUEST = inline_serializer(
+    name="RagFeedbackRequest",
+    fields={
+        "event_type": serializers.CharField(required=False),
+        "query_text": serializers.CharField(required=False, allow_blank=True),
+        "source_id": serializers.CharField(required=False, allow_blank=True),
+        "source_label": serializers.CharField(required=False, allow_blank=True),
+        "document_id": serializers.CharField(required=False, allow_blank=True),
+        "chunk_id": serializers.CharField(required=False, allow_blank=True),
+        "relevance_score": serializers.FloatField(required=False),
+        "url": serializers.CharField(required=False, allow_blank=True),
+        "ui": serializers.CharField(required=False, allow_blank=True),
+    },
+)
+
+RAG_FEEDBACK_RESPONSE = inline_serializer(
+    name="RagFeedbackResponse",
+    fields={
+        "ok": serializers.BooleanField(),
+        "idempotent": serializers.BooleanField(),
+    },
+)
+
+RAG_FEEDBACK_SCHEMA = {
+    "request": RAG_FEEDBACK_REQUEST,
+    "responses": {
+        200: RAG_FEEDBACK_RESPONSE,
+        **default_error_responses(JSON_ERROR_STATUSES),
+    },
+    "include_trace_header": True,
+    "include_error_responses": False,
+    "description": "Capture RAG feedback events such as snippet clicks.",
+}
+
 RAG_INGESTION_STATUS_RESPONSE = inline_serializer(
     name="RagIngestionStatusResponse",
     fields={
@@ -1736,6 +1772,46 @@ class RagQueryViewV1(_GraphView):
                 request.log_context["response_contract"] = "rag.v2"
 
         return response
+
+
+class RagFeedbackView(APIView):
+    """Capture RAG feedback events (e.g. snippet clicks)."""
+
+    if settings.TESTING:
+        authentication_classes: list = []
+        permission_classes: list = []
+
+    @default_extend_schema(**RAG_FEEDBACK_SCHEMA)
+    def post(self, request: Request) -> Response:
+        meta, error = _prepare_request(request)
+        if error is not None:
+            return error
+        payload = request.data if isinstance(request.data, Mapping) else {}
+        event_type = str(payload.get("event_type") or "click").strip().lower()
+        if event_type not in {"click"}:
+            return Response(
+                build_tool_error_payload(
+                    message="Unsupported feedback event type.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    code="invalid_feedback_type",
+                ),
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        tool_context = tool_context_from_meta(meta)
+        try:
+            enqueue_click_feedback(context=tool_context, payload=payload)
+        except Exception:
+            logger.exception("rag.feedback.capture_failed")
+            return Response(
+                build_tool_error_payload(
+                    message="Feedback capture failed.",
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    code="feedback_failed",
+                ),
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
+        return Response({"ok": True, "idempotent": idempotent})
 
 
 class RagUploadView(APIView):

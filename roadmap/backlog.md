@@ -32,19 +32,19 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 
 
-- [ ] **Activate AgenticChunker LLM Boundary Detection**: Implement `_detect_boundaries_llm()` in `ai_core/rag/chunking/agentic_chunker.py:354-379` (~25 LOC). Infrastructure complete (prompt template, Pydantic models, rate limiter, fallback logic). Needed to improve fallback quality for long documents (`token_count > max_tokens`). Details: `ai_core/rag/chunking/README.md#agentic-chunking`.
+- [x] **Activate AgenticChunker LLM Boundary Detection**: Implement `_detect_boundaries_llm()` in `ai_core/rag/chunking/agentic_chunker.py:354-379` (~25 LOC). Infrastructure complete (prompt template, Pydantic models, rate limiter, fallback logic). Needed to improve fallback quality for long documents (`token_count > max_tokens`). Details: `ai_core/rag/chunking/README.md#agentic-chunking`.
 
-- [ ] **Simplify Adaptive Chunking Toggles (deferred post-MVP)**: Keep only two flags and one "new" path. Deferred because current flexibility benefits future use cases. Review after production experience shows which flags are unused. (pointers: `ai_core/rag/chunking/hybrid_chunker.py`, `ai_core/rag/chunking/late_chunker.py`, `ai_core/rag/chunking/README.md`)
+
 
 ### P2 - Long-term Improvements (High Effort)
 
-- [ ] **Recursive Chunking for Long Documents**: Replace truncation fallback (`text[:2048]` in `late_chunker.py:1002`) with recursive chunking. When `token_count > max_tokens`, split into sections and chunk each section independently with proper boundary detection instead of hard truncation. (pointers: `ai_core/rag/chunking/late_chunker.py:984-1023`)
+- [x] **Recursive Chunking for Long Documents**: Replace truncation fallback (`text[:2048]` in `late_chunker.py:1002`) with recursive chunking. When `token_count > max_tokens`, split into sections and chunk each section independently with proper boundary detection instead of hard truncation. (pointers: `ai_core/rag/chunking/late_chunker.py:984-1023`)
 
-- [ ] **Late Chunker Section Fallback Quality**: When `late_chunker_document_too_long` triggers section-based fallback, resulting chunks can be very low quality (single headings like "Konzernbetriebsvereinbarung" with coherence=60, completeness=40). Consider: (1) minimum chunk content threshold, (2) merge adjacent tiny sections, (3) apply LLM boundary detection per section.
+- [x] **Late Chunker Section Fallback Quality**: When `late_chunker_document_too_long` triggers section-based fallback, resulting chunks can be very low quality (single headings like "Konzernbetriebsvereinbarung" with coherence=60, completeness=40). Consider: (1) minimum chunk content threshold, (2) merge adjacent tiny sections, (3) apply LLM boundary detection per section.
   - **Pointers:** `ai_core/rag/chunking/late_chunker.py:_chunk_by_sections`, `late_chunker.py:_chunk_by_sections_adaptive`
   - **Acceptance:** Section fallback produces chunks with minimum semantic content; single-heading chunks merged with following content; quality scores improve for fallback path
 
-- [ ] **Robust Sentence Tokenizer**: Current splitting is fragile (`text.split(".")`) – breaks on abbreviations ("Dr."), decimals ("3.14"), URLs. Extract shared tokenizer to `ai_core/rag/chunking/utils.py` using regex with negative lookahead or `nltk.sent_tokenize`. (pointers: `agentic_chunker.py:347`, `late_chunker.py` sentence splitting)
+- [x] **Robust Sentence Tokenizer**: Current splitting is fragile (`text.split(".")`) – breaks on abbreviations ("Dr."), decimals ("3.14"), URLs. Extract shared tokenizer to `ai_core/rag/chunking/utils.py` using regex with negative lookahead or `nltk.sent_tokenize`. (pointers: `agentic_chunker.py:347`, `late_chunker.py` sentence splitting)
 
 ## SOTA Developer RAG Chat (Pre-MVP)
 
@@ -107,12 +107,13 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
   - **Effort:** L (2+ Sprints) - DEFERRED
 
 - [ ] **SOTA-R3.2: Cross-Document Evidence Linking**: Detect citations/references during ingestion, add "references" edges to Evidence Graph.
-  - **Pointers:** `ai_core/rag/evidence_graph.py`, ingestion pipeline
-  - **Acceptance:** Citation detection; reference edges in graph; retrieval follows edges
+  - **Pointers:** `ai_core/rag/evidence_graph.py`, `ai_core/tasks/ingestion_tasks.py`, `documents/parsers_markdown.py`, `ai_core/rag/metadata_handler.py`
+  - **Acceptance:** Ingestion extracts references into chunk meta (`reference_ids` + optional labels); EvidenceGraph builds `references` edges; retrieval can expand candidates via references behind a feature flag
   - **Effort:** M (1 Sprint)
 
 - [ ] **SOTA-R3.3: Adaptive Weight Learning**: Learn optimal rerank weights from implicit feedback (clicks, answer sources).
-  - **Acceptance:** Feedback collection; periodic weight updates; A/B testing support
+  - **Pointers:** `ai_core/rag/rerank_features.py`, `ai_core/rag/rerank.py`, `ai_core/rag/metrics.py` (or new `ai_core/rag/feedback.py`)
+  - **Acceptance:** Feedback events collected and stored; scheduled job updates weights per tenant/quality_mode; A/B test switch or config flag selects learned vs static weights
   - **Effort:** M (1 Sprint)
 
 ## Observability Cleanup

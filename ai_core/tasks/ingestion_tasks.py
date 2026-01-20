@@ -119,6 +119,83 @@ from .helpers.task_utils import (
 
 logger = get_logger(__name__)
 
+_REFERENCE_ID_PATTERN = re.compile(
+    r"(?:doc|document|ref)[:/]{1,2}([0-9a-fA-F-]{32,36})",
+    re.IGNORECASE,
+)
+
+
+def _normalize_reference_id(value: str) -> str | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        return str(uuid.UUID(candidate))
+    except Exception:
+        return candidate
+
+
+def _extract_reference_ids(text: str, meta: Mapping[str, Any] | None) -> list[str]:
+    references: list[str] = []
+    meta_refs: list[str] = []
+    if isinstance(meta, Mapping):
+        candidate = meta.get("reference_ids") or meta.get("references")
+        if isinstance(candidate, Sequence) and not isinstance(
+            candidate, (str, bytes, bytearray)
+        ):
+            for ref in candidate:
+                try:
+                    ref_text = str(ref).strip()
+                except Exception:
+                    ref_text = ""
+                if ref_text:
+                    normalized = _normalize_reference_id(ref_text)
+                    if normalized:
+                        meta_refs.append(normalized)
+    references.extend(meta_refs)
+
+    if text:
+        for match in _REFERENCE_ID_PATTERN.finditer(text):
+            ref_text = match.group(1).strip()
+            if ref_text:
+                normalized = _normalize_reference_id(ref_text)
+                if normalized:
+                    references.append(normalized)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for ref in references:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        unique.append(ref)
+    return unique
+
+
+def _extract_reference_labels(meta: Mapping[str, Any] | None) -> list[str]:
+    labels: list[str] = []
+    if isinstance(meta, Mapping):
+        candidate = meta.get("reference_labels")
+        if isinstance(candidate, Sequence) and not isinstance(
+            candidate, (str, bytes, bytearray)
+        ):
+            for label in candidate:
+                try:
+                    label_text = str(label).strip()
+                except Exception:
+                    label_text = ""
+                if label_text:
+                    labels.append(label_text)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for label in labels:
+        if label in seen:
+            continue
+        seen.add(label)
+        unique.append(label)
+    return unique
+
+
 _DEDUPE_TTL_SECONDS = 24 * 60 * 60
 _CACHE_TTL_CHUNK_SECONDS = 60 * 60
 _CACHE_TTL_EMBED_SECONDS = 24 * 60 * 60
@@ -391,6 +468,13 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
                 "parent_ids": parent_ids,
                 "document_id": document_id,
             }
+            entry_meta = entry.get("meta") if isinstance(entry, Mapping) else None
+            reference_ids = _extract_reference_ids(chunk_text, entry_meta or meta)
+            if reference_ids:
+                chunk_meta["reference_ids"] = reference_ids
+            reference_labels = _extract_reference_labels(entry_meta or meta)
+            if reference_labels:
+                chunk_meta["reference_labels"] = reference_labels
             if embedding_model_version:
                 chunk_meta["embedding_model_version"] = embedding_model_version
                 chunk_meta["embedding_created_at"] = embedding_created_at
@@ -717,6 +801,12 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
                 # Provide per-chunk parent lineage for compatibility with existing tests
                 "parent_ids": parent_ids,
             }
+            reference_ids = _extract_reference_ids(chunk_text, meta)
+            if reference_ids:
+                chunk_meta["reference_ids"] = reference_ids
+            reference_labels = _extract_reference_labels(meta)
+            if reference_labels:
+                chunk_meta["reference_labels"] = reference_labels
             if embedding_model_version:
                 chunk_meta["embedding_model_version"] = embedding_model_version
                 chunk_meta["embedding_created_at"] = embedding_created_at

@@ -16,6 +16,7 @@ from common.constants import (
 )
 from theme.chat_utils import (
     build_hybrid_config,
+    build_passage_items_for_workbench,
     build_snippet_items,
     coerce_optional_text,
     link_citations,
@@ -153,6 +154,12 @@ def chat_submit(request):
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
         retrieval_meta = result_payload.get("retrieval") or {}
+        if request.path.startswith("/rag-tools/"):
+            passages = build_passage_items_for_workbench(snippets)
+            if passages:
+                retrieval_meta = dict(retrieval_meta)
+                retrieval_meta["passages"] = passages
+                result_payload["retrieval"] = retrieval_meta
         try:
             top_k = int(retrieval_meta.get("top_k_effective") or 0)
         except (TypeError, ValueError):
@@ -176,6 +183,20 @@ def chat_submit(request):
         )
         if not show_debug:
             debug_meta = None
+        elif request.path.startswith("/rag-tools/"):
+            passages = (
+                retrieval_meta.get("passages")
+                if isinstance(retrieval_meta, dict)
+                else None
+            )
+            if isinstance(passages, list):
+                debug_meta = dict(debug_meta or {})
+                debug_meta["passages"] = passages
+            if isinstance(retrieval_meta, dict):
+                reference_expansion = retrieval_meta.get("reference_expansion")
+                if isinstance(reference_expansion, dict):
+                    debug_meta = dict(debug_meta or {})
+                    debug_meta["reference_expansion"] = reference_expansion
 
         return render(
             request,
