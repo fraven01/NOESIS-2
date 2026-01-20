@@ -18,6 +18,7 @@ from ai_core.rag.embedding_config import (
 )
 from ai_core.rag.vector_space_resolver import resolve_vector_space_full
 from common.logging import get_logger
+from opentelemetry.trace import SpanKind
 
 from .task_utils import _task_context_payload
 
@@ -235,7 +236,9 @@ def _observed_embed_section(name: str) -> Iterator[_EmbedSpanMetrics]:
                 tracer = None
         if tracer is not None:
             try:
-                candidate = tracer.start_as_current_span(f"ingestion.embed.{name}")
+                candidate = tracer.start_as_current_span(
+                    f"ingestion.embed.{name}", kind=SpanKind.INTERNAL
+                )
             except Exception:
                 candidate = None
             else:

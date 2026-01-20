@@ -1110,6 +1110,17 @@ def build_document_processing_graph(
             if supports_chunks and state.chunk_artifact and state.chunk_artifact.chunks:
                 embed_kwargs["chunks"] = state.chunk_artifact.chunks
 
+            # Pass chunker information if available in statistics
+            if state.chunk_artifact and state.chunk_artifact.statistics:
+                stats = state.chunk_artifact.statistics
+                chunker_name = stats.get("chunker.version") or stats.get("chunker.name")
+                chunker_mode = stats.get("chunker.mode")
+
+                if _accepts_keyword(embedder, "chunker") and chunker_name:
+                    embed_kwargs["chunker"] = chunker_name
+                if _accepts_keyword(embedder, "chunker_mode") and chunker_mode:
+                    embed_kwargs["chunker_mode"] = chunker_mode
+
             if _accepts_keyword(embedder, "context"):
                 embed_kwargs["context"] = state.context
             if _accepts_keyword(embedder, "config"):

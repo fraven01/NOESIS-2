@@ -35,6 +35,14 @@ def bootstrap() -> None:
     register("retrieval_augmented_generation", rag_factory)
     register("rag.default", rag_factory)
 
+    # 2.1 RAG Retrieval Graph (retrieval-only)
+    def _make_rag_retrieval():
+        from ai_core.graphs.technical import rag_retrieval
+
+        return rag_retrieval.build_graph()
+
+    register("rag_retrieval", LazyGraphFactory(_make_rag_retrieval))
+
     # 3. Crawler / Universal Ingestion
     def _make_universal_ingestion():
         from ai_core.graphs.technical import universal_ingestion_graph

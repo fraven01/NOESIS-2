@@ -19,12 +19,12 @@ Migration des Framework Analysis Business-Graphen von der Custom DSL (`GraphNode
 
 | Aspekt | Technical Graphs | Framework Analysis | Gap |
 |--------|------------------|-------------------|-----|
-| **Framework** | LangGraph `StateGraph` | Custom DSL | Komplett anders |
-| **State** | `TypedDict` + Reducers | `Dict[str, Any]` | Keine Type Safety |
-| **Execution** | Compiled `.invoke()` | Sequential Loop | Kein Parallelismus |
+| **Framework** | LangGraph `StateGraph` | LangGraph `StateGraph` | Ausgerichtet |
+| **State** | `TypedDict` + Reducers | `TypedDict` + Reducers | Ausgerichtet |
+| **Execution** | Compiled `.invoke()` | Compiled `.invoke()` | Ausgerichtet |
 | **Error Handling** | Strukturierte Payloads | Exception → Abbruch | Keine Graceful Degradation |
 | **Async** | `asyncio.gather`, Timeouts | Synchron | Keine Parallelität |
-| **Services** | Protocols + DI | Direkte Calls | Nicht testbar |
+| **Services** | Protocols + DI | Protocols + DI | Ausgerichtet |
 | **Observability** | `emit_event()` + Reducers | `logger.info()` | Weniger granular |
 
 ### Aktuelle Datei-Struktur
@@ -32,7 +32,7 @@ Migration des Framework Analysis Business-Graphen von der Custom DSL (`GraphNode
 ```
 ai_core/graphs/business/
 ├── __init__.py
-└── framework_analysis_graph.py  # 558 Zeilen, Custom DSL
+└── framework_analysis/graph.py  # LangGraph StateGraph
 ```
 
 ### Code-Referenzen (Ist-Zustand)
@@ -58,7 +58,7 @@ ai_core/graphs/business/
 │   ├── nodes.py           # Node-Funktionen
 │   ├── io.py              # I/O Spezifikationen (schema_id, schema_version)
 │   └── protocols.py       # Service Abstractions
-└── framework_analysis_graph.py  # Deprecated wrapper (optional)
+└── framework_analysis_graph.py  # Legacy wrapper
 ```
 
 ### Pattern-Übernahme von Technical Graphs
@@ -78,7 +78,80 @@ ai_core/graphs/business/
 
 ## Implementierungsplan
 
-### Phase 1: Foundation (State & I/O)
+### Phase 0: Quick Wins (vor LangGraph-Migration)
+
+Diese Optimierungen sind **framework-unabhängig** und sollten zuerst umgesetzt werden. Sie reduzieren Latenz und Kosten sofort.
+
+#### FA-0.1: Retrieve-Calls konsolidieren (6->2)
+- **Problem:** Aktuell 6 separate Retrieve-Calls:
+  - `_detect_type_and_gremium`: 1x top_k=3
+  - `_extract_toc`: 1x top_k=100
+  - `_locate_components`: 4x top_k=10 (sequentiell!)
+- **Task:** Ein initialer `rag_retrieval` Call mit top_k=100 fuer ToC/Preview plus ein multi-query `rag_retrieval` Call fuer Komponenten
+- **Akzeptanz:**
+  - Zwei Retrieval-Calls total (ToC/Preview + Komponenten)
+  - `state["all_chunks"]` wird von allen Nodes genutzt
+  - Komponenten ueber multi-query Retrieval + Dedup
+- **Impact:** Latenz/Kosten reduziert
+- **Pointers:**
+  - [framework_analysis_graph.py](../ai_core/graphs/business/framework_analysis_graph.py)
+  - [rag_retrieval.py](../ai_core/graphs/technical/rag_retrieval.py)
+
+#### FA-0.2: Nodes konsolidieren (6->4)
+- **Problem:** Ueberfluessige Nodes ohne I/O:
+  - `extract_toc`: Pure Datenmanipulation (0 LLM, nach FA-0.1 auch 0 Retrieve)
+  - `validate_components`: Nur Threshold-Check (0 LLM, 0 Retrieve)
+  - `finish`: Nur Transition-Emission
+- **Task:** Logik in angrenzende Nodes integrieren
+- **Akzeptanz:**
+  - Neue Node-Struktur: `init_and_fetch -> detect_type -> locate_components -> assemble_profile`
+  - ToC-Extraktion in `init_and_fetch`
+  - Validation in `locate_components`/`assemble_profile`
+  - `finish` eliminiert (Transition in `assemble_profile`)
+- **Impact:** Einfacherer Graph, weniger Overhead
+- **Pointers:**
+  - [framework_analysis_graph.py](../ai_core/graphs/business/framework_analysis_graph.py)
+
+#### FA-0.3: Early Exit bei Low Confidence
+- **Problem:** Graph laeuft immer durch alle Nodes, auch bei offensichtlich schlechter Type-Detection
+- **Task:** Early Exit mit HITL-Request wenn `type_confidence < 0.5`
+- **Akzeptanz:**
+  - `_detect_type_and_gremium` prueft Confidence
+  - Bei `< 0.5`: `hitl_required=True`, Graph endet frueh
+  - Output liefert ein vollstaendiges `FrameworkStructure` mit `not_found` und leeren Listen
+- **Impact:** UX-Verbesserung, Kosten-Reduktion bei schlechten Inputs
+- **Pointers:**
+  - [framework_analysis_graph.py](../ai_core/graphs/business/framework_analysis_graph.py)
+
+#### FA-0.4: Query-Templates nach Agreement-Type
+- **Problem:** Hardcoded Component-Queries identisch für alle Agreement-Types
+- **Task:** Query-Templates nach `agreement_type` (KBV, GBV, BV, DV)
+- **Akzeptanz:**
+  - `COMPONENT_QUERIES: dict[str, dict[str, str]]` mit Type-spezifischen Queries
+  - Fallback auf generische Queries für `other`
+  - Queries in Config oder Constants-Modul
+- **Impact:** Bessere Retrieval-Qualität
+- **Pointers:**
+  - [framework_analysis_graph.py:371-376](../ai_core/graphs/business/framework_analysis_graph.py#L371-L376) (hardcoded queries)
+
+#### FA-0.5: LLM Retry-Logik
+- **Problem:** Ein LLM-Fehler bricht den gesamten Graph ab
+- **Task:** Retry mit Exponential Backoff für `call_llm_json_prompt()`
+- **Akzeptanz:**
+  - Max 3 Retries mit 1s, 2s, 4s Delay
+  - Retry nur bei transient errors (Timeout, Rate Limit, 5xx)
+  - Nach Retries: Graceful Degradation statt Exception
+- **Impact:** Resilience
+- **Pointers:**
+  - [framework_analysis_capabilities.py:73-88](../ai_core/services/framework_analysis_capabilities.py#L73-L88) (`call_llm_json_prompt`)
+  - Referenz: [collection_search.py:945-979](../ai_core/graphs/technical/collection_search.py#L945-L979) (`_embed_with_retry`)
+
+#### FA-0.6: Ungenutzten Validation-Prompt entfernen
+- **Problem:** validate_component.v1.md existierte, wurde aber nicht genutzt
+- **Task:** Prompt entfernen (keine LLM-Validation aktiv)
+- **Akzeptanz:** Keine toten Prompts im Repository
+- **Pointers:**
+  - [framework_analysis_graph.py](../ai_core/graphs/business/framework_analysis_graph.py)
 
 #### FA-1.1: TypedDict State mit Reducers
 - **Task:** Migriere `StateMapping = Dict[str, Any]` zu `FrameworkAnalysisState(TypedDict)`
@@ -103,16 +176,17 @@ ai_core/graphs/business/
 
 ### Phase 2: Service Abstraction (Protocols)
 
-#### FA-2.1: FrameworkRetrieveService Protocol
-- **Task:** Extrahiere `retrieve.run()` Calls in abstrahierten Service
+#### FA-2.1: FrameworkRetrievalService Protocol
+- **Task:** Extrahiere `rag_retrieval` Calls in abstrahierten Service + erlaube Runtime DI
 - **Akzeptanz:**
-  - `FrameworkRetrieveService` Protocol mit `retrieve()` Method
-  - Production Implementation mit echtem `retrieve.run()`
-  - Mock Implementation für Tests
-  - Dependency Injection via `runtime` Dict
+  - `FrameworkRetrievalService` Protocol mit `invoke()` Method
+  - Production Implementation mit `rag_retrieval` Graph
+  - Mock Implementation fuer Tests
+  - `runtime` kann Retrieval/LLM Overrides in der Boundary liefern
 - **Pointers:**
   - Neu: `ai_core/graphs/business/framework_analysis/protocols.py`
-  - Calls: [framework_analysis_graph.py:259-268](../ai_core/graphs/business/framework_analysis_graph.py#L259-L268)
+  - Graph: `ai_core/graphs/business/framework_analysis_graph.py`
+  - Input: `ai_core/graphs/business/framework_analysis/io.py`
 
 #### FA-2.2: FrameworkLLMService Protocol
 - **Task:** Extrahiere `call_llm_json_prompt()` Calls in abstrahierten Service
@@ -126,7 +200,7 @@ ai_core/graphs/business/
 
 ### Phase 3: LangGraph Migration
 
-#### FA-3.1: Node-Funktionen extrahieren
+#### FA-3.1: Node-Funktionen extrahieren (done)
 - **Task:** Konvertiere `_detect_type_and_gremium`, `_extract_components`, etc. zu standalone Funktionen
 - **Akzeptanz:**
   - Funktionen in `nodes.py` mit `@observe_span` Decorator
@@ -136,8 +210,8 @@ ai_core/graphs/business/
   - Aktuell: [framework_analysis_graph.py:252-520](../ai_core/graphs/business/framework_analysis_graph.py#L252-L520)
   - Referenz: [collection_search.py:652-1400](../ai_core/graphs/technical/collection_search.py#L652-L1400)
 
-#### FA-3.2: StateGraph Construction
-- **Task:** Ersetze Sequential Loop durch LangGraph `StateGraph`
+#### FA-3.2: StateGraph Construction (done)
+- **Task:** StateGraph ist implementiert und ersetzt den Sequential Loop
 - **Akzeptanz:**
   - `workflow = StateGraph(FrameworkAnalysisState)`
   - Explicit Edges zwischen Nodes
@@ -149,7 +223,7 @@ ai_core/graphs/business/
 
 ### Phase 4: Error Handling & Resilience
 
-#### FA-4.1: Strukturierte Fehler-Payloads
+#### FA-4.1: Strukturierte Fehler-Payloads (done)
 - **Task:** Ersetze Exception → Abbruch durch strukturierte Fehler im State
 - **Akzeptanz:**
   - `FrameworkAnalysisError` Dataclass (analog zu `SearchError`)
@@ -160,21 +234,21 @@ ai_core/graphs/business/
   - Aktuell: [framework_analysis_graph.py:314-320](../ai_core/graphs/business/framework_analysis_graph.py#L314-L320)
   - Referenz: [collection_search.py:697-770](../ai_core/graphs/technical/collection_search.py#L697-L770)
 
-#### FA-4.2: Timeout-Management
+#### FA-4.2: Timeout-Management (done)
 - **Task:** Füge Timeouts für LLM-Calls und Retrieve-Operationen hinzu
 - **Akzeptanz:**
-  - Per-Node Timeout konfigurierbar via `runtime`
-  - Gesamter Graph-Timeout (Worker-Safe, kein `signal.alarm`)
+  - Per-Node Timeout konfigurierbar via `runtime` (`node_timeout_s` / `node_timeouts_s`)
+  - Gesamter Graph-Timeout (Worker-Safe, kein `signal.alarm`) via `graph_timeout_s`
   - Timeout → Graceful Degradation (nicht Abbruch)
 - **Pointers:**
   - Referenz: [collection_search.py:772-874](../ai_core/graphs/technical/collection_search.py#L772-L874) (Async mit Timeout)
 
 ### Phase 5: Async & Parallelismus (Optional)
 
-#### FA-5.1: Async Node Support
+#### FA-5.1: Async Node Support (done)
 - **Task:** Konvertiere sync Nodes zu async für parallele LLM-Calls
 - **Akzeptanz:**
-  - `_extract_components` kann mehrere Komponenten parallel analysieren
+  - Async-Execution via `ainvoke` verfuegbar (Graph + Nodes)
   - `asyncio.gather` für unabhängige Operations
   - Cancellation bei Timeout
 - **Pointers:**
@@ -182,7 +256,7 @@ ai_core/graphs/business/
 
 ### Phase 6: Observability & Telemetry
 
-#### FA-6.1: emit_event() Integration
+#### FA-6.1: emit_event() Integration (done)
 - **Task:** Ersetze `logger.info()` durch strukturierte Events
 - **Akzeptanz:**
   - `emit_event()` für Milestone-Events (graph_started, type_detected, components_extracted, etc.)
@@ -192,7 +266,7 @@ ai_core/graphs/business/
   - Aktuell: [framework_analysis_graph.py:157-168](../ai_core/graphs/business/framework_analysis_graph.py#L157-L168)
   - Referenz: [retrieval_augmented_generation.py:495-500](../ai_core/graphs/technical/retrieval_augmented_generation.py#L495-L500)
 
-#### FA-6.2: _get_ids() Helper
+#### FA-6.2: _get_ids() Helper (done)
 - **Task:** Zentralisierte ID-Extraction für konsistente Propagation
 - **Akzeptanz:**
   - `_get_ids(tool_context)` returned alle relevanten IDs
@@ -231,7 +305,7 @@ def invoke(self, state: Mapping[str, Any]) -> dict[str, Any]:
 - **Interne Abhängigkeiten:**
   - `ai_core/graph/io.py` (GraphIOSpec, GraphIOVersion)
   - `ai_core/tools/context.py` (ToolContext)
-  - `ai_core/nodes/retrieve.py` (Retrieve Service)
+  - `ai_core/graphs/technical/rag_retrieval.py` (Retrieval Graph)
 
 ---
 
@@ -255,14 +329,21 @@ def invoke(self, state: Mapping[str, Any]) -> dict[str, Any]:
 
 ## Effort Estimate
 
-| Phase | Tasks | Komplexität |
-|-------|-------|-------------|
-| Phase 1 | FA-1.1, FA-1.2 | S-M |
-| Phase 2 | FA-2.1, FA-2.2 | M |
-| Phase 3 | FA-3.1, FA-3.2 | M-L |
-| Phase 4 | FA-4.1, FA-4.2 | M |
-| Phase 5 | FA-5.1 | S (Optional) |
-| Phase 6 | FA-6.1, FA-6.2 | S |
+| Phase | Tasks | Komplexität | Impact |
+|-------|-------|-------------|--------|
+| **Phase 0** | FA-0.1 bis FA-0.6 | **S** | Latenz -70%, Kosten -80% |
+| Phase 1 | FA-1.1, FA-1.2 | S-M | Type Safety |
+| Phase 2 | FA-2.1, FA-2.2 | M | Testability |
+| Phase 3 | FA-3.1, FA-3.2 | M-L | LangGraph |
+| Phase 4 | FA-4.1, FA-4.2 | M | Resilience |
+| Phase 5 | FA-5.1 | S (Optional) | Parallelismus |
+| Phase 6 | FA-6.1, FA-6.2 | S | Observability |
+
+**Empfohlene Reihenfolge:**
+1. **Phase 0 zuerst** - Quick Wins ohne Framework-Änderung
+2. Phase 1-2 parallel möglich
+3. Phase 3 nach Phase 1-2 (benötigt State + Protocols)
+4. Phase 4-6 nach Phase 3
 
 **Gesamt:** ~2-3 Sprints (abhängig von Async-Scope)
 

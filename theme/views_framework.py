@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from uuid import uuid4
-
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
@@ -9,6 +7,7 @@ from structlog.stdlib import get_logger
 from ai_core.graphs.business.framework_analysis_graph import (
     build_graph as build_framework_graph,
 )
+from ai_core.contracts.business import BusinessContext
 from ai_core.tools.framework_contracts import FrameworkAnalysisInput
 from customers.tenant_context import TenantRequiredError
 
@@ -52,42 +51,41 @@ def framework_analysis_submit(request):
     Returns a partial HTML response with the analysis result.
     """
     views = _views()
-    tenant_id = request.headers.get("X-Tenant-ID")
-    if not tenant_id:
-        # Try to resolve from request context if header missing
-        try:
-            scope = views._scope_context_from_request(request)
-        except TenantRequiredError:
-            return views._json_error_response(
-                "Tenant ID missing",
-                status_code=400,
-                code="invalid_tenant_header",
-            )
-        tenant_id = scope.tenant_id
-
-    tenant_schema = request.headers.get("X-Tenant-Schema") or "public"
-    trace_id = request.headers.get("X-Trace-ID") or uuid4().hex
+    try:
+        scope = views._scope_context_from_request(request)
+    except TenantRequiredError as exc:
+        return views._tenant_required_response(exc)
 
     try:
         # Parse form data
-        collection_id = request.POST.get("collection_id")
+        collection_id = request.POST.get("collection_id") or request.POST.get(
+            "document_collection_id"
+        )
         document_id = request.POST.get("document_id") or None
         force_reanalysis = request.POST.get("force_reanalysis") == "on"
         confidence_threshold = float(request.POST.get("confidence_threshold", 0.7))
 
+        if not collection_id:
+            return views._json_error_response(
+                "Collection ID missing",
+                status_code=400,
+                code="invalid_collection_id",
+            )
+
         input_params = FrameworkAnalysisInput(
-            document_collection_id=collection_id,
-            document_id=document_id,
             force_reanalysis=force_reanalysis,
             confidence_threshold=confidence_threshold,
         )
+        business = BusinessContext(
+            collection_id=collection_id,
+            document_id=document_id,
+        )
+        tool_context = scope.to_tool_context(business=business)
 
         graph = build_framework_graph()
         output = graph.run(
+            context=tool_context,
             input_params=input_params,
-            tenant_id=tenant_id,
-            tenant_schema=tenant_schema,
-            trace_id=trace_id,
         )
 
         response_data = output.model_dump(mode="json")

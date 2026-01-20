@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from common.logging import get_logger, log_context
 from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from documents.contract_utils import (
     normalize_optional_string,
@@ -661,7 +661,7 @@ def _run_phase(
 ) -> Any:
     tracer = trace.get_tracer(__name__)
     start = perf_counter()
-    with tracer.start_as_current_span(span_name) as span:
+    with tracer.start_as_current_span(span_name, kind=SpanKind.INTERNAL) as span:
         if attributes:
             for key, value in attributes.items():
                 if value is None:

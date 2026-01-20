@@ -13,7 +13,9 @@ from ai_core.tools.framework_contracts import (
     FrameworkAnalysisMetadata,
     FrameworkAnalysisOutput,
 )
-from ai_core.graphs.business.framework_analysis_graph import (
+from ai_core.graphs.business.framework_analysis import (
+    FRAMEWORK_ANALYSIS_IO_VERSION_STRING,
+    FRAMEWORK_ANALYSIS_SCHEMA_ID,
     FrameworkAnalysisGraphInput,
     FrameworkAnalysisGraphOutput,
 )
@@ -36,6 +38,8 @@ def run_framework_analysis(
 ) -> FrameworkAnalysisOutput:
     """Execute analysis and persist results via the framework service boundary."""
     graph_request = FrameworkAnalysisGraphInput(
+        schema_id=FRAMEWORK_ANALYSIS_SCHEMA_ID,
+        schema_version=FRAMEWORK_ANALYSIS_IO_VERSION_STRING,
         input=input_params,
         tool_context=context,
     )

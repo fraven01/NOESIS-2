@@ -4,7 +4,7 @@ from ai_core.infra.prompts import load
 def test_load_finds_prompt_and_version():
     data = load("retriever/answer")
     assert data["version"] == "v2"
-    assert "Output MUST be valid JSON" in data["text"]
+    assert "<answer>" in data["text"]
 
 
 def test_load_prefers_highest_numeric_version():

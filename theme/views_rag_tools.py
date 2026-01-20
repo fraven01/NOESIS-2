@@ -268,7 +268,8 @@ def start_rerank_workflow(request):
         trace_id = tool_context.scope.trace_id
         # Ensure run_id for this specific execution
         if not tool_context.scope.run_id:
-            tool_context.scope.run_id = str(uuid4())
+            scope = tool_context.scope.model_copy(update={"run_id": str(uuid4())})
+            tool_context = tool_context.model_copy(update={"scope": scope})
 
         # Build graph input state
         purpose = data.get("purpose", "collection_search")

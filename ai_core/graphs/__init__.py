@@ -18,6 +18,7 @@ _LAZY_MODULES: dict[str, str] = {
     "cost_tracking": "ai_core.graphs.technical.cost_tracking",
     "document_service": "ai_core.graphs.technical.document_service",
     "framework_analysis_graph": "ai_core.graphs.business.framework_analysis_graph",
+    "rag_retrieval": "ai_core.graphs.technical.rag_retrieval",
     "retrieval_augmented_generation": "ai_core.graphs.technical.retrieval_augmented_generation",
     "transition_contracts": "ai_core.graphs.transition_contracts",
     "universal_ingestion_graph": "ai_core.graphs.technical.universal_ingestion_graph",
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
         collection_search,  # noqa: F401
         cost_tracking,  # noqa: F401
         document_service,  # noqa: F401
+        rag_retrieval,  # noqa: F401
         retrieval_augmented_generation,  # noqa: F401
         universal_ingestion_graph,  # noqa: F401
     )

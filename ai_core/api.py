@@ -426,6 +426,8 @@ def trigger_embedding(
     vector_client: Optional[PgVectorClient] = None,
     vector_client_factory: Optional[Callable[[], PgVectorClient]] = None,
     chunks: Optional[Sequence[Mapping[str, Any]]] = None,
+    chunker: Optional[str] = None,
+    chunker_mode: Optional[str] = None,
     context: Any = None,
     config: Any = None,
 ) -> EmbeddingResult:
@@ -433,6 +435,7 @@ def trigger_embedding(
 
     document = normalized_document.document
     tenant = tenant_id or document.ref.tenant_id
+
     case = (
         case_id
         or normalized_document.metadata.get("case_id")
@@ -471,6 +474,8 @@ def trigger_embedding(
         ),
         is_latest=True,
         lifecycle_state=document.lifecycle_state,
+        chunker=chunker,
+        chunker_mode=chunker_mode,
     )
 
     base_meta = chunk_meta.model_dump(exclude_none=True)
@@ -491,6 +496,11 @@ def trigger_embedding(
                 continue
 
             meta_payload = dict(base_meta)
+            # Merge chunker-provided metadata if present
+            chunk_specific_meta = chunk.get("metadata")
+            if isinstance(chunk_specific_meta, Mapping):
+                meta_payload.update(chunk_specific_meta)
+
             chunk_id = chunk.get("chunk_id")
             if chunk_id:
                 meta_payload["chunk_id"] = str(chunk_id)

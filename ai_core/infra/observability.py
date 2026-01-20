@@ -249,7 +249,9 @@ def observe_span(
                 if tracer is None:
                     return await _run_async(*args, **kwargs)
                 try:
-                    cm = tracer.start_as_current_span(span_name)
+                    cm = tracer.start_as_current_span(
+                        span_name, kind=_resolve_span_kind(None)
+                    )
                 except Exception:
                     return await _run_async(*args, **kwargs)
                 with cm:
@@ -271,7 +273,9 @@ def observe_span(
             if tracer is None:
                 return _run(*args, **kwargs)
             try:
-                cm = tracer.start_as_current_span(span_name)
+                cm = tracer.start_as_current_span(
+                    span_name, kind=_resolve_span_kind(None)
+                )
             except Exception:
                 return _run(*args, **kwargs)
             with cm:
@@ -356,6 +360,33 @@ def _normalise_attributes(values: dict[str, Any]) -> dict[str, Any]:
         if normalised is not None:
             attributes[key] = normalised
     return attributes
+
+
+def _resolve_span_kind(kind: str | None) -> Any | None:
+    if not kind:
+        try:
+            from opentelemetry.trace import SpanKind
+
+            return SpanKind.INTERNAL
+        except Exception:
+            return None
+    try:
+        from opentelemetry.trace import SpanKind
+
+        kind_upper = kind.upper()
+        if kind_upper == "SERVER":
+            return SpanKind.SERVER
+        if kind_upper == "CLIENT":
+            return SpanKind.CLIENT
+        if kind_upper == "PRODUCER":
+            return SpanKind.PRODUCER
+        if kind_upper == "CONSUMER":
+            return SpanKind.CONSUMER
+        if kind_upper == "INTERNAL":
+            return SpanKind.INTERNAL
+    except Exception:
+        return None
+    return None
 
 
 def update_observation(**fields: Any) -> None:
@@ -483,24 +514,7 @@ def start_trace(
             pass
 
     # Resolve SpanKind
-    otel_kind = None
-    if kind:
-        try:
-            from opentelemetry.trace import SpanKind
-
-            kind_upper = kind.upper()
-            if kind_upper == "SERVER":
-                otel_kind = SpanKind.SERVER
-            elif kind_upper == "CLIENT":
-                otel_kind = SpanKind.CLIENT
-            elif kind_upper == "PRODUCER":
-                otel_kind = SpanKind.PRODUCER
-            elif kind_upper == "CONSUMER":
-                otel_kind = SpanKind.CONSUMER
-            elif kind_upper == "INTERNAL":
-                otel_kind = SpanKind.INTERNAL
-        except Exception:
-            pass
+    otel_kind = _resolve_span_kind(kind)
 
     try:
         cm = tracer.start_as_current_span(
@@ -563,7 +577,11 @@ def record_span(
     span_attributes = _normalise_attributes(attributes or {})
 
     try:
-        cm = tracer.start_as_current_span(name, attributes=span_attributes)
+        cm = tracer.start_as_current_span(
+            name,
+            attributes=span_attributes,
+            kind=_resolve_span_kind(None),
+        )
     except Exception:
         return
     try:

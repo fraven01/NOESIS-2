@@ -422,7 +422,7 @@ def test_compose_masks_and_sets_version(monkeypatch):
     assert called["label"] == "synthesize"
     assert called["prompt"] == expected_prompt
     assert called["meta"]["prompt_version"] == "v2"
-    assert called["response_format"] == {"type": "json_object"}
+    assert called["response_format"] is None
     assert result.answer == "resp"
 
 
@@ -677,7 +677,9 @@ def test_tracing_called(monkeypatch):
             return False
 
     class FakeTracer:
-        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+        def start_as_current_span(
+            self, name: str, attributes=None, **kwargs
+        ):  # noqa: D401
             spans.append(name)
             return FakeContext(name)
 

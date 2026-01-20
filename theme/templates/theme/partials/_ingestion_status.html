@@ -28,10 +28,12 @@
                     <dt class="text-slate-500">Status:</dt>
                     <dd class="font-mono text-slate-900">{{ status }}</dd>
                 </div>
+                {% if url_count %}
                 <div class="flex justify-between">
                     <dt class="text-slate-500">URLs:</dt>
                     <dd class="font-mono text-slate-900">{{ url_count }}</dd>
                 </div>
+                {% endif %}
                 {% if result.origins %}
                 <div class="mt-2 border-t border-slate-100 pt-2 space-y-2">
                     {% for origin in result.origins %}

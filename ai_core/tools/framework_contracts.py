@@ -308,22 +308,12 @@ class FrameworkAnalysisDraftMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class FrameworkAnalysisDraft(BaseModel):
-    """Pre-persistence framework analysis output."""
+class FrameworkAnalysisError(BaseModel):
+    """Structured error payload for framework analysis."""
 
-    gremium_identifier: str
-    gremium_name_raw: str
-    agreement_type: str
-    document_collection_id: str
-    document_id: str | None
-    structure: FrameworkStructure
-    completeness_score: float = Field(..., ge=0.0, le=1.0)
-    missing_components: list[str]
-    hitl_required: bool
-    hitl_reasons: list[str] = Field(default_factory=list)
-    analysis_metadata: FrameworkAnalysisDraftMetadata
-    confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
-    force_reanalysis: bool = False
+    node: str
+    message: str
+    error_type: str
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -352,6 +342,28 @@ class FrameworkStructure(BaseModel):
     funktionsbeschreibung: AssembledComponentLocation
     auswertungen: AssembledComponentLocation
     zugriffsrechte: AssembledComponentLocation
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class FrameworkAnalysisDraft(BaseModel):
+    """Pre-persistence framework analysis output."""
+
+    gremium_identifier: str
+    gremium_name_raw: str
+    agreement_type: str
+    document_collection_id: str
+    document_id: str | None
+    structure: FrameworkStructure
+    completeness_score: float = Field(..., ge=0.0, le=1.0)
+    missing_components: list[str]
+    hitl_required: bool
+    hitl_reasons: list[str] = Field(default_factory=list)
+    analysis_metadata: FrameworkAnalysisDraftMetadata
+    confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    force_reanalysis: bool = False
+    partial_results: FrameworkStructure | None = None
+    errors: list[FrameworkAnalysisError] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

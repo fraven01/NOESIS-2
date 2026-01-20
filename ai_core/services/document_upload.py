@@ -8,10 +8,12 @@ import logging
 import mimetypes
 from uuid import uuid4
 
+from django.apps import apps
 from django.core.files.uploadedfile import UploadedFile
 from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.response import Response
+from django_tenants.utils import schema_context
 
 from documents.collection_service import (
     CollectionService,
@@ -233,6 +235,22 @@ def handle_document_upload(
             metadata_obj["external_ref"] = external_ref_payload
 
     checksum = hashlib.sha256(file_bytes).hexdigest()
+    source = str(metadata_obj.get("source") or "upload")
+
+    # Fail fast if the same document (tenant/source/hash) already exists.
+    with schema_context(tenant_obj.schema_name):
+        Document = apps.get_model("documents", "Document")
+        existing_document = (
+            Document.objects.filter(tenant=tenant_obj, source=source, hash=checksum)
+            .only("id", "lifecycle_state", "soft_deleted_at")
+            .first()
+        )
+    if existing_document and not existing_document.soft_deleted_at:
+        return _error_response(
+            "Document with the same content already exists.",
+            "duplicate_document",
+            status.HTTP_409_CONFLICT,
+        )
 
     # Improved MIME type detection
     detected_mime = _infer_media_type(upload)
@@ -245,7 +263,7 @@ def handle_document_upload(
     document_metadata_payload.setdefault("filename", original_name)
     document_metadata_payload.setdefault("content_hash", checksum)
     document_metadata_payload.setdefault("content_type", detected_mime)
-    document_metadata_payload.setdefault("source", "upload")
+    document_metadata_payload.setdefault("source", source)
     document_metadata_payload["external_id"] = external_id
     document_metadata_payload["document_id"] = str(document_uuid)
 

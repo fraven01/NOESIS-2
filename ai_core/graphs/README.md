@@ -1,10 +1,8 @@
 # Graph-Orchestrierung im AI Core
 
 Die Graphen im `ai_core` kapseln Business- und technische Orchestrierung.
-Business-Graphs (z.B. `framework_analysis_graph`) nutzen die GraphNode/GraphTransition-DSL,
-waehrend technische Graphen ueber LangGraph gebaut sind und typisierte Outputs liefern.
-Nicht jeder Graph verwendet `GraphTransition` oder die DSL, daher gilt die DSL-Beschreibung
-nur fuer die entsprechenden Business-Graphs.
+Business-Graphs und technische Graphen nutzen LangGraph StateGraph mit typisierten Outputs.
+Die alte GraphNode/GraphTransition-DSL ist nur noch fuer Legacy-Wrapper relevant.
 
 ## Context & Identity (Pre-MVP ID Contract)
 
@@ -57,9 +55,9 @@ All graphs declare versioned Pydantic input/output models and attach a `GraphIOS
 
 Legacy graphs without `io_spec` are tracked for migration in `roadmap/backlog.md`.
 
-## DSL (business graphs)
+## Legacy DSL (deprecated)
 
-Diese DSL wird aktuell vom `framework_analysis_graph` verwendet; technische Graphen nutzen LangGraph.
+Die DSL bleibt nur als Legacy-Wrapper erhalten; neue Business-Graphs nutzen LangGraph.
 
 ```python
 @dataclass(frozen=True)
@@ -119,7 +117,7 @@ Framework-Version.
 
 - **AI-First-Ansatz**: Typ-Erkennung (KBV/GBV/BV/DV), Gremium-Extraktion und
   Komponenten-Lokalisierung erfolgen vollständig LLM-gestützt
-- **Hybrid Search**: Nutzt `retrieve.run()` als Worker für semantische +
+- **Hybrid Search**: Nutzt den `rag_retrieval` Graph für semantische +
   lexikalische Suchen im bestehenden RAG-System
 - **HITL-Trigger**: Niedrige Konfidenz oder fehlgeschlagene Validierung
   triggert automatisch Human-in-the-Loop-Review
@@ -130,35 +128,15 @@ Framework-Version.
 
 ### Knotenfolge
 
-Die sequentielle Ausführung umfasst 7 Knoten:
+Der LangGraph StateGraph umfasst 4 Knoten:
 
-1. **detect_type_and_gremium** — Fetcht Dokumentanfang (2000 Zeichen) via
-   `retrieve.run()`, analysiert Typ (KBV/GBV/BV/DV) und Gremium-Identifier
-   (z. B. „KBR", „GBR_MUENCHEN") mittels LLM. Normalisiert Identifier (Umlaute,
-   Sonderzeichen → Unterstriche).
+1. **init_and_fetch** - Einmaliger Retrieval-Call via `rag_retrieval` (top_k=100), ToC-Extraktion und Dokument-Preview (erste Chunks).
 
-2. **extract_toc** — Aggregiert Parent-Metadaten aus bis zu 100 Chunks, baut
-   hierarchisches Inhaltsverzeichnis (Headings + Sections), sortiert nach
-   `level` und `order`.
+2. **detect_type** - LLM ermittelt Typ (KBV/GBV/BV/DV/other) + Gremium. Bei `type_confidence < 0.5` Early Exit mit leerer Struktur und `hitl_required=True`.
 
-3. **locate_components** — Führt 4 parallele semantische Suchen für die
-   Pflicht-Bausteine durch. LLM kartiert Fundstellen auf Location-Typen: `main`
-   (Hauptdokument), `annex` (einzelne Anlage), `annex_group` (Anlagen-Gruppe
-   wie „Anlage 3 → 3.1, 3.2"), `not_found`. Liefert `outline_path`, `chunk_ids`,
-   `page_numbers`, `confidence`.
+3. **locate_components** - Multi-Query Retrieval (rag_retrieval) fuer die vier Bausteine, optionales Reranking. LLM kartiert Locations, anschliessend lokale Validierung der Confidence.
 
-4. **validate_components** — Konfidenz-basierte Plausibilitätsprüfung: Prüft,
-   ob gefundener Inhalt tatsächlich der erwarteten Semantik entspricht (z. B.
-   Systembeschreibung = technische Spezifikationen). Setzt `validated`-Flag und
-   `validation_notes`.
-
-5. **assemble_profile** — Merged Located + Validated Components, berechnet
-   `completeness_score` (0.0–1.0, 4 Komponenten = 1.0). Triggert HITL wenn:
-   Konfidenz < Threshold ODER Validierung fehlgeschlagen. Loggt Warning mit
-   `hitl_reasons`.
-
-6. **finish** - Bundelt finales `FrameworkAnalysisDraft` (nur Orchestrierung).
-   Persistierung erfolgt nachgelagert ueber die Service Boundary.
+4. **assemble_profile** - Merge der Komponenten, `completeness_score`, HITL-Trigger bei niedriger Confidence oder Validierungsfehlern.
 
 ### Datenmodelle
 
@@ -192,9 +170,9 @@ position: int
 
 Alle Inputs/Outputs nutzen Pydantic mit `frozen=True`, `extra="forbid"`:
 
-- **FrameworkAnalysisInput**: `document_collection_id`, optional `document_id`,
+- **FrameworkAnalysisInput**: `force_reanalysis`, `confidence_threshold` (default 0.70)
   `force_reanalysis`, `confidence_threshold` (default 0.70)
-- **FrameworkAnalysisOutput**: `profile_id`, `version`, `gremium_identifier`,
+- **FrameworkAnalysisGraphOutput** (boundary): `schema_id`, `schema_version`, plus draft fields (`gremium_identifier`, `structure`, `completeness_score`, `missing_components`, `hitl_required`, `hitl_reasons`, `analysis_metadata`, `partial_results`, `errors`)
   `structure: FrameworkStructure`, `completeness_score`, `missing_components`,
   `hitl_required`, `hitl_reasons`, `analysis_metadata`
 - **ComponentLocation**: `location` (Literal), `outline_path`, `chunk_ids`,
@@ -212,6 +190,8 @@ Header:
 
 - `X-Tenant-ID` (required)
 - `X-Trace-ID` (optional, auto-generated)
+- `X-Collection-ID` (required)
+- `X-Document-ID` (required)
 
 Request Body:
 
@@ -271,12 +251,10 @@ Error-Codes:
 
 **Langfuse-Spans** (via `@observe_span`):
 
+- `framework.init_and_fetch`
 - `framework.detect_type_and_gremium`
-- `framework.extract_toc`
 - `framework.locate_components`
-- `framework.validate_components`
 - `framework.assemble_profile`
-
 **Strukturierte Logs**:
 
 - `framework_graph_starting` (info): Start mit Input-Parametern
@@ -305,7 +283,7 @@ korrelierte Auswertung in ELK + Langfuse.
 
 - Graph-Builder (Knoten-Reihenfolge, Namen)
 - Assemble-Logik (completeness_score, HITL-Trigger)
-- End-to-End mit LLM-Mocks (retrieve.run, llm_client.call)
+- End-to-End mit LLM-Mocks (rag_retrieval, llm_client.call)
 - Error-Handling (Retrieve-Fehler, Validierungs-Fehler)
 
 ### Deployment-Hinweise
@@ -321,7 +299,6 @@ docker compose exec web python manage.py migrate
 
 - `detect_type_gremium.v1.md`
 - `locate_components.v1.md`
-- `validate_component.v1.md`
 
 Bei Prompt-Updates neue Version anlegen (v2, v3, ...) und `load_prompt()`-Call
 in Graph aktualisieren.

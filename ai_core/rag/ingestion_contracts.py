@@ -87,6 +87,8 @@ class ChunkMeta(BaseModel):
     document_version_id: str | None = None
     is_latest: bool | None = None
     lifecycle_state: str | None = None
+    chunker: str | None = None
+    chunker_mode: str | None = None
     trace_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")

@@ -1,114 +1,107 @@
-<div class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100 text-sm text-slate-700 max-w-[80%] space-y-3"
-     x-data="{ activeTab: 'answer' }">
-    <div class="flex flex-wrap gap-2">
-        <button type="button"
-                class="px-2.5 py-1 rounded-full text-xs font-semibold border"
-                :class="activeTab === 'answer' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200'"
-                @click="activeTab = 'answer'">
-            Final Answer
-        </button>
-        <button type="button"
-                class="px-2.5 py-1 rounded-full text-xs font-semibold border"
-                :class="activeTab === 'reasoning' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200'"
-                @click="activeTab = 'reasoning'">
-            Thinking Process
-        </button>
-        <button type="button"
-                class="px-2.5 py-1 rounded-full text-xs font-semibold border"
-                :class="activeTab === 'sources' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200'"
-                @click="activeTab = 'sources'">
-            Sources & Evidence
-        </button>
-    </div>
+{% if reasoning or used_sources or debug_meta %}
+<div class="mt-3 pt-3 border-t border-slate-100 flex flex-col gap-3"
+    x-data="{ showReasoning: false, showSources: false }">
 
-    <div x-show="activeTab === 'answer'" x-cloak class="space-y-2">
-        <div class="prose prose-sm max-w-none text-slate-700">
-            {{ answer|safe }}
-        </div>
-        {% if suggested_followups %}
-        <div class="flex flex-wrap gap-2 pt-2">
-            {% for followup in suggested_followups %}
-            <button type="button"
-                    class="text-xs px-2 py-1 rounded-full border border-slate-200 text-slate-600 hover:border-indigo-300 hover:text-indigo-700">
-                {{ followup }}
-            </button>
-            {% endfor %}
-        </div>
-        {% endif %}
-    </div>
+    <!-- Reasoning / Thinking Process -->
+    {% if reasoning.analysis %}
+    <div class="rounded-lg bg-slate-50 border border-slate-100 overflow-hidden">
+        <button @click="showReasoning = !showReasoning"
+            class="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors">
+            <span class="flex items-center gap-2">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9.663 17h4.674M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                Thinking Process
+            </span>
+            <svg class="w-3 h-3 transform transition-transform" :class="showReasoning ? 'rotate-180' : ''" fill="none"
+                viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+        </button>
+        <div x-show="showReasoning" x-collapse
+            class="px-3 pb-3 text-xs text-slate-500 leading-relaxed italic border-t border-slate-100 pt-2">
+            {{ reasoning.analysis|linebreaks }}
 
-    <div x-show="activeTab === 'reasoning'" x-cloak class="space-y-2">
-        {% if reasoning %}
-        <div class="text-xs text-slate-600">
-            {{ reasoning.analysis|default:"No reasoning provided." }}
-        </div>
-        {% if reasoning.gaps %}
-        <div class="pt-2">
-            <p class="text-[11px] font-semibold text-slate-500 mb-1">Gaps:</p>
-            <ul class="list-disc pl-4 text-[11px] text-slate-500 space-y-1">
-                {% for gap in reasoning.gaps %}
-                <li>{{ gap }}</li>
-                {% endfor %}
-            </ul>
-        </div>
-        {% endif %}
-        {% else %}
-        <p class="text-xs text-slate-500">No reasoning provided.</p>
-        {% endif %}
-    </div>
-
-    <div x-show="activeTab === 'sources'" x-cloak class="space-y-3">
-        {% if used_sources %}
-        <div class="space-y-2">
-            <p class="text-[11px] font-semibold text-slate-500">LLM-Used Sources</p>
-            {% for source in used_sources %}
-            <div class="space-y-1">
-                <div class="flex items-center justify-between text-[11px] text-slate-600">
-                    <span class="truncate">{{ source.label }}</span>
-                    <span class="font-medium">{{ source.score_percent }}%</span>
-                </div>
-                <progress class="w-full h-1.5 rounded-full overflow-hidden accent-indigo-500 bg-slate-100"
-                          value="{{ source.score_percent }}" max="100"></progress>
+            {% if reasoning.gaps %}
+            <div class="mt-2 p-2 bg-amber-50 rounded border border-amber-100 text-amber-800 not-italic">
+                <p class="font-bold mb-1">Knowledge Gaps:</p>
+                <ul class="list-disc pl-4 space-y-0.5">
+                    {% for gap in reasoning.gaps %}
+                    <li>{{ gap }}</li>
+                    {% endfor %}
+                </ul>
             </div>
-            {% endfor %}
+            {% endif %}
         </div>
-        {% endif %}
-
-        {% if snippets %}
-        <div class="pt-2 border-t border-slate-100">
-            <p class="text-[11px] font-semibold text-slate-500 mb-1">Retrieved Snippets</p>
-            <ul class="space-y-1">
-                {% for snippet in snippets %}
-                <li class="text-xs text-slate-400 truncate" title="{{ snippet.title }}">
-                    - {% if snippet.download_url %}
-                    <a class="hover:text-indigo-600 underline" href="{{ snippet.download_url }}" target="_blank">
-                        {{ snippet.source }}
-                    </a>
-                    {% else %}
-                    {{ snippet.source }}
-                    {% endif %}
-                    ({{ snippet.score_percent }}%)
-                </li>
-                {% endfor %}
-            </ul>
-        </div>
-        {% endif %}
     </div>
+    {% endif %}
 
-    {% if debug_meta %}
-    <div class="pt-2 border-t border-slate-100 text-[11px] text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
-        {% if debug_meta.latency_ms %}
-        <span>{{ debug_meta.latency_ms|floatformat:0 }}ms</span>
-        {% endif %}
-        {% if debug_meta.usage.total_tokens %}
-        <span>{{ debug_meta.usage.total_tokens }} tokens</span>
-        {% endif %}
-        {% if debug_meta.model %}
-        <span>{{ debug_meta.model }}</span>
-        {% endif %}
+    <!-- Source Relevance Bars -->
+    {% if used_sources %}
+    <div class="rounded-lg bg-white border border-slate-100 overflow-hidden">
+        <button @click="showSources = !showSources"
+            class="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
+            <span class="flex items-center gap-2">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Evidence & Relevance
+            </span>
+            <svg class="w-3 h-3 transform transition-transform" :class="showSources ? 'rotate-180' : ''" fill="none"
+                viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+        </button>
+        <div x-show="showSources" x-collapse class="px-3 pb-3 border-t border-slate-100 pt-2">
+            <div class="space-y-3">
+                {% for source in used_sources %}
+                <div class="space-y-1">
+                    <div class="flex items-center justify-between text-[10px]">
+                        <span class="font-medium text-slate-700">[{{ source.label }}]</span>
+                        <span class="text-slate-400 font-mono">{{ source.score_percent }}%</span>
+                    </div>
+                    <div class="w-full bg-slate-100 rounded-full h-1.5">
+                        <div class="bg-indigo-500 h-1.5 rounded-full transition-all duration-500"
+                            style="width: {{ source.score_percent|default:0 }}%"></div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Debug Metadata Footer -->
+    {% if show_debug and debug_meta %}
+    <div
+        class="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-slate-400 font-mono border-t border-slate-50 pt-2">
+        <span title="Latency">⏱ {{ debug_meta.latency_ms|floatformat:0 }}ms</span>
+        <span title="Usage">📊 {{ debug_meta.usage.total_tokens|default:"0" }} tokens</span>
+        <span title="Model">🤖 {{ debug_meta.model }}</span>
         {% if debug_meta.cost_usd %}
-        <span>${{ debug_meta.cost_usd|floatformat:4 }}</span>
+        <span title="Cost">💰 ${{ debug_meta.cost_usd|floatformat:4 }}</span>
+        {% endif %}
+        {% if debug_meta.cache_hit %}
+        <span class="text-emerald-500 font-bold">⚡ CACHE HIT</span>
         {% endif %}
     </div>
     {% endif %}
+
+    <!-- Suggested Follow-ups -->
+    {% if suggested_followups %}
+    <div class="flex flex-wrap gap-2 mt-1">
+        {% for followup in suggested_followups %}
+        <button
+            class="px-2 py-1 bg-white border border-indigo-100 rounded-full text-[10px] text-indigo-600 hover:bg-indigo-50 hover:border-indigo-300 transition-all shadow-sm"
+            hx-post="{% url 'chat-submit' %}" hx-vals='{"message": "{{ followup }}"}' hx-target="#chat-history"
+            hx-swap="beforeend">
+            {{ followup }}
+        </button>
+        {% endfor %}
+    </div>
+    {% endif %}
+
 </div>
+{% endif %}
