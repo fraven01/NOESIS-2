@@ -471,6 +471,7 @@ class TestHybridChunkerIntegration:
             enable_quality_metrics=False,
             max_chunk_tokens=450,
             use_embedding_similarity=True,  # Enable Phase 2
+            allow_jaccard_fallback=True,
         )
         chunker = HybridChunker(config_with_embeddings)
 

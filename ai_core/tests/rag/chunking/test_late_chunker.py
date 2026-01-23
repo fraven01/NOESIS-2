@@ -439,7 +439,9 @@ class TestLateChunker:
             chunks = chunker.chunk(parsed, sample_processing_context)
 
         assert len(chunks) == 2
-        assert chunks[0]["text"] == chunks[1]["text"]
+        assert "Same text." in chunks[0]["text"]
+        assert "Same text." in chunks[1]["text"]
+        assert chunks[0]["text"] != chunks[1]["text"]
         assert chunks[0]["chunk_id"] != chunks[1]["chunk_id"]
 
     def test_late_chunker_legacy_path_unchanged(
@@ -678,7 +680,7 @@ class TestLateChunkerPhase2:
         self,
         sample_processing_context,
     ):
-        """Test that embedding boundary detection falls back to Jaccard on error."""
+        """Test that embedding boundary detection raises without fallback."""
         chunker = LateChunker(
             model="oai-embed-large",
             target_tokens=50,
@@ -692,12 +694,34 @@ class TestLateChunkerPhase2:
             mock_client.embed.side_effect = Exception("Embedding failed")
             mock_get_client.return_value = mock_client
 
-            # Should fallback to Jaccard (not crash)
+            with pytest.raises(Exception, match="Embedding failed"):
+                chunker._detect_boundaries_embedding(
+                    sentences, sample_processing_context
+                )
+
+    def test_detect_boundaries_embedding_fallback_opt_in(
+        self,
+        sample_processing_context,
+    ):
+        """Test that Jaccard fallback works when explicitly enabled."""
+        chunker = LateChunker(
+            model="oai-embed-large",
+            target_tokens=50,
+            use_embedding_similarity=True,
+            allow_jaccard_fallback=True,
+        )
+
+        sentences = ["A", "B", "C", "D", "E"]
+
+        with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
+            mock_client = MagicMock()
+            mock_client.embed.side_effect = Exception("Embedding failed")
+            mock_get_client.return_value = mock_client
+
             boundaries = chunker._detect_boundaries_embedding(
                 sentences, sample_processing_context
             )
 
-        # Should still produce boundaries (via Jaccard fallback)
         assert isinstance(boundaries, list)
 
     def test_phase2_end_to_end_with_embedding_similarity(

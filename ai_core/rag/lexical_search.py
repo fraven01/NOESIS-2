@@ -23,6 +23,7 @@ def run_lexical_search(
     *,
     client: object,
     conn,
+    lexical_mode: str,
     query_db_norm: str,
     where_sql: str,
     where_params: Sequence[object],
@@ -42,6 +43,7 @@ def run_lexical_search(
     logger,
 ) -> LexicalSearchOutcome:
     started_at = time.perf_counter()
+    lexical_mode_value = str(lexical_mode or "trgm").strip().lower()
     applied_trgm_limit_value: float | None = None
     fallback_limit_used_value: float | None = None
     fallback_tried_limits: List[float] = []
@@ -70,6 +72,39 @@ def run_lexical_search(
                 # If SET LOCAL is not available, rely on connection-level
                 # search_path set during _prepare_connection.
                 pass
+            if lexical_mode_value != "trgm":
+                lexical_rows_local: List[tuple] = []
+                if query_db_norm.strip():
+                    lexical_sql = build_lexical_primary_sql(
+                        where_sql,
+                        "c.id,\n"
+                        "                                c.text,\n"
+                        "                                c.metadata,\n"
+                        "                                d.hash,\n"
+                        "                                d.id,\n"
+                        "                                c.collection_id,\n"
+                        "                                " + lexical_score_sql,
+                        lexical_match_clause,
+                    )
+                    cur.execute(
+                        lexical_sql,
+                        (
+                            query_db_norm,
+                            *where_params,
+                            query_db_norm,
+                            lex_limit,
+                        ),
+                    )
+                    lexical_rows_local = cur.fetchall()
+                    lexical_query_variant = "bm25"
+                return LexicalSearchOutcome(
+                    rows=lexical_rows_local,
+                    applied_trgm_limit=None,
+                    fallback_limit_used=None,
+                    fallback_tried_limits=[],
+                    lexical_query_variant=lexical_query_variant,
+                    lexical_fallback_limit=None,
+                )
             logger.info(
                 "rag.pgtrgm.limit",
                 requested=requested_trgm_limit,

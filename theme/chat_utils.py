@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+import html
 import re
 
 
@@ -119,6 +120,49 @@ def _resolve_citation_label(snippet: Mapping[str, object]) -> str:
     return "Source"
 
 
+_FILENAME_PATTERN = re.compile(r"[^\\/]+\.(pdf|docx|doc|txt|md|pptx|xlsx)\b", re.I)
+
+
+def _basename_from_path(value: str) -> str | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    parts = re.split(r"[\\/]", cleaned)
+    if not parts:
+        return None
+    candidate = parts[-1].strip()
+    return candidate or None
+
+
+def _extract_display_label(snippet: Mapping[str, object]) -> str | None:
+    meta = snippet.get("meta")
+    if isinstance(meta, Mapping):
+        for key in (
+            "title",
+            "filename",
+            "file_name",
+            "source_title",
+            "origin_uri",
+            "url",
+            "source_url",
+        ):
+            candidate = meta.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                if key in {"origin_uri", "url", "source_url"}:
+                    base = _basename_from_path(candidate)
+                    if base:
+                        return base
+                return candidate.strip()
+
+    text = snippet.get("text")
+    if isinstance(text, str):
+        first_line = text.strip().splitlines()[0] if text.strip() else ""
+        if first_line and _FILENAME_PATTERN.search(first_line):
+            return first_line.strip()
+
+    return None
+
+
 def build_snippet_items(
     snippets: list[dict],
     *,
@@ -146,7 +190,9 @@ def build_snippet_items(
             document_id if isinstance(document_id, str) else None
         )
         source = snippet.get("source") or "Unknown"
+        display_label = _extract_display_label(snippet)
         text = snippet.get("text") or ""
+        text_value = str(text) if text is not None else ""
         try:
             score_value = float(snippet.get("score", 0))
         except (TypeError, ValueError):
@@ -154,12 +200,132 @@ def build_snippet_items(
         items.append(
             {
                 "source": source,
-                "title": str(text)[:200],
+                "display_label": display_label or source,
+                "title": text_value[:200],
+                "text": text_value,
                 "score_percent": int(score_value * 100),
                 "download_url": download_url,
                 "citation_label": _resolve_citation_label(snippet),
                 "document_id": document_id,
                 "chunk_id": chunk_id,
+            }
+        )
+    return items
+
+
+_SOURCE_LABEL_PATTERN = re.compile(r"^source\s+([a-z])$", re.I)
+_SNIPPET_LABEL_PATTERN = re.compile(r"^snippet\s+(\d+)$", re.I)
+
+
+def _build_snippet_label_maps(
+    snippet_items: list[dict[str, object]] | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    citation_map: dict[str, str] = {}
+    source_map: dict[str, str] = {}
+    source_conflicts: set[str] = set()
+    if not snippet_items:
+        return citation_map, source_map
+    for item in snippet_items:
+        if not isinstance(item, dict):
+            continue
+        display_label = item.get("display_label")
+        if not isinstance(display_label, str) or not display_label.strip():
+            continue
+        citation_label = item.get("citation_label")
+        if isinstance(citation_label, str) and citation_label.strip():
+            citation_map[citation_label.strip()] = display_label.strip()
+        source_label = item.get("source")
+        if isinstance(source_label, str) and source_label.strip():
+            key = source_label.strip()
+            if key in source_map and source_map.get(key) != display_label.strip():
+                source_conflicts.add(key)
+            else:
+                source_map[key] = display_label.strip()
+    for key in source_conflicts:
+        source_map.pop(key, None)
+    return citation_map, source_map
+
+
+def _resolve_used_source_label(
+    label: object,
+    *,
+    index: int,
+    snippet_items: list[dict[str, object]] | None,
+    citation_map: dict[str, str],
+    source_map: dict[str, str],
+) -> str | None:
+    if isinstance(label, str):
+        cleaned = label.strip()
+        if not cleaned:
+            cleaned = ""
+    else:
+        cleaned = ""
+
+    if cleaned:
+        mapped = citation_map.get(cleaned) or source_map.get(cleaned)
+        if mapped:
+            return mapped
+
+        match = _SOURCE_LABEL_PATTERN.match(cleaned)
+        if match:
+            offset = ord(match.group(1).lower()) - ord("a")
+            if snippet_items and 0 <= offset < len(snippet_items):
+                display_label = snippet_items[offset].get("display_label")
+                if isinstance(display_label, str) and display_label.strip():
+                    return display_label.strip()
+
+        match = _SNIPPET_LABEL_PATTERN.match(cleaned)
+        if match:
+            try:
+                offset = int(match.group(1)) - 1
+            except (TypeError, ValueError):
+                offset = -1
+            if snippet_items and 0 <= offset < len(snippet_items):
+                display_label = snippet_items[offset].get("display_label")
+                if isinstance(display_label, str) and display_label.strip():
+                    return display_label.strip()
+
+    if snippet_items and 0 <= index < len(snippet_items):
+        display_label = snippet_items[index].get("display_label")
+        if isinstance(display_label, str) and display_label.strip():
+            return display_label.strip()
+    return cleaned or None
+
+
+def build_used_source_items(
+    used_sources: object,
+    *,
+    snippet_items: list[dict[str, object]] | None = None,
+    limit: int | None = None,
+) -> list[dict[str, object]]:
+    if not isinstance(used_sources, list):
+        return []
+    if limit is not None and limit > 0:
+        sources = used_sources[:limit]
+    else:
+        sources = used_sources
+    citation_map, source_map = _build_snippet_label_maps(snippet_items)
+    items: list[dict[str, object]] = []
+    for index, source in enumerate(sources):
+        if not isinstance(source, dict):
+            continue
+        label = source.get("label") or source.get("id") or "Source"
+        display_label = _resolve_used_source_label(
+            label,
+            index=index,
+            snippet_items=snippet_items,
+            citation_map=citation_map,
+            source_map=source_map,
+        )
+        try:
+            relevance = float(source.get("relevance_score", 0))
+        except (TypeError, ValueError):
+            relevance = 0.0
+        items.append(
+            {
+                "label": str(display_label or label),
+                "score_percent": max(0, min(100, int(relevance * 100))),
+                "id": source.get("id"),
             }
         )
     return items
@@ -274,6 +440,42 @@ def link_citations(answer: str, snippets: list[dict[str, object]]) -> str:
         return f'<a class="hover:text-indigo-600 underline" href="{url}" target="_blank">[{label}]</a>'
 
     return _CITATION_RE.sub(_replace, answer)
+
+
+def link_citations_markdown(answer: str, snippets: list[dict[str, object]]) -> str:
+    if not answer:
+        return answer
+    label_map: dict[str, str] = {}
+    for snippet in snippets:
+        label = snippet.get("citation_label")
+        url = snippet.get("download_url")
+        if isinstance(label, str) and label.strip() and isinstance(url, str) and url:
+            label_map[label.strip()] = url
+
+    if not label_map:
+        return answer
+
+    def _replace(match: re.Match[str]) -> str:
+        label = match.group(1).strip()
+        url = label_map.get(label)
+        if not url:
+            return match.group(0)
+        return f"[{label}]({url})"
+
+    return _CITATION_RE.sub(_replace, answer)
+
+
+def render_markdown_answer(answer: str) -> str:
+    if not answer:
+        return ""
+    try:
+        from markdown_it import MarkdownIt
+
+        renderer = MarkdownIt("commonmark", {"html": False, "linkify": True})
+        return renderer.render(answer)
+    except Exception:
+        escaped = html.escape(answer)
+        return escaped.replace("\n", "<br>\n")
 
 
 def _build_download_url(document_id: str | None) -> str | None:

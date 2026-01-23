@@ -17,6 +17,11 @@ from ai_core.rag.schemas import Chunk
 pytestmark = pytest.mark.usefixtures("rag_database")
 
 
+@pytest.fixture(autouse=True)
+def _force_trgm_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAG_LEXICAL_MODE", "trgm")
+
+
 class _FakeCursor:
     def __init__(
         self,

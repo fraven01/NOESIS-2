@@ -1,4 +1,4 @@
-# Backlog (prioritized)
+# Backlog (RAG prioritized)
 
 This is a curated list of open work items for vibe-coding execution.
 Top-to-bottom order within each section is priority order.
@@ -6,52 +6,108 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 ## Next up (highest leverage)
 
+### L-Track (Agentic Typing)
+
+- [ ] **L-Track-1: TaskContext models + Celery meta validation**
+  - **Details:** Add TaskContext/TaskScopeContext/TaskContextMetadata Pydantic models; use them in common/celery.py to validate meta and remove raw dict fallbacks. Map all kwargs into metadata.
+  - **Pointers:** `common/celery.py:270-470`, `ai_core/tool_contracts/base.py` (integration), new module for TaskContext
+  - **Acceptance:** Celery context extraction validates via TaskContext; no raw meta.get("key_alias") access; args[0]/args[1] fallback removed; tests updated for strict meta.
+  - **Effort:** L (1.5-2 Sprints)
+  - **Breaking:** Ja (meta fallback removal / strict typing)
+
+- [ ] **L-Track-2: Node return TypedDicts for Universal Ingestion**
+  - **Details:** Introduce TypedDict outputs (ValidateInputNodeOutput, DeduplicationNodeOutput, PersistNodeOutput, ProcessNodeOutput) and apply to node returns + graph state.
+  - **Pointers:** `ai_core/graphs/technical/universal_ingestion_graph.py:110-280`
+  - **Acceptance:** Node returns and graph state use TypedDicts; no dict[str, Any] in node outputs for these nodes.
+  - **Effort:** M (1 Sprint)
+
+- [ ] **L-Track-3: Retrieval/RAG state typing + FilterSpec**
+  - **Details:** Replace MutableMapping state in RAG graph with typed model/TypedDict; introduce FilterSpec and migrate retrieval call sites; consider converting HybridParameters dataclass to Pydantic.
+  - **Pointers:** `ai_core/graphs/technical/retrieval_augmented_generation.py:120+`, `ai_core/nodes/retrieve.py:16+`, `ai_core/nodes/_hybrid_params.py:12+`
+  - **Acceptance:** RAG state is typed (no MutableMapping for core fields); filters validated by FilterSpec; retrieval meta stays schema-compatible.
+  - **Effort:** L (2 Sprints)
+  - **Breaking:** Ja (FilterSpec / state typing)
+
+- [ ] **L-Track-4: AX-Score lift (documentation-only)**
+  - **Details:** Add Field descriptions for ChunkMeta, CrawlerIngestionPayload, RetrieveMeta, ComposeOutput.
+  - **Pointers:** `ai_core/rag/ingestion_contracts.py:69`, `ai_core/rag/ingestion_contracts.py:109`, `ai_core/nodes/retrieve.py:100`, `ai_core/nodes/compose.py:38`
+  - **Acceptance:** All fields documented; no schema shape change.
+  - **Effort:** S (0.5 Sprint)
+
+### Meta-Fragen Recall Fix (RAG Review 2026-01-23)
+
+Problem: Bei "Welche Fragen muss ich für Anlage 1 beantworten?" werden nur Header/Chunk 1 zurückgegeben, nicht alle Fragen-Chunks. Intent wird erkannt, aber Retrieval-Verhalten ändert sich nicht.
+
+- [x] **META-R1: Document-Scoped Retrieval bei Extract/Checklist Intent**
+  - **Details:** Bei `intent in {"extract_questions","checklist"}` und explizitem `doc_ref`-Match + Anchor-Hit im Top-K nur die Chunks dieses Dokuments nachladen. Scope wird respektiert, wenn gesetzt (`case_id`/`collection_id`), sonst tenant-weit ok. Neue Methode `get_chunks_by_document(document_id)` im VectorClient; Expansion bleibt an doc_ref und scope gebunden.
+  - **Pointers:** `ai_core/graphs/technical/retrieval_augmented_generation.py:1040+`, `ai_core/rag/vector_client.py`
+  - **Acceptance:** Query "Welche Fragen fuer Anlage 1" liefert alle Dokument-Chunks (nicht nur 1); Expansion nur bei doc_ref Match + Anchor-Hit; Regressiontest in `ai_core/tests/rag/test_meta_question_recall.py`
+  - **Effort:** M (1 Sprint)
+
+- [x] **META-R2: Erweiterte Kontextpräfixe mit doc_type + document_ref**
+  - **Details:** `build_chunk_prefix()` erweitern: `document_ref`, `doc_type`, `section_path`, `chunk_position` (z.B. "Fragen 5-10 von 20"). Format stabil definieren und in BEIDEN Chunkern nutzen (LateChunker + AgenticChunker).
+  - **Pointers:** `ai_core/rag/chunking/utils.py:126-154`, `ai_core/rag/chunking/late_chunker.py:1144`, `ai_core/rag/chunking/agentic_chunker.py:628`
+  - **Acceptance:** Prefix-Format stabil: "<document_ref> - <doc_type> | <section_path> | <chunk_position>"; beide Chunker nutzen es; Re-Ingestion erforderlich
+  - **Effort:** S (0.5 Sprint)
+  - **Breaking:** Ja (Chunk-Format ändert sich, Re-Ingestion nötig)
+
+- [x] **META-R3: Strikt gegateter Document-wide Expand Modus (Extract/Checklist)**
+  - **Details:** Document-wide Expansion nur als Retrieval-Modus (kein Scoring-Bias): aktiv bei `intent in {"extract_questions","checklist"}` + explizitem `doc_ref`-Match + Anchor-Hit. EvidenceGraph liefert `get_all_document_chunks(document_id)` für die Expansion. Coverage wird als Dokument-Level Metrik genutzt (Diagnose), nicht als Boost.
+  - **Pointers:** `ai_core/rag/evidence_graph.py:195+`, `ai_core/rag/metrics.py`, `ai_core/graphs/technical/retrieval_augmented_generation.py`
+  - **Acceptance:** Expansion nur bei doc_ref Match + Anchor-Hit; kein globaler Bias in RerankFeatures; Coverage als Metrik erfasst
+  - **Effort:** M (1 Sprint)
+
+- [ ] **META-R4: Meta-Chunk Generator bei Ingestion (flagged, Router-only)**
+  - **Details:** Optional per Feature-Flag. Synthetischer Meta-Chunk pro Dokument als Router (nicht Evidenz), strikt getrennt mit `kind: "meta"`. Meta-Chunk steuert Expansion über `referenced_chunk_ids`, wird nie in finalen Kontext gerankt oder zitiert. Für Fragenkataloge deterministisch aus extrahierten Fragen (kein LLM Summary) um Halluzination/Veraltung zu vermeiden.
+  - **Pointers:** `ai_core/rag/meta_chunk_generator.py` (neu), `ai_core/tasks/ingestion_tasks.py`, `ai_core/nodes/retrieve.py`
+  - **Acceptance:** Flag an/aus; Meta-Chunk nur Router in Retrieval-Kaskade; nie in finalem Kontext; Fragenkatalog-Meta deterministisch
+  - **Effort:** L (1.5 Sprint)
+  - **Breaking:** Ja (neue Chunks, Re-Ingestion nötig)
+
+- [x] **META-R5: chunk_count Metadaten + Coverage-Metriken**
+  - **Details:** Chunks bekommen `chunk_count` (Gesamtzahl im Dokument) als Metadatum. Neue Coverage-Metrik in `ai_core/rag/metrics.py`: `calculate_coverage(retrieved, document_id, total)` -> `{coverage_ratio, all_covered}`. Coverage als Diagnose für Meta-Fragen, kein Scoring-Boost.
+  - **Pointers:** `ai_core/rag/chunking/late_chunker.py`, `ai_core/rag/chunking/agentic_chunker.py`, `ai_core/rag/metrics.py`
+  - **Acceptance:** Jeder Chunk hat `chunk_index` + `chunk_count`; Coverage-Metrik implementiert; Langfuse-Tag `rag.coverage_ratio` bei Meta-Fragen
+  - **Effort:** S (0.5 Sprint)
+  - **Breaking:** Ja (Metadaten-Schema erweitert)
 
 
+## Prompt quality + safety (RAG)
 
-## Agentic AI-First System (target state)
+- [ ] **Harden RAG answer prompt (language, injection, empty-context handling)**:
+  - **Details:** Update answer prompt to enforce same-language responses, ignore instructions in context, and handle empty/insufficient snippets explicitly.
+  - **Pointers:** `ai_core/prompts/retriever/answer.v2.md`, `ai_core/nodes/compose.py`
+  - **Acceptance:** Answer prompt includes language + injection guard + empty-context rules; compose path aligns with prompt format and handles empty snippet lists without hallucination.
 
-### Pre AI-first blockers
+- [ ] **Add rerank scoring rubric and tie-break rules**:
+  - **Details:** Extend rerank prompt with explicit relevance rubric, tie-break guidance, and optional brief reason field.
+  - **Pointers:** `ai_core/prompts/retriever/rerank.v1.md`, `ai_core/rag/rerank.py`
+  - **Acceptance:** Prompt specifies score bands and tie-breaks; LLM rerank output remains schema-valid; fallback path unchanged.
 
+- [ ] **Improve query transform + standalone question prompts**:
+  - **Details:** Add injection guard, empty-input handling, and output constraints for query transform and standalone rewriting.
+  - **Pointers:** `ai_core/prompts/retriever/query_transform.v1.md`, `ai_core/prompts/retriever/standalone_question.v1.md`
+  - **Acceptance:** Query transform returns empty list for empty/unintelligible input and enforces max length; standalone prompt outputs one line and preserves unresolved references.
 
+- [ ] **Fix prompt interpolation and streaming tag leakage in compose**:
+  - **Details:** Align prompt assembly with template placeholders, and ensure streaming does not leak raw tags before parsing.
+  - **Pointers:** `ai_core/nodes/compose.py`
+  - **Acceptance:** Prompt templates are properly interpolated; streaming responses avoid exposing internal tags; legacy fallback output remains consistent.
 
-## Code Quality & Architecture Cleanup (Pre-MVP Refactoring)
+- [ ] **Standardize prompt guards across retriever prompts**:
+  - **Details:** Add a shared guard/language/edge-case section to retriever prompt templates in `ai_core/prompts/retriever/**`.
+  - **Pointers:** `ai_core/prompts/retriever/**`
+  - **Acceptance:** All retriever prompts include injection guard, language directive, and empty/malformed input handling; consistent gaps[] usage.
 
-
-
-### Docs/Test touchpoints (checklist)
-
-### P1 - High Value Cleanups (Low-Medium Effort)
-
-
-
-- [ ] **Collection Search schema version tolerance (plan evolution)**:
-  - **Details:** `roadmap/collection-search-review.md`
-  - **Pointers:** `ai_core/graphs/technical/collection_search.py:CollectionSearchGraphRequest`, `ai_core/contracts/plans/*`
-  - **Acceptance:** Graph accepts minor-compatible schema updates without failing hard; strict rejection for incompatible major changes; tests cover minor version acceptance and major version rejection
-
-
-
-- [x] **Activate AgenticChunker LLM Boundary Detection**: Implement `_detect_boundaries_llm()` in `ai_core/rag/chunking/agentic_chunker.py:354-379` (~25 LOC). Infrastructure complete (prompt template, Pydantic models, rate limiter, fallback logic). Needed to improve fallback quality for long documents (`token_count > max_tokens`). Details: `ai_core/rag/chunking/README.md#agentic-chunking`.
-
-
-
-### P2 - Long-term Improvements (High Effort)
-
-- [x] **Recursive Chunking for Long Documents**: Replace truncation fallback (`text[:2048]` in `late_chunker.py:1002`) with recursive chunking. When `token_count > max_tokens`, split into sections and chunk each section independently with proper boundary detection instead of hard truncation. (pointers: `ai_core/rag/chunking/late_chunker.py:984-1023`)
-
-- [x] **Late Chunker Section Fallback Quality**: When `late_chunker_document_too_long` triggers section-based fallback, resulting chunks can be very low quality (single headings like "Konzernbetriebsvereinbarung" with coherence=60, completeness=40). Consider: (1) minimum chunk content threshold, (2) merge adjacent tiny sections, (3) apply LLM boundary detection per section.
-  - **Pointers:** `ai_core/rag/chunking/late_chunker.py:_chunk_by_sections`, `late_chunker.py:_chunk_by_sections_adaptive`
-  - **Acceptance:** Section fallback produces chunks with minimum semantic content; single-heading chunks merged with following content; quality scores improve for fallback path
-
-- [x] **Robust Sentence Tokenizer**: Current splitting is fragile (`text.split(".")`) – breaks on abbreviations ("Dr."), decimals ("3.14"), URLs. Extract shared tokenizer to `ai_core/rag/chunking/utils.py` using regex with negative lookahead or `nltk.sent_tokenize`. (pointers: `agentic_chunker.py:347`, `late_chunker.py` sentence splitting)
+- [ ] **Add CI prompt schema validation (retriever prompts)**:
+  - **Details:** Implement automated checks that retriever prompt templates include required sections and schema constraints.
+  - **Pointers:** `ai_core/infra/prompts.py`, `ai_core/tests/test_prompts.py` (new/extended), `scripts/` (if needed)
+  - **Acceptance:** CI fails if required retriever prompt sections are missing; tests cover at least one positive and one negative case.
 
 ## SOTA Developer RAG Chat (Pre-MVP)
 
 **Roadmap**: [rag-chat-sota.md](rag-chat-sota.md)
 **Total Effort**: ~3-4 Sprints (Medium-High Complexity)
-
-
 
 ## SOTA Retrieval Architecture
 
@@ -60,42 +116,42 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 **Vision**: Metadata-first, Passage-first, Hybrid, Multi-stage
 
 **Principles**:
-1. **Candidates nicht nur Dense**: Dense + Lexical + Late-Interaction (RRF Fusion)
-2. **Reranking ist strukturbewusst**: Parent/Section/Confidence/Adjacency als Features
-3. **Output sind Passagen**: Merged adjacent chunks mit Section-Boundaries
-4. **Query wird geplant**: Doc-Type Routing + Query Expansion + Constraints
-5. **Evidence Graph**: Parent/Child/Adjacency als Graph, Reranking über Subgraphen
+1. **Candidates not only dense**: Dense + lexical + late-interaction (RRF fusion)
+2. **Reranking is structure-aware**: Parent/Section/Confidence/Adjacency as features
+3. **Output are passages**: Merge adjacent chunks with section boundaries
+4. **Query is planned**: Doc-type routing + query expansion + constraints
+5. **Evidence graph**: Parent/Child/Adjacency as graph; rerank over subgraphs
 
 ### Phase 1: Foundation (P0)
 
-- [ ] **SOTA-R1.1: Evidence Graph Data Model**: Represent chunk relationships (parent_of, child_of, adjacent_to) as traversable in-memory graph built from retrieved chunks + metadata.
+- [x] **SOTA-R1.1: Evidence Graph Data Model**: Represent chunk relationships (parent_of, child_of, adjacent_to) as traversable in-memory graph built from retrieved chunks + metadata.
   - **Pointers:** `ai_core/rag/evidence_graph.py` (new), `ai_core/rag/ingestion_contracts.py:69-95`
   - **Acceptance:** EvidenceGraph with nodes + edges; traversal methods (get_adjacent, get_parent, get_subgraph); unit tests for construction + traversal
   - **Effort:** M (1 Sprint)
 
-- [ ] **SOTA-R1.2: Passage Assembly**: Merge adjacent chunks into coherent passages respecting section boundaries and token limits.
+- [x] **SOTA-R1.2: Passage Assembly**: Merge adjacent chunks into coherent passages respecting section boundaries and token limits.
   - **Pointers:** `ai_core/rag/passage_assembly.py` (new), `ai_core/nodes/retrieve.py:543-600`
   - **Acceptance:** Passage dataclass; assembly respects section boundaries; token limit enforced; anchor on highest-scoring chunk
   - **Effort:** M (1 Sprint)
 
-- [ ] **SOTA-R1.3: Structure-Aware Rerank Features**: Extract rerank features from metadata + graph (parent_relevance, section_match, confidence, adjacency_bonus, doc_type_match).
+- [x] **SOTA-R1.3: Structure-Aware Rerank Features**: Extract rerank features from metadata + graph (parent_relevance, section_match, confidence, adjacency_bonus, doc_type_match).
   - **Pointers:** `ai_core/rag/rerank_features.py` (new), `ai_core/rag/rerank.py:152-241`
   - **Acceptance:** RerankFeatures dataclass; feature extraction; configurable weights per quality_mode; telemetry logs feature values
   - **Effort:** M (1 Sprint)
 
 ### Phase 2: Hybrid Candidates (P1)
 
-- [ ] **SOTA-R2.1: Lexical Search Integration (BM25)**: Add pg_trgm-based lexical search alongside dense retrieval for exact term matching.
+- [x] **SOTA-R2.1: Lexical Search Integration (BM25)**: Add pg_trgm-based lexical search alongside dense retrieval for exact term matching.
   - **Pointers:** `ai_core/rag/lexical_search.py` (new), `ai_core/rag/query_builder.py`
   - **Acceptance:** Lexical search with pg_trgm; same Chunk format as dense; configurable similarity threshold; <500ms for 100k chunks
   - **Effort:** S (0.5 Sprint)
 
-- [ ] **SOTA-R2.2: Hybrid Candidate Fusion (RRF)**: Merge dense + lexical candidates using Reciprocal Rank Fusion with parallel execution.
+- [x] **SOTA-R2.2: Hybrid Candidate Fusion (RRF)**: Merge dense + lexical candidates using Reciprocal Rank Fusion with parallel execution.
   - **Pointers:** `ai_core/rag/hybrid_fusion.py` (new), `ai_core/nodes/retrieve.py`
   - **Acceptance:** RRF implementation; parallel dense + lexical; configurable weights; telemetry captures source distribution
   - **Effort:** S (0.5 Sprint)
 
-- [ ] **SOTA-R2.3: Query Planner**: Analyze query to determine doc_type routing, query expansion, and constraints (must_include, date_range, collections).
+- [x] **SOTA-R2.3: Query Planner**: Analyze query to determine doc-type routing, query expansion, and constraints (must_include, date_range, collections).
   - **Pointers:** `ai_core/rag/query_planner.py` (new), `ai_core/graphs/technical/rag_retrieval.py`
   - **Acceptance:** QueryPlan + QueryConstraints models; rule-based planner (fast); optional LLM planner; expansion templates per doc_type
   - **Effort:** M (1 Sprint)
@@ -106,50 +162,12 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
   - **Acceptance:** ColBERT model hosting; token-level index; significant infra investment
   - **Effort:** L (2+ Sprints) - DEFERRED
 
-- [ ] **SOTA-R3.2: Cross-Document Evidence Linking**: Detect citations/references during ingestion, add "references" edges to Evidence Graph.
+- [x] **SOTA-R3.2: Cross-Document Evidence Linking**: Detect citations/references during ingestion, add "references" edges to Evidence Graph.
   - **Pointers:** `ai_core/rag/evidence_graph.py`, `ai_core/tasks/ingestion_tasks.py`, `documents/parsers_markdown.py`, `ai_core/rag/metadata_handler.py`
   - **Acceptance:** Ingestion extracts references into chunk meta (`reference_ids` + optional labels); EvidenceGraph builds `references` edges; retrieval can expand candidates via references behind a feature flag
   - **Effort:** M (1 Sprint)
 
-- [ ] **SOTA-R3.3: Adaptive Weight Learning**: Learn optimal rerank weights from implicit feedback (clicks, answer sources).
+- [x] **SOTA-R3.3: Adaptive Weight Learning**: Learn optimal rerank weights from implicit feedback (clicks, answer sources).
   - **Pointers:** `ai_core/rag/rerank_features.py`, `ai_core/rag/rerank.py`, `ai_core/rag/metrics.py` (or new `ai_core/rag/feedback.py`)
   - **Acceptance:** Feedback events collected and stored; scheduled job updates weights per tenant/quality_mode; A/B test switch or config flag selects learned vs static weights
   - **Effort:** M (1 Sprint)
-
-## Observability Cleanup
-
-### P0 - Critical
-
-- [x] **OpenTelemetry SpanKind=None KeyError**: Telemetry export fails with `KeyError: None` in `_encode_span` when a span is created without explicit `SpanKind`. Traces for affected tasks are not exported to collector (Jaeger/Honeycomb).
-  - **Pointers:** OpenTelemetry SDK `_encode_span` → `_SPAN_KIND_MAP[sdk_span.kind]`
-  - **Acceptance:** All spans have explicit `SpanKind` set; no `KeyError` in telemetry export; traces successfully exported for all tasks
-
-### Hygiene
-
-- [ ] **Tenant Mapping Log-Spam**: Repeated warnings during Legacy-Tenant-ID conversion (e.g., `"2"` → deterministic UUID). Known migration state but causes excessive log volume.
-  - **Pointers:** `ai_core/services/document_upload.py` (tenant_id mapping), Celery worker logs
-  - **Acceptance:** Either (1) reduce log level to DEBUG for known legacy mappings, or (2) cache mapped tenant IDs to log only first occurrence per session, or (3) complete migration to UUID-only tenant IDs
-
-- [ ] **Extract Chunker Utils**: Deduplicate shared logic between `LateChunker` and `AgenticChunker` into `ai_core/rag/chunking/utils.py`: sentence splitting, chunk ID generation (`_build_adaptive_chunk_id`), token counting. (pointers: `late_chunker.py`, `agentic_chunker.py`)
-
-## Semantics / IDs
-
-## Layering / boundaries
-
-- [ ] **Explicit ToolContext in HybridScoreExecutor Protocol**: Replace `tenant_context: Mapping[str, Any]` with explicit `tool_context: ToolContext` parameter in `HybridScoreExecutor.run()`. Current workaround embeds `tool_context` in `tenant_context` dict for `tool_context_from_meta()` reconstruction. Clean solution: extend Protocol signature, update `_HybridExecutorAdapter`, remove dict-embedding hack.
-  - **Pointers:** `ai_core/graphs/technical/collection_search.py:HybridScoreExecutor`, `ai_core/graphs/technical/collection_search.py:hybrid_score_node`, `ai_core/graphs/technical/collection_search.py:_HybridExecutorAdapter`, `llm_worker/graphs/hybrid_search_and_score.py`
-  - **Acceptance:** `HybridScoreExecutor.run()` accepts `tool_context: ToolContext`; `tenant_context` removed or reduced to minimal tenant-specific fields; `_HybridExecutorAdapter` passes `tool_context` directly to sub-graph meta; no dict-embedding workaround needed
-
-## Externalization readiness (later)
-
-- [ ] Graph registry: add versioning + request/response model metadata (note: factory support already exists via `LazyGraphFactory`)
-
-
-## Observability / operations
-
-
-## Agent navigation (docs-only drift)
-
-## Hygiene (lowest priority)
-
-- [ ] Documentation hygiene: remove encoding artifacts in docs/strings (purely textual)

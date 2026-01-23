@@ -72,6 +72,24 @@ def test_resolve_weight_profile_defaults():
     assert weights["confidence"] == 0.3
 
 
+def test_extract_rerank_features_question_density():
+    matches = [
+        {
+            "id": "q1",
+            "text": "Welche Fragen muessen beantwortet werden?",
+            "score": 0.6,
+            "meta": {
+                "chunk_id": "q1",
+                "document_id": "doc-1",
+                "section_path": ["A"],
+                "chunk_index": 0,
+            },
+        }
+    ]
+    features = extract_rerank_features(matches, context=_context())
+    assert features[0].question_density > 0.0
+
+
 def test_resolve_weight_profile_prefers_learned(monkeypatch, db):
     from ai_core.models import RagRerankWeight
 

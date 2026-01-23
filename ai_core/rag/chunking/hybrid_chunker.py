@@ -16,12 +16,14 @@ Integrates with:
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, Sequence, Tuple
 
-logger = logging.getLogger(__name__)
+from ai_core.rag.chunking.utils import split_sentences
+from common.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class ChunkerMode(str, Enum):
@@ -49,8 +51,9 @@ class ChunkerConfig:
     overlap_tokens: int = 80
     similarity_threshold: float = 0.7
 
-    # Phase 2: SOTA Embedding-based Similarity
-    use_embedding_similarity: bool = False  # Feature flag (Phase 2)
+    # Embedding-based similarity (default on)
+    use_embedding_similarity: bool = True
+    allow_jaccard_fallback: bool = False
     window_size: int = 3  # Sentences per window for embedding
     batch_size: int = 16  # Windows to embed in parallel
     use_content_based_ids: bool = True  # SHA256-hash IDs (deterministic)
@@ -76,10 +79,11 @@ def get_default_chunker_config() -> ChunkerConfig:
         quality_timeout=getattr(settings, "RAG_QUALITY_TIMEOUT", 60),
         max_chunk_tokens=getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450),
         overlap_tokens=getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 80),
-        # Phase 2: SOTA Embedding-based Similarity
+        # Embedding-based similarity
         use_embedding_similarity=getattr(
-            settings, "RAG_USE_EMBEDDING_SIMILARITY", False
+            settings, "RAG_USE_EMBEDDING_SIMILARITY", True
         ),
+        allow_jaccard_fallback=getattr(settings, "RAG_ALLOW_JACCARD_FALLBACK", False),
         window_size=getattr(settings, "RAG_CHUNKING_WINDOW_SIZE", 3),
         batch_size=getattr(settings, "RAG_CHUNKING_BATCH_SIZE", 16),
         use_content_based_ids=getattr(settings, "RAG_USE_CONTENT_BASED_IDS", True),
@@ -151,10 +155,11 @@ def get_chunker_config_from_routing(
         quality_model=getattr(settings, "RAG_QUALITY_EVAL_MODEL", "quality-eval"),
         max_chunk_tokens=getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450),
         overlap_tokens=getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 80),
-        # Phase 2: SOTA Embedding-based Similarity
+        # Embedding-based similarity
         use_embedding_similarity=getattr(
-            settings, "RAG_USE_EMBEDDING_SIMILARITY", False
+            settings, "RAG_USE_EMBEDDING_SIMILARITY", True
         ),
+        allow_jaccard_fallback=getattr(settings, "RAG_ALLOW_JACCARD_FALLBACK", False),
         window_size=getattr(settings, "RAG_CHUNKING_WINDOW_SIZE", 3),
         batch_size=getattr(settings, "RAG_CHUNKING_BATCH_SIZE", 16),
         use_content_based_ids=getattr(settings, "RAG_USE_CONTENT_BASED_IDS", True),
@@ -190,8 +195,9 @@ class HybridChunker:
             target_tokens=config.max_chunk_tokens,
             overlap_tokens=config.overlap_tokens,
             similarity_threshold=config.similarity_threshold,
-            # Phase 2: SOTA Embedding-based Similarity
+            # Embedding-based similarity
             use_embedding_similarity=config.use_embedding_similarity,
+            allow_jaccard_fallback=config.allow_jaccard_fallback,
             window_size=config.window_size,
             batch_size=config.batch_size,
             use_content_based_ids=config.use_content_based_ids,
@@ -260,17 +266,19 @@ class HybridChunker:
         # 2. Execute chunking
         if mode == ChunkerMode.AGENTIC:
             # Phase 2: Agentic Chunking with automatic fallback to Late
-            chunks = self._chunk_agentic(parsed, context)
+            chunks = self._chunk_agentic(parsed, context, document)
             actual_mode = "agentic"
         else:
-            chunks = self._chunk_late(parsed, context)
+            chunks = self._chunk_late(parsed, context, document)
             actual_mode = "late"
 
         # 3. Evaluate quality (Phase 1)
         quality_scores = []
+        quality_feedback: list[dict[str, object]] = []
         if self.quality_evaluator:
             try:
                 quality_scores = self.quality_evaluator.evaluate(chunks, context)
+                quality_feedback = [score.to_dict() for score in quality_scores]
 
                 # Add quality metadata to chunks
                 chunks = self.quality_evaluator.add_quality_to_chunks(
@@ -303,13 +311,23 @@ class HybridChunker:
         # 4. Build statistics
         stats = self._build_statistics(chunks, quality_scores, actual_mode)
 
+        sentence_count = self._count_sentences(parsed)
+        chunk_summaries = self._summarize_chunks(chunks)
+        document_ref = self._resolve_document_ref(document)
+        doc_type = self._resolve_doc_type(document)
+
         logger.info(
             "hybrid_chunker_completed",
-            extra={
-                "document_id": str(context.metadata.document_id),
-                "chunk_count": len(chunks),
-                "chunker_mode": actual_mode,
-            },
+            document_id=str(context.metadata.document_id),
+            chunk_count=len(chunks),
+            chunker_mode=actual_mode,
+            sentence_count=sentence_count,
+            chunks=chunk_summaries,
+            model_feedback=quality_feedback,
+            scores=quality_feedback,
+            statistics=stats,
+            document_ref=document_ref,
+            doc_type=doc_type,
         )
 
         return chunks, stats
@@ -338,21 +356,23 @@ class HybridChunker:
         self,
         parsed: Any,
         context: Any,
+        document: Any,
     ) -> list[Mapping[str, Any]]:
         """Execute Late Chunking."""
-        return self.late_chunker.chunk(parsed, context)
+        return self.late_chunker.chunk(parsed, context, document=document)
 
     def _chunk_agentic(
         self,
         parsed: Any,
         context: Any,
+        document: Any,
     ) -> list[Mapping[str, Any]]:
         """
         Execute Agentic Chunking with automatic fallback to Late.
 
         AgenticChunker handles fallback internally (rate limits, budget, LLM failures).
         """
-        return self.agentic_chunker.chunk(parsed, context)
+        return self.agentic_chunker.chunk(parsed, context, document=document)
 
     def _build_statistics(
         self,
@@ -380,6 +400,74 @@ class HybridChunker:
             stats["quality.max_overall"] = quality_stats["max_overall"]
 
         return stats
+
+    @staticmethod
+    def _count_sentences(parsed: Any) -> int:
+        total = 0
+        text_blocks = getattr(parsed, "text_blocks", None) or []
+        for block in text_blocks:
+            text = getattr(block, "text", "")
+            if not text:
+                continue
+            total += len(split_sentences(str(text)))
+        return total
+
+    @staticmethod
+    def _summarize_chunks(
+        chunks: Sequence[Mapping[str, Any]],
+    ) -> list[dict[str, object]]:
+        summaries: list[dict[str, object]] = []
+        for chunk in chunks:
+            chunk_id = chunk.get("chunk_id")
+            text_value = chunk.get("text")
+            metadata = chunk.get("metadata")
+            entry = {
+                "chunk_id": chunk_id,
+                "text_length": len(text_value) if isinstance(text_value, str) else None,
+            }
+            if isinstance(metadata, Mapping):
+                if "chunk_index" in metadata:
+                    entry["chunk_index"] = metadata.get("chunk_index")
+                if "sentence_count" in metadata:
+                    entry["sentence_count"] = metadata.get("sentence_count")
+            summaries.append(entry)
+        return summaries
+
+    @staticmethod
+    def _resolve_document_ref(document: Any | None) -> str | None:
+        if document is None:
+            return None
+        if isinstance(document, dict):
+            meta = document.get("meta") or {}
+            for key in ("document_ref", "doc_ref", "external_id", "ref", "title"):
+                value = meta.get(key) or document.get(key)
+                if value:
+                    return str(value).strip()
+            return None
+        meta = getattr(document, "meta", None)
+        for key in ("document_ref", "doc_ref", "external_id", "ref", "title"):
+            value = getattr(meta, key, None) if meta is not None else None
+            if value:
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _resolve_doc_type(document: Any | None) -> str | None:
+        if document is None:
+            return None
+        if isinstance(document, dict):
+            meta = document.get("meta") or {}
+            for key in ("doc_type", "doc_class", "document_type", "type"):
+                value = meta.get(key) or document.get(key)
+                if value:
+                    return str(value).strip()
+            return None
+        meta = getattr(document, "meta", None)
+        for key in ("doc_type", "doc_class", "document_type", "type"):
+            value = getattr(meta, key, None) if meta is not None else None
+            if value:
+                return str(value).strip()
+        return None
 
 
 class RoutingAwareChunker:

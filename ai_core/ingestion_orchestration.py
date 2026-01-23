@@ -7,10 +7,13 @@ Refactored from run_ingestion_graph god-function into:
 """
 
 from dataclasses import dataclass
+from uuid import UUID
 from typing import Any, Mapping, Optional, Dict
 from collections.abc import Mapping as MappingABC
 
 from ai_core.tool_contracts.base import tool_context_from_meta
+from common.logging import get_log_context
+from structlog.contextvars import get_contextvars
 
 
 @dataclass(frozen=True)
@@ -290,6 +293,18 @@ class ObservabilityWrapper:
         Args:
             obs_ctx: Observability context
         """
+        trace_id = None
+        if obs_ctx.metadata:
+            trace_id = obs_ctx.metadata.get("trace_id")
+        if not trace_id:
+            log_ctx = get_log_context()
+            trace_id = log_ctx.get("trace_id") or get_contextvars().get("trace_id")
+        if trace_id:
+            try:
+                trace_id = UUID(str(trace_id)).hex
+            except (TypeError, ValueError):
+                pass
+
         # Add trace_id if available from external context
         # (Would be added by caller from trace_context)
         self._helpers.start_trace(
@@ -297,6 +312,7 @@ class ObservabilityWrapper:
             user_id=obs_ctx.user_id,
             session_id=obs_ctx.session_id,
             metadata=obs_ctx.metadata or None,
+            trace_id=str(trace_id) if trace_id else None,
         )
 
         if obs_ctx.task_identifier:

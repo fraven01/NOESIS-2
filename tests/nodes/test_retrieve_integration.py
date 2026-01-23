@@ -300,6 +300,7 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
             "vec_limit": 10,
             "lex_limit": 8,
             "trgm_limit": trgm_limit,
+            "diversify_strength": 0.0,
         },
     }
     params = retrieve.RetrieveInput.from_state(state)
@@ -334,12 +335,12 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert call_params["visibility_override_allowed"] is False
 
     matches = result.matches
-    assert len(matches) == 3
-    # Dechunking now returns top chunks, allowing multiple per document.
+    assert len(matches) == 4
+    # Retrieval returns oversampled candidates; rerank truncates later.
     ids = [match["id"] for match in matches]
-    assert ids == ["doc-1", "doc-3", "doc-1"]
+    assert ids == ["doc-1", "doc-3", "doc-1", "doc-2"]
     assert ids.count("doc-1") == 2
-    assert "doc-2" not in ids
+    assert "doc-2" in ids
     assert matches[0]["id"] == "doc-1"
     assert matches[0]["score"] == pytest.approx(0.9)
     assert matches[0]["score"] >= matches[-1]["score"]

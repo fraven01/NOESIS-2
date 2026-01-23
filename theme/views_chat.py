@@ -18,8 +18,11 @@ from theme.chat_utils import (
     build_hybrid_config,
     build_passage_items_for_workbench,
     build_snippet_items,
+    build_used_source_items,
     coerce_optional_text,
     link_citations,
+    link_citations_markdown,
+    render_markdown_answer,
 )
 
 logger = get_logger(__name__)
@@ -31,36 +34,6 @@ def _views():
     from theme import views as theme_views
 
     return theme_views
-
-
-def _build_used_source_items(
-    used_sources: object,
-    *,
-    limit: int | None = None,
-) -> list[dict[str, object]]:
-    if not isinstance(used_sources, list):
-        return []
-    if limit is not None and limit > 0:
-        sources = used_sources[:limit]
-    else:
-        sources = used_sources
-    items: list[dict[str, object]] = []
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        label = source.get("label") or source.get("id") or "Source"
-        try:
-            relevance = float(source.get("relevance_score", 0))
-        except (TypeError, ValueError):
-            relevance = 0.0
-        items.append(
-            {
-                "label": str(label),
-                "score_percent": max(0, min(100, int(relevance * 100))),
-                "id": source.get("id"),
-            }
-        )
-    return items
 
 
 @require_POST
@@ -166,12 +139,17 @@ def chat_submit(request):
             top_k = 0
         snippet_limit = top_k or len(snippets) or None
         snippet_items = build_snippet_items(snippets, limit=snippet_limit)
-        answer = link_citations(answer, snippet_items)
+        if request.path.startswith("/rag-tools/"):
+            answer_markdown = link_citations_markdown(answer, snippet_items)
+            answer = render_markdown_answer(answer_markdown)
+        else:
+            answer = link_citations(answer, snippet_items)
         reasoning = result_payload.get("reasoning")
         if not isinstance(reasoning, dict):
             reasoning = None
-        used_sources = _build_used_source_items(
+        used_sources = build_used_source_items(
             result_payload.get("used_sources"),
+            snippet_items=snippet_items,
             limit=snippet_limit,
         )
         suggested_followups = result_payload.get("suggested_followups")

@@ -264,6 +264,49 @@ class Command(BaseCommand):
                 """
             ).format(chunks=chunks)
         )
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {chunks}
+                    ADD COLUMN IF NOT EXISTS text_context TEXT
+                        GENERATED ALWAYS AS (
+                            lower(regexp_replace(
+                                coalesce(metadata->>'context_header', '')
+                                || ' '
+                                || coalesce(metadata->>'section_path_text', '')
+                                || ' '
+                                || text,
+                                '\\s+',
+                                ' ',
+                                'g'
+                            ))
+                        ) STORED
+                """
+            ).format(chunks=chunks)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {chunks}
+                    ADD COLUMN IF NOT EXISTS text_context_tsv tsvector
+                        GENERATED ALWAYS AS (
+                            to_tsvector(
+                                'simple',
+                                lower(regexp_replace(
+                                    coalesce(metadata->>'context_header', '')
+                                    || ' '
+                                    || coalesce(metadata->>'section_path_text', '')
+                                    || ' '
+                                    || text,
+                                    '\\s+',
+                                    ' ',
+                                    'g'
+                                ))
+                            )
+                        ) STORED
+                """
+            ).format(chunks=chunks)
+        )
 
         cur.execute(
             sql.SQL(
@@ -291,6 +334,14 @@ class Command(BaseCommand):
                 """
                 CREATE INDEX IF NOT EXISTS chunks_text_tsv_idx
                     ON {chunks} USING GIN (text_tsv)
+                """
+            ).format(chunks=chunks)
+        )
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE INDEX IF NOT EXISTS chunks_text_context_tsv_idx
+                    ON {chunks} USING GIN (text_context_tsv)
                 """
             ).format(chunks=chunks)
         )

@@ -188,6 +188,7 @@ def ingestion_submit(request):
     Returns a partial HTML response with the ingestion status.
     """
     views = _views()
+    tenant_id = None
     try:
         from ai_core.services import handle_document_upload
 

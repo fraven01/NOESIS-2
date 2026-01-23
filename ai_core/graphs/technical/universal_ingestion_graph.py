@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, ConfigDict, ValidationError
+from structlog.contextvars import bind_contextvars
 
 from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import observe_span
@@ -29,6 +30,7 @@ from ai_core.services.document_processing_factory import (
     build_document_processing_bundle,
 )
 from ai_core.tool_contracts import ToolContext
+from common.logging import bind_log_context
 
 # --------------------------------------------------------------------- I/O Contracts
 
@@ -146,6 +148,43 @@ class UniversalIngestionError(Exception):
     pass
 
 
+# --------------------------------------------------------------------- Context binding
+
+
+def _extract_context_ids(context_dict: Any) -> tuple[str | None, str | None]:
+    if not isinstance(context_dict, dict):
+        return None, None
+    scope = context_dict.get("scope")
+    if isinstance(scope, dict):
+        return (
+            scope.get("trace_id"),
+            scope.get("tenant_id"),
+        )
+    tool_context = context_dict.get("tool_context")
+    if isinstance(tool_context, dict):
+        scope = tool_context.get("scope")
+        if isinstance(scope, dict):
+            return (
+                scope.get("trace_id"),
+                scope.get("tenant_id"),
+            )
+    return None, None
+
+
+def bind_context_node(state: UniversalIngestionState) -> UniversalIngestionState:
+    """Bind trace/tenant into the local graph thread before other nodes run."""
+    trace_id, tenant_id = _extract_context_ids(state.get("context"))
+    payload: dict[str, str] = {}
+    if trace_id:
+        payload["trace_id"] = str(trace_id)
+    if tenant_id:
+        payload["tenant_id"] = str(tenant_id)
+    if payload:
+        bind_contextvars(**payload)
+        bind_log_context(**payload)
+    return state
+
+
 # --------------------------------------------------------------------- Nodes
 
 
@@ -169,6 +208,16 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
         msg = f"Invalid context structure: {exc.errors()}"
         logger.error(msg)
         return {"error": msg, "tool_context": None}
+
+    # Bind logging context inside the graph execution scope.
+    bind_contextvars(
+        trace_id=str(tool_context.scope.trace_id),
+        tenant_id=str(tool_context.scope.tenant_id),
+    )
+    bind_log_context(
+        trace_id=str(tool_context.scope.trace_id),
+        tenant_id=str(tool_context.scope.tenant_id),
+    )
 
     # 2. Validate Input (NormalizedDocument)
     raw_doc = inp.normalized_document
@@ -432,13 +481,15 @@ def build_universal_ingestion_graph() -> StateGraph:
     """Build the Universal Ingestion Graph (Pure Primitive)."""
     workflow = StateGraph(UniversalIngestionState)
 
+    workflow.add_node("bind_context", bind_context_node)
     workflow.add_node("validate_input", validate_input_node)
     workflow.add_node("dedup", dedup_node)
     workflow.add_node("persist", persist_node)
     workflow.add_node("process", process_node)
     workflow.add_node("finalize", finalize_node)
 
-    workflow.add_edge(START, "validate_input")
+    workflow.add_edge(START, "bind_context")
+    workflow.add_edge("bind_context", "validate_input")
 
     def check_valid(state: UniversalIngestionState) -> str:
         if state.get("error"):

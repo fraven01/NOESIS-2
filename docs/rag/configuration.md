@@ -23,6 +23,26 @@ Das für die Erstellung von Vektor-Embeddings verwendete Modell sowie dessen Dim
 | ------------------- | --------------------------------------------------------------------------------------------- | ------------ |
 | `RAG_VECTOR_SCHEMA` | Überschreibt das Schema des Standard-Vector-Spaces (`RAG_VECTOR_STORES['global']`).            | `rag` (oder Wert von `DEV_TENANT_SCHEMA`) |
 
+### Kontext-Header für Retrieval
+
+Kurze Kontext-Header werden als Präfix in Chunks geschrieben, um Retrieval zu stabilisieren.
+
+| Umgebungsvariable | Beschreibung | Standardwert |
+| ----------------- | ------------ | ------------ |
+| `RAG_CONTEXT_HEADER_MODE` | Modus für Header-Erzeugung (`off`, `heuristic`, `llm`). | `heuristic` |
+| `RAG_CONTEXT_HEADER_MODEL` | MODEL_ROUTING-Label für den LLM-Header (nur bei `llm`). | `fast` |
+| `RAG_CONTEXT_HEADER_MAX_CHARS` | Maximale Zeichenlänge des Headers. | `140` |
+| `RAG_CONTEXT_HEADER_MAX_WORDS` | Maximale Wortanzahl des Headers. | `14` |
+
+### Kontext-Budget für Antwortgenerierung
+
+Die Anzahl der ausgewählten Snippets wird token-basiert an dieses Budget angepasst.
+
+| Umgebungsvariable | Beschreibung | Standardwert |
+| ----------------- | ------------ | ------------ |
+| `RAG_CONTEXT_TOKEN_BUDGET` | Tokenbudget für die RAG-Kontextbefüllung. | `1800` |
+| `RAG_CONTEXT_OVERSAMPLE_FACTOR` | Oversampling-Faktor für Retrieval vor dem Budget-Cut. | `4` |
+
 **Beispiel:**
 Um ein anderes Modell zu verwenden, kann die folgende Zeile in die `.env`-Datei eingetragen werden:
 

@@ -20,6 +20,7 @@ from common.constants import (
     X_INVOCATION_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
 )
+from common.logging import bind_log_context
 
 
 def _coalesce(request: HttpRequest, header: str, meta_key: str) -> str | None:
@@ -95,6 +96,7 @@ def normalize_request(
         trace_id, _ = coerce_trace_id(meta)
     except ValueError:
         trace_id = uuid.uuid4().hex
+    bind_log_context(trace_id=trace_id)
 
     # 2. Tenant ID
     # Priority:

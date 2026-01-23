@@ -100,6 +100,9 @@ class RequestContextMiddleware:
         trace_id = scope_context.trace_id
         tenant_id = scope_context.tenant_id
 
+        # Persist trace_id back to META so downstream view helpers reuse it.
+        headers[META_TRACE_ID_KEY] = trace_id
+
         # BREAKING CHANGE (Option A): case_id is no longer in ScopeContext
         # Extract business domain IDs directly from headers
         case_id = self._normalize_header(headers.get(self.CASE_ID_HEADER))
@@ -123,22 +126,22 @@ class RequestContextMiddleware:
         client_ip = self._resolve_client_ip(headers)
 
         log_context: dict[str, str] = {
-            "trace.id": trace_id,
+            "trace_id": trace_id,
             "http.method": http_method,
             "http.route": http_route,
         }
         if span_id:
-            log_context["span.id"] = span_id
+            log_context["span_id"] = span_id
         if tenant_id:
-            log_context["tenant.id"] = tenant_id
+            log_context["tenant_id"] = tenant_id
         if case_id:
-            log_context["case.id"] = case_id
+            log_context["case_id"] = case_id
         if key_alias:
-            log_context["key.alias"] = key_alias
+            log_context["key_alias"] = key_alias
         if idempotency_key:
-            log_context["idempotency.key"] = idempotency_key
+            log_context["idempotency_key"] = idempotency_key
         if client_ip:
-            log_context["client.ip"] = client_ip
+            log_context["client_ip"] = client_ip
 
         business_context = BusinessContext(case_id=case_id)
         tool_context = scope_context.to_tool_context(business=business_context)
@@ -174,6 +177,9 @@ class RequestContextMiddleware:
             trace_id, span_id = coerce_trace_id(headers)
         except ValueError:
             trace_id = None
+
+        if trace_id and not span_id:
+            span_id = uuid.uuid4().hex[:16]
 
         if not trace_id:
             meta: MutableMapping[str, Any] = {}

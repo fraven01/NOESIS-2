@@ -307,13 +307,20 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
 | `RAG_IVF_LISTS` | `2048` | Anzahl der Listen (`lists`) für IVFFLAT-Indizes. |
 | `RAG_IVF_PROBES` | `64` | Anzahl der `probes` für IVFFLAT-Suchen (per Session gesetzt). |
 | `RAG_MIN_SIM` | `0.15` | Minimale Fused-Similarity für Treffer (Werte darunter werden verworfen). |
-| `RAG_LEXICAL_MODE` | `trgm` | Lexikalischer Retrieval-Modus (`trgm` oder `bm25`). |
-| `RAG_HYDE_ENABLED` | `false` | HyDE (Hypothetical Document Embeddings) für semantische Queries aktivieren. |
+| `RAG_LEXICAL_MODE` | `bm25` | Lexikalischer Retrieval-Modus (`trgm` oder `bm25`). |
+| `RAG_LEXICAL_CONTEXTUAL_ENABLED` | `false` | Nutzt den kontextuellen BM25-Index (Header + Section Path) statt `text_tsv`. |
+| `RAG_HYDE_ENABLED` | `true` | HyDE (Hypothetical Document Embeddings) für semantische Queries aktivieren. |
 | `RAG_HYDE_MODEL_LABEL` | `simple-query` | LLM-Routing-Label für HyDE-Prompts. |
 | `RAG_HYDE_MAX_CHARS` | `2000` | Maximalgröße des HyDE-Texts vor dem Embedding. |
 | `RAG_HYBRID_ALPHA` | `0.7` | Gewichtung der semantischen Similarität in der Late-Fusion (0 = nur Lexikalik). |
 | `RAG_CHUNK_TARGET_TOKENS` | `450` | Zielgröße pro Chunk in Tokens für die Vorverarbeitung. |
 | `RAG_CHUNK_OVERLAP_TOKENS` | `80` | Token-Overlap zwischen aufeinanderfolgenden Chunks. |
+| `RAG_CONTEXT_HEADER_MODE` | `heuristic` | Kontext-Header für Chunks (`off`, `heuristic`, `llm`). |
+| `RAG_CONTEXT_HEADER_MODEL` | `fast` | MODEL_ROUTING-Label für LLM-Header (nur bei `llm`). |
+| `RAG_CONTEXT_HEADER_MAX_CHARS` | `140` | Maximale Zeichenlänge des Kontext-Headers. |
+| `RAG_CONTEXT_HEADER_MAX_WORDS` | `14` | Maximale Wortanzahl des Kontext-Headers. |
+| `RAG_CONTEXT_TOKEN_BUDGET` | `1800` | Tokenbudget für die RAG-Kontextbefüllung. |
+| `RAG_CONTEXT_OVERSAMPLE_FACTOR` | `4` | Oversampling-Faktor für Retrieval vor dem Budget-Cut. |
 
 Bei fehlenden `%`-Treffern wird automatisch auf eine reine Similarity-Sortierung
 zurückgefallen.

@@ -34,6 +34,7 @@ from psycopg2.extensions import make_dsn, parse_dsn
 from psycopg2.pool import SimpleConnectionPool
 
 from common.logging import get_log_context, get_logger
+from ai_core.infra.serialization import to_jsonable
 from ai_core.rag.vector_store import VectorStore
 from .deduplication import compute_document_embedding, find_near_duplicate
 from .embeddings import EmbeddingClientError, get_embedding_client
@@ -415,6 +416,7 @@ class HybridSearchResult:
     deleted_matches_blocked: int = 0
     index_latency_ms: float | None = None
     rerank_latency_ms: float | None = None
+    lexical_index_used: str | None = None
     cached_total_candidates: int | None = None
     scores: List[Dict[str, float]] | None = None
 
@@ -745,6 +747,8 @@ class PgVectorClient:
 
     @contextmanager
     def _connection(self):  # type: ignore[no-untyped-def]
+        if self._pool is None:
+            raise RuntimeError("vector_db_unavailable")
         conn = self._pool.getconn()
         try:
             self._prepare_connection(conn)
@@ -912,6 +916,7 @@ class PgVectorClient:
             return (time.perf_counter() - started) * 1000
 
         duration_ms = self._run_with_retries(_operation, op_name="upsert_chunks")
+        payload_size_bytes = self._estimate_chunk_payload_size(chunk_list)
 
         skipped_documents = sum(
             1
@@ -931,12 +936,8 @@ class PgVectorClient:
                         "external_id": str(doc.get("external_id")),
                         "workflow_id": str(doc.get("workflow_id")),
                         "collection_id": str(doc.get("collection_id")),
-                        "initial_metadata": json.dumps(
-                            doc.get("metadata"), default=str, ensure_ascii=False
-                        ),
-                        "initial_parents": json.dumps(
-                            doc.get("parents"), default=str, ensure_ascii=False
-                        ),
+                        "initial_metadata": to_jsonable(doc.get("metadata")),
+                        "initial_parents": to_jsonable(doc.get("parents")),
                     },
                 )
             except Exception:
@@ -1000,6 +1001,17 @@ class PgVectorClient:
             if action in {"inserted", "replaced"} and chunk_count:
                 metrics.INGESTION_CHUNKS_WRITTEN.inc(float(chunk_count))
         logger.info(
+            "rag.vector.upsert_completed",
+            extra={
+                "chunk_count": len(chunk_list),
+                "document_count": len(grouped),
+                "tenant_count": len(tenants),
+                "duration_ms": duration_ms,
+                "size_bytes": payload_size_bytes,
+                "tenants": tenants,
+            },
+        )
+        logger.info(
             "RAG upsert completed: chunks=%d documents=%d tenants=%s skipped=%d duration_ms=%.2f",
             inserted_chunks,
             len(grouped),
@@ -1008,6 +1020,31 @@ class PgVectorClient:
             duration_ms,
         )
         return UpsertResult(inserted_chunks, documents_info)
+
+    @staticmethod
+    def _estimate_chunk_payload_size(chunks: Sequence[Chunk]) -> int:
+        total = 0
+        for chunk in chunks:
+            try:
+                total += len((chunk.content or "").encode("utf-8"))
+            except Exception:
+                pass
+            try:
+                total += len(
+                    json.dumps(
+                        chunk.meta or {},
+                        default=str,
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                )
+            except Exception:
+                pass
+            embedding = chunk.embedding or []
+            try:
+                total += len(embedding) * 8
+            except Exception:
+                pass
+        return total
 
     def list_chunks_by_version(
         self,
@@ -1064,6 +1101,146 @@ class PgVectorClient:
                 }
             )
         return results
+
+    def get_chunks_by_document(
+        self,
+        *,
+        tenant_id: str,
+        document_id: uuid.UUID | str,
+        case_id: str | None = None,
+        collection_id: str | None = None,
+    ) -> list[Chunk]:
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        try:
+            document_uuid = (
+                document_id
+                if isinstance(document_id, uuid.UUID)
+                else uuid.UUID(str(document_id))
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("invalid_document_id") from exc
+
+        collection_uuid: uuid.UUID | None = None
+        if collection_id not in {None, ""}:
+            try:
+                collection_uuid = uuid.UUID(str(collection_id))
+            except (TypeError, ValueError, AttributeError):
+                collection_uuid = None
+
+        chunks_table = self._table("chunks")
+        where_clauses = ["document_id = %s", "tenant_id = %s"]
+        params: list[object] = [document_uuid, tenant_uuid]
+
+        if case_id and collection_uuid:
+            where_clauses.append(
+                "((metadata ->> 'case_id' = %s) OR (collection_id = %s))"
+            )
+            params.extend([str(case_id), collection_uuid])
+        elif case_id:
+            where_clauses.append("metadata ->> 'case_id' = %s")
+            params.append(str(case_id))
+        elif collection_uuid:
+            where_clauses.append("collection_id = %s")
+            params.append(collection_uuid)
+
+        query = sql.SQL(
+            "SELECT id, ord, text, metadata "
+            "FROM {} "
+            "WHERE " + " AND ".join(where_clauses) + " "
+            "ORDER BY ord"
+        ).format(chunks_table)
+
+        rows: list[tuple[object, int, str, object]] = []
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = list(cur.fetchall())
+
+        results: list[Chunk] = []
+        for chunk_id, ord_value, text_value, meta_value in rows:
+            metadata = MetadataHandler.coerce_map(meta_value)
+            metadata.setdefault("id", str(chunk_id))
+            metadata.setdefault("chunk_id", str(chunk_id))
+            metadata.setdefault("chunk_index", ord_value)
+            results.append(
+                Chunk(content=str(text_value or ""), meta=metadata, embedding=None)
+            )
+        return results
+
+    def fetch_adjacent_chunks(
+        self,
+        *,
+        tenant_id: str,
+        chunk_ids: Sequence[object],
+        window: int = 1,
+    ) -> dict[str, list[dict[str, object]]]:
+        """Fetch adjacent chunks (previous/next ord) for the provided chunk IDs."""
+        if not chunk_ids:
+            return {}
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        coerced: list[uuid.UUID] = []
+        for chunk_id in chunk_ids:
+            try:
+                coerced.append(uuid.UUID(str(chunk_id)))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        if not coerced:
+            return {}
+        window_size = max(1, int(window))
+
+        chunks_table = self._table("chunks")
+        query = sql.SQL(
+            """
+            WITH target AS (
+                SELECT id, document_id, ord, metadata
+                FROM {chunks}
+                WHERE tenant_id = %s
+                  AND id = ANY(%s)
+            )
+            SELECT
+                t.id AS anchor_id,
+                c.id,
+                c.ord,
+                c.text,
+                c.metadata
+            FROM target t
+            JOIN {chunks} c
+              ON c.document_id = t.document_id
+             AND c.tenant_id = %s
+            WHERE c.ord BETWEEN t.ord - %s AND t.ord + %s
+              AND c.ord <> t.ord
+              AND (c.metadata -> 'section_path')
+                  IS NOT DISTINCT FROM (t.metadata -> 'section_path')
+            ORDER BY t.id, c.ord
+            """
+        ).format(chunks=chunks_table)
+
+        neighbors: dict[str, list[dict[str, object]]] = {}
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    query,
+                    [tenant_uuid, coerced, tenant_uuid, window_size, window_size],
+                )
+                for (
+                    anchor_id,
+                    chunk_id,
+                    ord_value,
+                    text_value,
+                    meta_value,
+                ) in cur.fetchall():
+                    anchor_key = str(anchor_id)
+                    metadata = MetadataHandler.coerce_map(meta_value)
+                    neighbors.setdefault(anchor_key, []).append(
+                        {
+                            "chunk_id": str(chunk_id),
+                            "ord": ord_value,
+                            "text": text_value,
+                            "metadata": metadata,
+                        }
+                    )
+
+        return neighbors
 
     def hard_delete_document_versions(
         self,
@@ -1445,6 +1622,7 @@ class PgVectorClient:
         distance_operator_value: Optional[str] = None
         lexical_query_variant: str = "none"
         lexical_fallback_limit_value: Optional[float] = None
+        lexical_index_used_value: str | None = None
         if visibility_mode is Visibility.ACTIVE:
             filtered_clauses = [
                 clause
@@ -1508,6 +1686,7 @@ class PgVectorClient:
             nonlocal distance_operator_value
             nonlocal lexical_query_variant
             nonlocal lexical_fallback_limit_value
+            nonlocal lexical_index_used_value
             started = time.perf_counter()
             vector_rows: List[tuple] = []
             lexical_rows: List[tuple] = []
@@ -1517,18 +1696,29 @@ class PgVectorClient:
             distance_operator_value = None
             lexical_query_variant = "none"
             lexical_fallback_limit_value = None
-            lexical_mode_raw = str(_get_setting("RAG_LEXICAL_MODE", "trgm")).strip()
+            lexical_index_used_value = None
+            lexical_mode_raw = str(_get_setting("RAG_LEXICAL_MODE", "bm25")).strip()
             lexical_mode = (
                 "bm25"
                 if lexical_mode_raw.lower() in {"bm25", "tsvector", "fulltext"}
                 else "trgm"
             )
             if lexical_mode == "bm25":
-                lexical_score_sql = (
-                    "ts_rank_cd(c.text_tsv, plainto_tsquery('simple', %s)) AS lscore"
+                use_contextual_lexical = _get_bool_setting(
+                    "RAG_LEXICAL_CONTEXTUAL_ENABLED", False
                 )
-                lexical_match_clause = "c.text_tsv @@ plainto_tsquery('simple', %s)"
+                if use_contextual_lexical:
+                    lexical_index_used_value = "contextual"
+                    lexical_score_sql = "ts_rank_cd(c.text_context_tsv, plainto_tsquery('simple', %s)) AS lscore"
+                    lexical_match_clause = (
+                        "c.text_context_tsv @@ plainto_tsquery('simple', %s)"
+                    )
+                else:
+                    lexical_index_used_value = "raw"
+                    lexical_score_sql = "ts_rank_cd(c.text_tsv, plainto_tsquery('simple', %s)) AS lscore"
+                    lexical_match_clause = "c.text_tsv @@ plainto_tsquery('simple', %s)"
             else:
+                lexical_index_used_value = "raw"
                 lexical_score_sql = "similarity(c.text_norm, %s) AS lscore"
                 lexical_match_clause = "c.text_norm %% %s"
 
@@ -1557,6 +1747,7 @@ class PgVectorClient:
                 lexical_outcome = run_lexical_search(
                     client=self,
                     conn=conn,
+                    lexical_mode=lexical_mode,
                     query_db_norm=query_db_norm,
                     where_sql=where_sql,
                     where_params=where_params,
@@ -1749,6 +1940,7 @@ class PgVectorClient:
             trgm_limit=trgm_limit_value,
             applied_trgm_limit=applied_trgm_limit_value,
             fallback_limit_used=fallback_limit_used_value,
+            lexical_index_used=lexical_index_used_value,
             distance_score_mode=distance_score_mode,
             duration_ms=duration_ms,
         )
@@ -1822,6 +2014,7 @@ class PgVectorClient:
             fallback_limit_used=fallback_limit_used_value,
             visibility=visibility_mode.value,
             deleted_matches_blocked=deleted_matches_blocked_value,
+            lexical_index_used=lexical_index_used_value,
             cached_total_candidates=total_without_filter,
             scores=per_result_scores if per_result_scores else None,
         )

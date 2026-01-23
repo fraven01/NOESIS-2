@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Iterable, Mapping, Sequence
 
 from ai_core.rag.evidence_graph import EvidenceGraph
@@ -95,6 +96,7 @@ _WEIGHT_PROFILES: dict[str, dict[str, float]] = {
         "confidence": 0.3,
         "adjacency_bonus": 0.2,
         "doc_type_match": 0.1,
+        "question_density": 0.0,
     },
     "precision": {
         "parent_relevance": 0.2,
@@ -102,6 +104,7 @@ _WEIGHT_PROFILES: dict[str, dict[str, float]] = {
         "confidence": 0.3,
         "adjacency_bonus": 0.1,
         "doc_type_match": 0.1,
+        "question_density": 0.0,
     },
     "recall": {
         "parent_relevance": 0.1,
@@ -109,6 +112,15 @@ _WEIGHT_PROFILES: dict[str, dict[str, float]] = {
         "confidence": 0.4,
         "adjacency_bonus": 0.2,
         "doc_type_match": 0.2,
+        "question_density": 0.0,
+    },
+    "extract": {
+        "parent_relevance": 0.1,
+        "section_match": 0.1,
+        "confidence": 0.3,
+        "adjacency_bonus": 0.1,
+        "doc_type_match": 0.1,
+        "question_density": 0.3,
     },
 }
 
@@ -154,6 +166,7 @@ class RerankFeatures:
     confidence: float
     adjacency_bonus: float
     doc_type_match: float
+    question_density: float
     weighted_score: float
 
     def to_dict(self) -> dict[str, float]:
@@ -163,6 +176,7 @@ class RerankFeatures:
             "confidence": self.confidence,
             "adjacency_bonus": self.adjacency_bonus,
             "doc_type_match": self.doc_type_match,
+            "question_density": self.question_density,
             "weighted_score": self.weighted_score,
         }
 
@@ -193,6 +207,26 @@ def _build_chunk_from_match(match: Mapping[str, Any], index: int) -> Chunk:
     if doc_type:
         chunk_meta["doc_type"] = doc_type
     return Chunk(content=str(match.get("text") or ""), meta=chunk_meta)
+
+
+_QUESTION_PATTERNS = re.compile(
+    r"\b("
+    r"frage|fragen|question|questions|which|what|who|when|why|how|"
+    r"welche|welcher|welches|was|wer|wann|warum|wieso|wie|wo|"
+    r"field|fields|formular|form|auszufuellen|ausfuellen"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _question_density(text: str) -> float:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return 0.0
+    mark_hits = cleaned.count("?")
+    word_hits = len(_QUESTION_PATTERNS.findall(cleaned))
+    score = (mark_hits + word_hits) / 3.0
+    return max(0.0, min(1.0, score))
 
 
 def extract_rerank_features(
@@ -230,12 +264,14 @@ def extract_rerank_features(
         doc_type_match = (
             1.0 if doc_type and anchor_doc_type and doc_type == anchor_doc_type else 0.0
         )
+        question_density = _question_density(chunks[node.rank].content)
         weighted_score = (
-            parent_relevance * weights["parent_relevance"]
-            + section_match * weights["section_match"]
-            + confidence * weights["confidence"]
-            + adjacency_bonus * weights["adjacency_bonus"]
-            + doc_type_match * weights["doc_type_match"]
+            parent_relevance * weights.get("parent_relevance", 0.0)
+            + section_match * weights.get("section_match", 0.0)
+            + confidence * weights.get("confidence", 0.0)
+            + adjacency_bonus * weights.get("adjacency_bonus", 0.0)
+            + doc_type_match * weights.get("doc_type_match", 0.0)
+            + question_density * weights.get("question_density", 0.0)
         )
         features.append(
             RerankFeatures(
@@ -245,6 +281,7 @@ def extract_rerank_features(
                 confidence=confidence,
                 adjacency_bonus=adjacency_bonus,
                 doc_type_match=doc_type_match,
+                question_density=question_density,
                 weighted_score=weighted_score,
             )
         )
@@ -263,6 +300,7 @@ def summarise_features(
         "confidence",
         "adjacency_bonus",
         "doc_type_match",
+        "question_density",
         "weighted_score",
     ]
     summary: dict[str, dict[str, float]] = {}

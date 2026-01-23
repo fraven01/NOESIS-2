@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import random
+import re
 import time
+import uuid
 from datetime import datetime
 from collections.abc import Mapping
 from typing import Any, Mapping as TypingMapping
@@ -13,8 +16,9 @@ from celery.exceptions import SoftTimeLimitExceeded
 from celery.result import AsyncResult
 from pydantic import ValidationError
 
-from .constants import HEADER_CANDIDATE_MAP
+from .constants import HEADER_CANDIDATE_MAP, X_TRACE_ID_HEADER
 from .logging import bind_log_context, clear_log_context
+from structlog.contextvars import bind_contextvars, clear_contextvars
 from ai_core.infra.pii_flags import (
     clear_pii_config,
     load_tenant_pii_config,
@@ -66,6 +70,12 @@ logger = logging.getLogger(__name__)
 
 try:
     from opentelemetry import context as otel_context
+    from opentelemetry.trace import (
+        SpanContext,
+        TraceFlags,
+        NonRecordingSpan,
+        set_span_in_context,
+    )
     from opentelemetry.trace.propagation.trace_context import (
         TraceContextTextMapPropagator,
     )
@@ -73,6 +83,69 @@ try:
     _OTEL_AVAILABLE = True
 except ImportError:
     _OTEL_AVAILABLE = False
+
+
+def _normalize_trace_id_for_otel(trace_id: object) -> str | None:
+    if trace_id is None:
+        return None
+    text = str(trace_id).strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text).hex
+    except (TypeError, ValueError):
+        pass
+    cleaned = re.sub(r"[^0-9a-fA-F]", "", text).lower()
+    if len(cleaned) == 32:
+        return cleaned
+    if len(cleaned) > 32:
+        return cleaned[:32]
+    return None
+
+
+def _otel_context_from_trace_id(trace_id: str) -> object | None:
+    if not _OTEL_AVAILABLE:
+        return None
+    normalized = _normalize_trace_id_for_otel(trace_id)
+    if not normalized:
+        return None
+    try:
+        trace_int = int(normalized, 16)
+    except (TypeError, ValueError):
+        return None
+    if not trace_int:
+        return None
+    try:
+        span_id = random.getrandbits(64)
+        trace_flags = (
+            TraceFlags.SAMPLED
+            if isinstance(TraceFlags.SAMPLED, TraceFlags)
+            else TraceFlags(TraceFlags.SAMPLED)
+        )
+        span_context = SpanContext(
+            trace_id=trace_int,
+            span_id=span_id,
+            is_remote=True,
+            trace_flags=trace_flags,
+        )
+        return set_span_in_context(NonRecordingSpan(span_context))
+    except Exception:
+        return None
+
+
+def _current_otel_trace_id() -> str | None:
+    if not _OTEL_AVAILABLE:
+        return None
+    try:
+        from opentelemetry import trace as otel_trace
+
+        span = otel_trace.get_current_span()
+        span_context = span.get_span_context() if span else None
+        if not span_context or not span_context.is_valid:
+            return None
+        return f"{span_context.trace_id:032x}"
+    except Exception:
+        return None
 
 
 class ContextTask(Task):
@@ -100,6 +173,7 @@ class ContextTask(Task):
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
         clear_log_context()
+        clear_contextvars()
         context = self._gather_context(args, kwargs)
         request = getattr(self, "request", None)
         task_id = getattr(request, "id", None) if request is not None else None
@@ -107,16 +181,30 @@ class ContextTask(Task):
             task_id = self._normalize(task_id)
             context["task_id"] = task_id
         if context:
+            bind_contextvars(**context)
             bind_log_context(**context)
 
         token = None
         if _OTEL_AVAILABLE:
-            # Extract W3C trace context from headers and activate it
-            request_headers = getattr(self.request, "headers", None) or {}
-            if not isinstance(request_headers, dict):
-                request_headers = {}
-            ctx = TraceContextTextMapPropagator().extract(carrier=request_headers)
+            trace_id = context.get("trace_id")
+            ctx = _otel_context_from_trace_id(trace_id) if trace_id else None
+            if ctx is None:
+                # Extract W3C trace context from headers and activate it
+                request_headers = getattr(self.request, "headers", None) or {}
+                if not isinstance(request_headers, dict):
+                    request_headers = {}
+                ctx = TraceContextTextMapPropagator().extract(carrier=request_headers)
             token = otel_context.attach(ctx)
+            logger.debug(
+                "celery.task.context",
+                extra={
+                    "task_id": task_id,
+                    "task_name": getattr(self, "name", None),
+                    "trace_id": context.get("trace_id"),
+                    "otel_trace_id": _current_otel_trace_id(),
+                    "otel_from_context": bool(trace_id),
+                },
+            )
 
         task_name = getattr(self, "name", None) or type(self).__name__
         queue = _resolve_task_queue(self, kwargs)
@@ -174,6 +262,7 @@ class ContextTask(Task):
             if _OTEL_AVAILABLE and token is not None:
                 otel_context.detach(token)
             clear_log_context()
+            clear_contextvars()
 
     def _gather_context(
         self, args: tuple[Any, ...], kwargs: dict[str, Any]
@@ -240,10 +329,34 @@ class ContextTask(Task):
         if tenant:
             context["tenant_id"] = self._normalize(tenant)
 
+        run_id = tool_context.scope.run_id
+        if run_id:
+            context["run_id"] = self._normalize(run_id)
+
+        ingestion_run_id = tool_context.scope.ingestion_run_id
+        if ingestion_run_id:
+            context["ingestion_run_id"] = self._normalize(ingestion_run_id)
+
         # Business IDs from business_context (BREAKING CHANGE)
         case = tool_context.business.case_id
         if case:
             context["case_id"] = self._normalize(case)
+
+        collection_id = tool_context.business.collection_id
+        if collection_id:
+            context["collection_id"] = self._normalize(collection_id)
+
+        workflow_id = tool_context.business.workflow_id
+        if workflow_id:
+            context["workflow_id"] = self._normalize(workflow_id)
+
+        document_id = tool_context.business.document_id
+        if document_id:
+            context["document_id"] = self._normalize(document_id)
+
+        document_version_id = tool_context.business.document_version_id
+        if document_version_id:
+            context["document_version_id"] = self._normalize(document_version_id)
 
         key_alias = meta.get("key_alias")
         if key_alias:
@@ -259,6 +372,12 @@ class ContextTask(Task):
         case_id = None
         trace_id = None
         idempotency_key = None
+        collection_id = None
+        workflow_id = None
+        document_id = None
+        document_version_id = None
+        run_id = None
+        ingestion_run_id = None
 
         if isinstance(tool_context, ToolContext):
             scope = tool_context.scope
@@ -267,6 +386,12 @@ class ContextTask(Task):
             trace_id = scope.trace_id
             idempotency_key = scope.idempotency_key
             case_id = business.case_id
+            collection_id = business.collection_id
+            workflow_id = business.workflow_id
+            document_id = business.document_id
+            document_version_id = business.document_version_id
+            run_id = scope.run_id
+            ingestion_run_id = scope.ingestion_run_id
         elif isinstance(tool_context, Mapping):
             scope_data = tool_context.get("scope")
             business_data = tool_context.get("business")
@@ -274,8 +399,14 @@ class ContextTask(Task):
                 tenant_id = scope_data.get("tenant_id")
                 trace_id = scope_data.get("trace_id")
                 idempotency_key = scope_data.get("idempotency_key")
+                run_id = scope_data.get("run_id")
+                ingestion_run_id = scope_data.get("ingestion_run_id")
             if isinstance(business_data, Mapping):
                 case_id = business_data.get("case_id")
+                collection_id = business_data.get("collection_id")
+                workflow_id = business_data.get("workflow_id")
+                document_id = business_data.get("document_id")
+                document_version_id = business_data.get("document_version_id")
         else:
             return {}
 
@@ -290,8 +421,26 @@ class ContextTask(Task):
         if trace_id:
             context["trace_id"] = self._normalize(trace_id)
 
+        if run_id:
+            context["run_id"] = self._normalize(run_id)
+
+        if ingestion_run_id:
+            context["ingestion_run_id"] = self._normalize(ingestion_run_id)
+
         if idempotency_key:
             context["idempotency_key"] = self._normalize(idempotency_key)
+
+        if collection_id:
+            context["collection_id"] = self._normalize(collection_id)
+
+        if workflow_id:
+            context["workflow_id"] = self._normalize(workflow_id)
+
+        if document_id:
+            context["document_id"] = self._normalize(document_id)
+
+        if document_version_id:
+            context["document_version_id"] = self._normalize(document_version_id)
 
         return context
 
@@ -837,12 +986,14 @@ def with_scope_apply_async(
     injects trace headers for observability.
     """
 
-    if not isinstance(signature, Signature):
-        raise TypeError("signature must be a celery Signature instance")
-
+    request_headers: dict[str, str] = {}
+    trace_id = scope.get("trace_id")
+    if trace_id:
+        request_headers[X_TRACE_ID_HEADER] = str(trace_id)
     otel_headers: dict[str, str] = {}
     if _OTEL_AVAILABLE:
         TraceContextTextMapPropagator().inject(otel_headers)
+        request_headers.update(otel_headers)
 
     apply_kwargs: dict[str, Any] = {}
     if task_id is not None:
@@ -862,8 +1013,13 @@ def with_scope_apply_async(
     if priority is not None:
         apply_kwargs["priority"] = priority
 
-    if not otel_headers:
+    if not isinstance(signature, Signature):
+        if hasattr(signature, "apply_async"):
+            return signature.apply_async(**apply_kwargs)
+        raise TypeError("signature must be a celery Signature instance")
+
+    if not request_headers:
         return signature.apply_async(**apply_kwargs)
 
-    scoped_signature = _clone_with_scope(signature, {}, otel_headers)
+    scoped_signature = _clone_with_scope(signature, {}, request_headers)
     return scoped_signature.apply_async(**apply_kwargs)

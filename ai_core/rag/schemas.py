@@ -25,6 +25,7 @@ class SourceRef(BaseModel):
     id: str
     label: str
     relevance_score: float = Field(
+        default=0.0,
         ge=0.0,
         le=1.0,
         description="LLM-assessed relevance score for the source.",

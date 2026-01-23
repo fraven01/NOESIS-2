@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
@@ -13,12 +14,17 @@ from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import emit_event, observe_span, update_observation
 from ai_core.nodes import compose, retrieve
 from ai_core.rag import answer_guardrails
+from ai_core.rag import metrics as rag_metrics
 from ai_core.rag import rerank as rag_rerank
 from ai_core.rag import semantic_cache
 from ai_core.rag import standalone_question as rag_standalone
 from ai_core.rag import strategy as rag_strategy
+from ai_core.rag.evidence_graph import EvidenceGraph
+from ai_core.rag.limits import get_limit_setting
+from ai_core.rag.passage_assembly import estimate_tokens
 from ai_core.rag.feedback import enqueue_used_source_feedback
-from ai_core.rag.schemas import RagReasoning, SourceRef
+from ai_core.rag.schemas import Chunk, RagReasoning, SourceRef
+from ai_core.rag.vector_store import get_default_router
 from ai_core.tool_contracts import ContextError, NotFoundError, ToolContext
 from ai_core.tool_contracts.base import tool_context_from_meta
 from langgraph.graph import END, StateGraph
@@ -33,6 +39,13 @@ DEFAULT_SCORE_DELTA = 0.05
 DEFAULT_QUERY_VARIANTS = 3
 RETRY_QUERY_VARIANTS = 5
 DEFAULT_HISTORY_LIMIT = 6
+DEFAULT_CONTEXT_TOKEN_BUDGET = 1800
+DEFAULT_CHUNK_TARGET_TOKENS = 450
+DEFAULT_CONTEXT_OVERSAMPLE_FACTOR = 4
+DEFAULT_INTENT = "answer"
+EXTRACT_INTENT = "extract_questions"
+CHECKLIST_INTENT = "checklist"
+DOC_REF_ANCHOR_MAX = 5
 
 
 def _resolve_history_limit() -> int:
@@ -167,6 +180,7 @@ class RetrievalAugmentedGenerationState(TypedDict, total=False):
     rerank_result: rag_rerank.RerankResult
     standalone_question: str | None
     retry: bool
+    intent: str | None
     result: Mapping[str, Any]
 
 
@@ -296,6 +310,34 @@ def _resolve_base_query(graph_input: RetrievalAugmentedGenerationInput) -> str:
     return ""
 
 
+_QUESTION_INTENT_PATTERNS = (
+    "welche fragen",
+    "welche frage",
+    "fragen",
+    "frage",
+    "questions",
+    "question",
+    "checklist",
+    "check list",
+    "checkliste",
+    "fields",
+    "field",
+    "formular",
+    "form",
+    "ausfuellen",
+    "auszufuellen",
+)
+
+
+def _detect_intent(query: str) -> str:
+    cleaned = query.strip().lower()
+    if not cleaned:
+        return DEFAULT_INTENT
+    if any(pattern in cleaned for pattern in _QUESTION_INTENT_PATTERNS):
+        return EXTRACT_INTENT
+    return DEFAULT_INTENT
+
+
 def _coerce_int(value: object, *, fallback: int) -> int:
     try:
         candidate = int(str(value))
@@ -326,6 +368,372 @@ def _resolve_float_env(name: str, fallback: float) -> float:
 
 def _coerce_score(value: object) -> float:
     return _coerce_float(value, fallback=0.0)
+
+
+def _coerce_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalise_doc_ref(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _extract_section_path(meta: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = meta.get("section_path")
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(part).strip() for part in raw if str(part).strip())
+    if isinstance(raw, str) and raw.strip():
+        return tuple(part.strip() for part in raw.split(">") if part.strip())
+    return ()
+
+
+def _doc_ref_candidates(match: Mapping[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    meta = match.get("meta")
+    meta_payload: Mapping[str, Any] = meta if isinstance(meta, Mapping) else {}
+    for key in (
+        "document_ref",
+        "doc_ref",
+        "external_id",
+        "title",
+        "document_title",
+    ):
+        candidate = _coerce_str(meta_payload.get(key))
+        if candidate:
+            candidates.append(candidate)
+    source = _coerce_str(match.get("source"))
+    if source:
+        candidates.append(source)
+    return candidates
+
+
+def _match_doc_ref(query: str, candidates: Sequence[str]) -> str | None:
+    if not query:
+        return None
+    normalised_query = _normalise_doc_ref(query)
+    for candidate in candidates:
+        normalised_candidate = _normalise_doc_ref(candidate)
+        if len(normalised_candidate) < 3:
+            continue
+        if normalised_candidate in normalised_query:
+            return candidate
+    return None
+
+
+def _resolve_doc_ref_anchor(
+    query: str,
+    matches: Sequence[Mapping[str, Any]],
+    *,
+    max_candidates: int = DOC_REF_ANCHOR_MAX,
+) -> tuple[str, str] | None:
+    if not query:
+        return None
+    limit = max(1, min(max_candidates, len(matches)))
+    for match in matches[:limit]:
+        if not isinstance(match, Mapping):
+            continue
+        candidates = _doc_ref_candidates(match)
+        matched_ref = _match_doc_ref(query, candidates)
+        if not matched_ref:
+            continue
+        meta = match.get("meta")
+        meta_payload: Mapping[str, Any] = meta if isinstance(meta, Mapping) else {}
+        section_path = _extract_section_path(meta_payload)
+        if not _is_title_anchor(match, section_path=section_path):
+            continue
+        document_id = _coerce_str(meta_payload.get("document_id") or match.get("id"))
+        if document_id:
+            return document_id, matched_ref
+    return None
+
+
+def _fetch_document_chunks(
+    *,
+    context: ToolContext,
+    document_id: str,
+) -> list[Chunk]:
+    router = get_default_router()
+    tenant_id = str(context.scope.tenant_id or "").strip()
+    tenant_schema = (
+        str(context.scope.tenant_schema).strip()
+        if context.scope.tenant_schema is not None
+        else None
+    )
+    if not tenant_id:
+        return []
+    try:
+        tenant_client = router.for_tenant(tenant_id, tenant_schema)
+    except Exception:
+        logger.debug(
+            "rag.document_expand.router_failed",
+            extra={"tenant_id": tenant_id},
+        )
+        return []
+    fetcher = getattr(tenant_client, "get_chunks_by_document", None)
+    if not callable(fetcher):
+        return []
+    return fetcher(
+        document_id,
+        case_id=context.business.case_id,
+        collection_id=context.business.collection_id,
+    )
+
+
+def _resolve_context_token_budget(context: ToolContext) -> int:
+    budget_value = _coerce_int(context.budget_tokens, fallback=0)
+    if budget_value > 0:
+        return budget_value
+    configured = get_limit_setting(
+        "RAG_CONTEXT_TOKEN_BUDGET", DEFAULT_CONTEXT_TOKEN_BUDGET
+    )
+    budget_value = _coerce_int(configured, fallback=DEFAULT_CONTEXT_TOKEN_BUDGET)
+    return max(1, budget_value)
+
+
+def _resolve_chunk_target_tokens() -> int:
+    configured = get_limit_setting(
+        "RAG_CHUNK_TARGET_TOKENS", DEFAULT_CHUNK_TARGET_TOKENS
+    )
+    try:
+        value = int(configured)
+    except (TypeError, ValueError):
+        value = DEFAULT_CHUNK_TARGET_TOKENS
+    return max(1, value)
+
+
+def _estimate_top_k_for_budget(budget_tokens: int) -> int:
+    target_tokens = _resolve_chunk_target_tokens()
+    if budget_tokens <= 0:
+        return 1
+    return max(1, int(math.ceil(budget_tokens / target_tokens)))
+
+
+def _resolve_context_oversample_factor() -> int:
+    configured = get_limit_setting(
+        "RAG_CONTEXT_OVERSAMPLE_FACTOR", DEFAULT_CONTEXT_OVERSAMPLE_FACTOR
+    )
+    try:
+        value = int(configured)
+    except (TypeError, ValueError):
+        value = DEFAULT_CONTEXT_OVERSAMPLE_FACTOR
+    return max(1, value)
+
+
+def _resolve_snippet_chunk_id(
+    snippet: Mapping[str, Any],
+    meta: Mapping[str, Any],
+    *,
+    index: int,
+    seen: set[str],
+) -> str:
+    candidates = (
+        meta.get("chunk_id"),
+        meta.get("id"),
+        meta.get("hash"),
+        snippet.get("id"),
+        snippet.get("hash"),
+    )
+    chunk_id = None
+    for candidate in candidates:
+        chunk_id = _coerce_str(candidate)
+        if chunk_id:
+            break
+    if not chunk_id:
+        chunk_id = f"chunk-{index}"
+    if chunk_id in seen:
+        chunk_id = f"{chunk_id}:{index}"
+    seen.add(chunk_id)
+    return chunk_id
+
+
+def _build_snippet_chunks(
+    snippets: Sequence[Mapping[str, Any]],
+) -> tuple[list[Chunk], dict[str, Mapping[str, Any]], dict[str, float]]:
+    chunks: list[Chunk] = []
+    id_to_snippet: dict[str, Mapping[str, Any]] = {}
+    scores: dict[str, float] = {}
+    seen_ids: set[str] = set()
+
+    for index, snippet in enumerate(snippets):
+        if not isinstance(snippet, Mapping):
+            continue
+        meta = snippet.get("meta")
+        meta_payload: dict[str, Any] = dict(meta) if isinstance(meta, Mapping) else {}
+        chunk_id = _resolve_snippet_chunk_id(
+            snippet,
+            meta_payload,
+            index=index,
+            seen=seen_ids,
+        )
+        if chunk_id:
+            meta_payload.setdefault("chunk_id", chunk_id)
+
+        document_id = _coerce_str(meta_payload.get("document_id") or snippet.get("id"))
+        if document_id:
+            meta_payload.setdefault("document_id", document_id)
+
+        if "chunk_index" not in meta_payload:
+            meta_payload["chunk_index"] = index
+
+        score = _coerce_score(snippet.get("score"))
+        meta_payload.setdefault("score", score)
+
+        text = str(snippet.get("text") or "")
+        chunks.append(Chunk(content=text, meta=meta_payload, embedding=None))
+        id_to_snippet.setdefault(chunk_id, snippet)
+        scores.setdefault(chunk_id, score)
+
+    return chunks, id_to_snippet, scores
+
+
+def _is_title_anchor(
+    snippet: Mapping[str, Any],
+    *,
+    section_path: tuple[str, ...],
+) -> bool:
+    text = str(snippet.get("text") or "").strip()
+    if not text:
+        return False
+    if len(text) > 220:
+        return False
+    if text.count("?") > 0:
+        return False
+    token_count = len(text.split())
+    if token_count > 30:
+        return False
+    if text.endswith(":"):
+        return True
+    if len(section_path) <= 1 and token_count <= 20:
+        return True
+    return False
+
+
+def _build_doc_neighbors(
+    nodes: Mapping[str, Any],
+) -> tuple[dict[str, list[str]], dict[str, dict[str, int]]]:
+    doc_order: dict[str, list[str]] = {}
+    for node in nodes.values():
+        document_id = getattr(node, "document_id", None)
+        chunk_id = getattr(node, "chunk_id", None)
+        if not document_id or not chunk_id:
+            continue
+        doc_order.setdefault(document_id, []).append(chunk_id)
+    for chunk_ids in doc_order.values():
+        chunk_ids.sort(
+            key=lambda cid: getattr(nodes.get(cid), "rank", 0),
+        )
+    doc_positions: dict[str, dict[str, int]] = {}
+    for doc_id, chunk_ids in doc_order.items():
+        positions = {chunk_id: idx for idx, chunk_id in enumerate(chunk_ids)}
+        doc_positions[doc_id] = positions
+    return doc_order, doc_positions
+
+
+def _doc_adjacent_ids(
+    anchor_id: str,
+    *,
+    nodes: Mapping[str, Any],
+    doc_order: Mapping[str, list[str]],
+    doc_positions: Mapping[str, Mapping[str, int]],
+    radius: int = 1,
+) -> list[str]:
+    node = nodes.get(anchor_id)
+    document_id = getattr(node, "document_id", None)
+    if not document_id:
+        return []
+    order = doc_order.get(document_id, [])
+    positions = doc_positions.get(document_id, {})
+    anchor_index = positions.get(anchor_id)
+    if anchor_index is None:
+        return []
+    start = max(0, anchor_index - radius)
+    end = min(len(order), anchor_index + radius + 1)
+    return [order[idx] for idx in range(start, end) if order[idx] != anchor_id]
+
+
+def _expand_snippet_ids(
+    snippets: Sequence[Mapping[str, Any]],
+) -> tuple[list[str], dict[str, Mapping[str, Any]], dict[str, float]]:
+    chunks, id_to_snippet, scores = _build_snippet_chunks(snippets)
+    if not chunks:
+        return [], id_to_snippet, scores
+
+    graph = EvidenceGraph.from_chunks(chunks)
+    doc_order, doc_positions = _build_doc_neighbors(graph.nodes)
+    section_paths = {node.chunk_id: node.section_path for node in graph.nodes.values()}
+    ordered_ids = sorted(
+        id_to_snippet.keys(), key=lambda cid: (-scores.get(cid, 0.0), cid)
+    )
+    used: set[str] = set()
+    expanded: list[str] = []
+
+    for anchor_id in ordered_ids:
+        if anchor_id in used:
+            continue
+        passage_ids = [anchor_id]
+        used.add(anchor_id)
+        if anchor_id in graph.nodes:
+            anchor_section = section_paths.get(anchor_id, ())
+            neighbors = graph.get_adjacent(anchor_id, max_hops=1)
+            neighbor_ids = [
+                cid
+                for cid in neighbors
+                if cid not in used and section_paths.get(cid, ()) == anchor_section
+            ]
+            neighbor_ids.sort(key=lambda cid: graph.nodes[cid].rank)
+            for neighbor_id in neighbor_ids:
+                if neighbor_id in used:
+                    continue
+                passage_ids.append(neighbor_id)
+                used.add(neighbor_id)
+            snippet = id_to_snippet.get(anchor_id, {})
+            if _is_title_anchor(snippet, section_path=anchor_section):
+                doc_neighbors = _doc_adjacent_ids(
+                    anchor_id,
+                    nodes=graph.nodes,
+                    doc_order=doc_order,
+                    doc_positions=doc_positions,
+                )
+                for neighbor_id in doc_neighbors:
+                    if neighbor_id in used:
+                        continue
+                    passage_ids.append(neighbor_id)
+                    used.add(neighbor_id)
+        expanded.extend(passage_ids)
+
+    return expanded, id_to_snippet, scores
+
+
+def _select_snippets_for_budget(
+    snippets: Sequence[Mapping[str, Any]],
+    *,
+    max_tokens: int,
+) -> tuple[list[Mapping[str, Any]], int]:
+    if max_tokens <= 0:
+        return [], 0
+    expanded_ids, id_to_snippet, _scores = _expand_snippet_ids(snippets)
+    if not expanded_ids:
+        return [], 0
+
+    selected: list[Mapping[str, Any]] = []
+    remaining = max_tokens
+    used_tokens = 0
+    for chunk_id in expanded_ids:
+        snippet = id_to_snippet.get(chunk_id)
+        if snippet is None:
+            continue
+        tokens = estimate_tokens(str(snippet.get("text") or ""))
+        if tokens <= 0:
+            continue
+        if tokens > remaining:
+            break
+        selected.append(snippet)
+        used_tokens += tokens
+        remaining -= tokens
+    return selected, used_tokens
 
 
 def _match_key(match: Mapping[str, Any], index: int) -> tuple[str, ...]:
@@ -458,6 +866,7 @@ def _build_compiled_graph(
     *,
     retrieve_node: RetrieveNode,
     compose_node: ComposeNode,
+    compose_extract_node: ComposeNode,
 ) -> Any:
     @observe_span(name="rag.contextualize")
     def _contextualize_step(
@@ -640,6 +1049,10 @@ def _build_compiled_graph(
                 working_state["question"] = graph_input.question
             elif base_query:
                 working_state["question"] = base_query
+        if base_query:
+            working_state["intent"] = _detect_intent(base_query)
+        else:
+            working_state["intent"] = DEFAULT_INTENT
 
         retry_count = _coerce_int(graph_state.get("retry_count"), fallback=0)
         variants = rag_strategy.generate_query_variants(
@@ -675,6 +1088,7 @@ def _build_compiled_graph(
                 "rag.query_count": len(queries),
                 "rag.retry_count": retry_count,
                 "rag.query_source": variants.source,
+                "rag.intent": working_state.get("intent"),
             }
         )
 
@@ -685,6 +1099,7 @@ def _build_compiled_graph(
             "query_variants": queries,
             "retry_count": retry_count,
             "hybrid_override": hybrid_override,
+            "intent": working_state.get("intent"),
         }
 
     @observe_span(name="rag.retrieve")
@@ -697,6 +1112,11 @@ def _build_compiled_graph(
         )
         context = graph_state["context"]
         base_query = _resolve_base_query(graph_input)
+        intent = working_state.get("intent") or DEFAULT_INTENT
+        context_budget_tokens = _resolve_context_token_budget(context)
+        budget_top_k = _estimate_top_k_for_budget(context_budget_tokens)
+        oversample_factor = _resolve_context_oversample_factor()
+        retrieval_top_k = max(1, budget_top_k * oversample_factor)
 
         queries = graph_state.get("query_variants") or []
         if not queries and base_query:
@@ -715,6 +1135,8 @@ def _build_compiled_graph(
                 exclude={"schema_id", "schema_version", "question"}
             )
             params_payload["query"] = query_text
+            if graph_input.top_k is None or graph_input.top_k <= 0:
+                params_payload["top_k"] = retrieval_top_k
             hybrid_override = graph_state.get("hybrid_override")
             if hybrid_override is not None:
                 params_payload["hybrid"] = dict(hybrid_override)
@@ -734,11 +1156,59 @@ def _build_compiled_graph(
             raise ValueError("retrieval produced no results")
 
         deduped = _dedupe_matches(matches)
+        if intent in {EXTRACT_INTENT, CHECKLIST_INTENT}:
+            update_observation(
+                metadata={
+                    "rag.document_expand_attempt": True,
+                    "rag.document_expand_intent": intent,
+                }
+            )
+            doc_ref_match = _resolve_doc_ref_anchor(base_query, deduped)
+            if doc_ref_match is not None:
+                document_id, matched_ref = doc_ref_match
+                expanded_chunks = _fetch_document_chunks(
+                    context=context,
+                    document_id=document_id,
+                )
+                if expanded_chunks:
+                    expanded_matches = [
+                        retrieve._chunk_to_match(chunk) for chunk in expanded_chunks
+                    ]
+                    deduped = _dedupe_matches([*deduped, *expanded_matches])
+                    working_state["doc_expand"] = {
+                        "document_id": document_id,
+                        "total": len(expanded_chunks),
+                        "matched_ref": matched_ref,
+                    }
+                    update_observation(
+                        metadata={
+                            "rag.document_expand": True,
+                            "rag.document_expand_count": len(expanded_chunks),
+                            "rag.document_expand_ref": matched_ref,
+                        }
+                    )
+                else:
+                    update_observation(
+                        metadata={
+                            "rag.document_expand": False,
+                            "rag.document_expand_reason": "no_chunks",
+                        }
+                    )
+            else:
+                update_observation(
+                    metadata={
+                        "rag.document_expand": False,
+                        "rag.document_expand_reason": "no_anchor_or_ref",
+                    }
+                )
+        else:
+            update_observation(
+                metadata={
+                    "rag.document_expand_attempt": False,
+                    "rag.document_expand_intent": intent,
+                }
+            )
         retrieval_meta = _aggregate_retrieval_meta(outputs, deduped)
-        top_k = _coerce_int(retrieval_meta.get("top_k_effective"), fallback=0)
-        if top_k > 0:
-            deduped = deduped[:top_k]
-
         working_state["matches"] = deduped
         working_state["snippets"] = deduped
         working_state["retrieval"] = retrieval_meta
@@ -749,6 +1219,9 @@ def _build_compiled_graph(
                 "rag.retrieval_took_ms": retrieval_meta.get("took_ms"),
                 "rag.vector_candidates": retrieval_meta.get("vector_candidates"),
                 "rag.lexical_candidates": retrieval_meta.get("lexical_candidates"),
+                "rag.context_budget_top_k": budget_top_k,
+                "rag.context_oversample_factor": oversample_factor,
+                "rag.context_retrieval_top_k": retrieval_top_k,
             }
         )
         return {
@@ -772,18 +1245,11 @@ def _build_compiled_graph(
         if not isinstance(matches, list):
             matches = []
 
-        retrieval_meta = working_state.get("retrieval")
-        top_k = None
-        if isinstance(retrieval_meta, Mapping):
-            top_k = (
-                _coerce_int(retrieval_meta.get("top_k_effective"), fallback=0) or None
-            )
-
         rerank_result = rag_rerank.rerank_chunks(
             matches,
             base_query,
             context,
-            top_k=top_k,
+            intent=working_state.get("intent"),
         )
         working_state["snippets"] = rerank_result.chunks
         working_state["matches"] = rerank_result.chunks
@@ -792,6 +1258,7 @@ def _build_compiled_graph(
             metadata={
                 "rag.rerank_mode": rerank_result.mode,
                 "rag.rerank_count": len(rerank_result.chunks),
+                "rag.intent": working_state.get("intent"),
             }
         )
         return {
@@ -869,6 +1336,35 @@ def _build_compiled_graph(
             ]
         else:
             snippets = []
+        context_budget_tokens = _resolve_context_token_budget(context)
+        snippets, used_tokens = _select_snippets_for_budget(
+            snippets,
+            max_tokens=context_budget_tokens,
+        )
+        working_state["snippets"] = list(snippets)
+        doc_expand = working_state.get("doc_expand")
+        if isinstance(doc_expand, Mapping):
+            document_id = _coerce_str(doc_expand.get("document_id"))
+            total = _coerce_int(doc_expand.get("total"), fallback=0)
+            if document_id and total > 0:
+                coverage = rag_metrics.calculate_coverage(
+                    snippets,
+                    document_id,
+                    total,
+                )
+                update_observation(
+                    metadata={
+                        "rag.coverage_ratio": coverage.get("coverage_ratio"),
+                        "rag.coverage_all": coverage.get("all_covered"),
+                    }
+                )
+        update_observation(
+            metadata={
+                "rag.context_budget_tokens": context_budget_tokens,
+                "rag.context_tokens_used": used_tokens,
+                "rag.context_snippet_count": len(snippets),
+            }
+        )
         question_value = working_state.get("question")
         question = question_value if isinstance(question_value, str) else None
         stream_callback = graph_state["meta"].get("stream_callback")
@@ -877,7 +1373,11 @@ def _build_compiled_graph(
             snippets=snippets,
             stream_callback=stream_callback if callable(stream_callback) else None,
         )
-        compose_result = compose_node(context, compose_params)
+        intent = working_state.get("intent") or DEFAULT_INTENT
+        if intent == EXTRACT_INTENT:
+            compose_result = compose_extract_node(context, compose_params)
+        else:
+            compose_result = compose_node(context, compose_params)
 
         retrieval_meta: dict[str, Any] = {}
         if retrieval_output is not None:
@@ -939,13 +1439,33 @@ def _build_compiled_graph(
             }
         )
 
+        used_sources = compose_result.used_sources or []
+        if used_sources:
+            scores = [
+                _coerce_float(source.relevance_score, fallback=0.0)
+                for source in used_sources
+            ]
+            update_observation(
+                metadata={
+                    "rag.used_sources_count": len(used_sources),
+                    "rag.used_sources_min_score": min(scores) if scores else 0.0,
+                    "rag.used_sources_max_score": max(scores) if scores else 0.0,
+                }
+            )
+        else:
+            update_observation(
+                metadata={
+                    "rag.used_sources_count": 0,
+                }
+            )
+
         result_payload = RetrievalAugmentedGenerationOutput(
             answer=compose_result.answer,
             prompt_version=compose_result.prompt_version,
             retrieval=retrieval_payload,
             snippets=snippets_payload,
             reasoning=compose_result.reasoning,
-            used_sources=compose_result.used_sources or [],
+            used_sources=used_sources,
             suggested_followups=compose_result.suggested_followups or [],
             debug_meta=compose_result.debug_meta,
         ).model_dump(mode="json")
@@ -1059,6 +1579,7 @@ class RetrievalAugmentedGenerationGraph:
 
     retrieve_node: RetrieveNode = retrieve.run
     compose_node: ComposeNode = compose.run
+    compose_extract_node: ComposeNode = compose.run_extract_questions
     io_spec: GraphIOSpec = RAG_GRAPH_IO
     _graph: Any = field(init=False, repr=False)
 
@@ -1069,6 +1590,7 @@ class RetrievalAugmentedGenerationGraph:
             _build_compiled_graph(
                 retrieve_node=self.retrieve_node,
                 compose_node=self.compose_node,
+                compose_extract_node=self.compose_extract_node,
             ),
         )
 

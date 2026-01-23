@@ -420,6 +420,7 @@
                             <button type="button" data-rag-tab="answer" class="px-2.5 py-1 rounded-full text-xs font-semibold border">Final Answer</button>
                             <button type="button" data-rag-tab="reasoning" class="px-2.5 py-1 rounded-full text-xs font-semibold border">Thinking Process</button>
                             <button type="button" data-rag-tab="sources" class="px-2.5 py-1 rounded-full text-xs font-semibold border">Sources & Evidence</button>
+                            <button type="button" data-rag-tab="chunks" class="px-2.5 py-1 rounded-full text-xs font-semibold border">Chunks</button>
                         </div>
                         <div class="rag-panel" data-rag-panel="answer">
                             <div class="prose prose-sm max-w-none text-slate-700">
@@ -440,6 +441,9 @@
                                 <p class="text-xs font-semibold text-slate-500 mb-1">Retrieved Snippets</p>
                                 <ul class="space-y-1"></ul>
                             </div>
+                        </div>
+                        <div class="rag-panel hidden" data-rag-panel="chunks">
+                            <div class="rag-chunks space-y-2"></div>
                         </div>
                         <div class="rag-debug-meta hidden pt-2 border-t border-slate-100 text-[11px] text-slate-400 flex flex-wrap gap-x-3 gap-y-1"></div>
                     </div>
@@ -462,6 +466,7 @@
                     gapsList: wrapper.querySelector(".rag-gaps ul"),
                     usedSources: wrapper.querySelector(".rag-used-sources"),
                     followups: wrapper.querySelector(".rag-followups"),
+                    chunks: wrapper.querySelector(".rag-chunks"),
                     debugMeta: wrapper.querySelector(".rag-debug-meta"),
                 };
             };
@@ -565,20 +570,21 @@
                     const item = document.createElement("li");
                     item.className = "text-xs text-slate-400 truncate";
                     const source = snippet.source || "Unknown";
+                    const displayLabel = snippet.display_label || source;
                     const score = snippet.score_percent ?? 0;
-                    item.title = snippet.title || source;
+                    item.title = snippet.title || displayLabel;
                     if (snippet.download_url) {
                         const link = document.createElement("a");
                         link.className = "hover:text-indigo-600 underline";
                         link.href = snippet.download_url;
                         link.target = "_blank";
-                        link.textContent = source;
+                        link.textContent = displayLabel;
                         link.addEventListener("click", () => {
                             postFeedback({
                                 event_type: "click",
                                 query_text: queryText || null,
-                                source_label: snippet.citation_label || source,
-                                source_id: snippet.citation_label || source,
+                                source_label: snippet.citation_label || displayLabel,
+                                source_id: snippet.citation_label || displayLabel,
                                 document_id: snippet.document_id || null,
                                 chunk_id: snippet.chunk_id || null,
                                 url: snippet.download_url,
@@ -591,23 +597,83 @@
                             document.createTextNode(` (${score}%)`)
                         );
                     } else {
-                        item.textContent = `- ${source} (${score}%)`;
+                        item.textContent = `- ${displayLabel} (${score}%)`;
                     }
                     list.appendChild(item);
                 });
             };
 
-            const renderUsedSources = (container, sources) => {
+            const renderChunks = (container, snippets) => {
+                if (!container) return;
+                container.innerHTML = "";
+                if (!Array.isArray(snippets) || snippets.length === 0) {
+                    return;
+                }
+                snippets.forEach((snippet) => {
+                    const block = document.createElement("div");
+                    block.className = "rounded-lg border border-slate-100 bg-slate-50/60 p-2";
+                    const header = document.createElement("div");
+                    header.className = "flex items-center justify-between text-[11px] text-slate-600 mb-1";
+                    const label = document.createElement("span");
+                    label.className = "truncate";
+                    label.textContent = snippet.display_label || snippet.source || "Chunk";
+                    const score = document.createElement("span");
+                    score.className = "font-medium";
+                    score.textContent = `${snippet.score_percent ?? 0}%`;
+                    header.appendChild(label);
+                    header.appendChild(score);
+                    const meta = document.createElement("p");
+                    meta.className = "text-[10px] text-slate-400 mb-1";
+                    meta.textContent = snippet.chunk_id ? `Chunk ${snippet.chunk_id}` : "Chunk";
+                    const text = document.createElement("div");
+                    text.className = "text-[11px] text-slate-600 whitespace-pre-wrap";
+                    text.textContent = snippet.text || snippet.title || "";
+                    block.appendChild(header);
+                    block.appendChild(meta);
+                    block.appendChild(text);
+                    container.appendChild(block);
+                });
+            };
+
+            const renderUsedSources = (container, sources, snippets) => {
                 if (!container) return;
                 container.innerHTML = "";
                 if (!Array.isArray(sources) || sources.length === 0) {
                     return;
                 }
+                const resolveSnippetLabel = (snippet) => {
+                    if (!snippet) return "Source";
+                    return snippet.display_label || snippet.source || "Source";
+                };
+                const resolveUsedLabel = (source, index) => {
+                    const rawLabel = source.label || source.id || "Source";
+                    if (Array.isArray(snippets) && snippets.length > 0) {
+                        const match = String(rawLabel).match(/^source\s*([a-z])\b/i);
+                        if (match) {
+                            const offset = match[1].toUpperCase().charCodeAt(0) - 65;
+                            if (offset >= 0 && offset < snippets.length) {
+                                return resolveSnippetLabel(snippets[offset]);
+                            }
+                        }
+                        const byIndex = snippets[index];
+                        if (byIndex) {
+                            return resolveSnippetLabel(byIndex);
+                        }
+                        const matched = snippets.find((snippet) => {
+                            const citation = snippet.citation_label || "";
+                            return citation && citation === rawLabel;
+                        });
+                        if (matched) {
+                            return resolveSnippetLabel(matched);
+                        }
+                    }
+                    return rawLabel;
+                };
                 const title = document.createElement("p");
                 title.className = "text-[11px] font-semibold text-slate-500";
                 title.textContent = "LLM-Used Sources";
                 container.appendChild(title);
-                sources.forEach((source) => {
+                sources.forEach((source, index) => {
                     const score = Math.max(0, Math.min(100, Number(source.relevance_score || 0) * 100));
                     const block = document.createElement("div");
                     block.className = "space-y-1";
@@ -615,7 +681,7 @@
                     header.className = "flex items-center justify-between text-[11px] text-slate-600";
                     const label = document.createElement("span");
                     label.className = "truncate";
-                    label.textContent = source.label || source.id || "Source";
+                    label.textContent = resolveUsedLabel(source, index);
                     const value = document.createElement("span");
                     value.className = "font-medium";
                     value.textContent = `${Math.round(score)}%`;
@@ -702,7 +768,12 @@
                             activeAssistant.gaps.classList.add("hidden");
                         }
                     }
-                    renderUsedSources(activeAssistant.usedSources, payload.used_sources);
+                    renderUsedSources(
+                        activeAssistant.usedSources,
+                        payload.used_sources,
+                        payload.snippets
+                    );
+                    renderChunks(activeAssistant.chunks, payload.snippets);
                     renderSnippets(
                         activeAssistant.snippets,
                         payload.snippets,

@@ -26,7 +26,7 @@ def test_resolve_chunker_mode_returns_default_for_unknown_tenant():
 def test_resolve_chunker_mode_returns_configured_mode_for_known_tenant():
     """Test that known tenants get their configured chunker mode."""
     mode = resolve_chunker_mode(tenant="dev")
-    assert mode == "late"  # Configured in rag_routing_rules.yaml
+    assert mode == "agentic"  # Configured in rag_routing_rules.yaml
 
 
 def test_resolve_chunker_mode_with_collection_id():
@@ -44,7 +44,7 @@ def test_resolve_chunker_mode_with_workflow_id():
 def test_get_chunker_config_from_routing_returns_late_mode():
     """Test that get_chunker_config_from_routing returns correct mode."""
     config = get_chunker_config_from_routing(tenant_id="dev")
-    assert config.mode == ChunkerMode.LATE
+    assert config.mode == ChunkerMode.AGENTIC
 
 
 def test_get_chunker_config_from_routing_respects_collection():
@@ -67,7 +67,7 @@ def test_routing_table_rules_include_chunker_mode():
     # Find rule for dev tenant
     dev_rule = next((r for r in table.rules if r.tenant == "dev"), None)
     assert dev_rule is not None, "dev tenant rule should exist"
-    assert dev_rule.chunker_mode == "late"
+    assert dev_rule.chunker_mode == "agentic"
 
 
 def test_resolve_chunker_mode_falls_back_to_default():
@@ -83,7 +83,7 @@ def test_chunker_config_from_routing_uses_django_settings_for_other_fields():
     config = get_chunker_config_from_routing(tenant_id="dev")
 
     # Mode should be from routing
-    assert config.mode == ChunkerMode.LATE
+    assert config.mode == ChunkerMode.AGENTIC
 
     # Other fields should be from Django settings defaults
     assert config.late_chunk_model == "embedding"  # From RAG_LATE_CHUNK_MODEL

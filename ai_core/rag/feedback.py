@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import nullcontext
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
+from django_tenants.utils import get_public_schema_name, schema_context
 from django.utils import timezone
 
 from ai_core.models import RagFeedbackEvent, RagRerankWeight
@@ -26,6 +28,17 @@ _WEIGHT_KEYS = (
 
 _LEARNED_CACHE_TTL_SECONDS = 300
 _LEARNED_CACHE: dict[tuple[str, str], tuple[float, dict[str, float]]] = {}
+
+
+def _schema_context_for_tenant_id(tenant_id: object):
+    from customers.tenant_context import TenantContext
+
+    public_schema = get_public_schema_name()
+    with schema_context(public_schema):
+        tenant = TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+    if tenant is None or not tenant.schema_name:
+        return nullcontext()
+    return schema_context(tenant.schema_name)
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
@@ -242,14 +255,15 @@ def get_learned_weight_profile(
     if cached and (time.time() - cached[0]) <= _LEARNED_CACHE_TTL_SECONDS:
         return dict(cached[1])
 
-    record = (
-        RagRerankWeight.objects.filter(
-            tenant_id=tenant_id,
-            quality_mode=quality_mode,
+    with _schema_context_for_tenant_id(tenant_id):
+        record = (
+            RagRerankWeight.objects.filter(
+                tenant_id=tenant_id,
+                quality_mode=quality_mode,
+            )
+            .only("weights")
+            .first()
         )
-        .only("weights")
-        .first()
-    )
     if not record:
         return None
     normalized = _normalize_weights(record.weights or {})
@@ -312,6 +326,20 @@ class WeightUpdateResult:
 
 
 def update_weight_profiles(*, window_days: int) -> list[WeightUpdateResult]:
+    public_schema = get_public_schema_name()
+    from customers.models import Tenant
+
+    with schema_context(public_schema):
+        tenants = list(Tenant.objects.exclude(schema_name=public_schema))
+
+    results: list[WeightUpdateResult] = []
+    for tenant in tenants:
+        with schema_context(tenant.schema_name):
+            results.extend(_update_weight_profiles_in_schema(window_days=window_days))
+    return results
+
+
+def _update_weight_profiles_in_schema(*, window_days: int) -> list[WeightUpdateResult]:
     since = timezone.now() - timedelta(days=window_days)
     base_qs = RagFeedbackEvent.objects.filter(
         created_at__gte=since,

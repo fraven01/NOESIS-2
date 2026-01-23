@@ -5,6 +5,7 @@ import re
 import time
 import uuid
 from datetime import datetime
+import json
 from collections.abc import Mapping as MappingABC
 from pathlib import Path
 from typing import (
@@ -38,6 +39,9 @@ from pydantic import ValidationError
 
 from ai_core.infra import object_store, pii
 from ai_core.infra.pii_flags import get_pii_config
+from ai_core.infra.prompts import load as load_prompt
+from ai_core.llm import client as llm_client
+from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.segmentation import segment_markdown_blocks
 from ai_core.rag.embedding_config import (
     get_embedding_profile,
@@ -118,6 +122,148 @@ from .helpers.task_utils import (
 
 
 logger = get_logger(__name__)
+
+
+def _resolve_context_header_mode() -> str:
+    mode = str(getattr(settings, "RAG_CONTEXT_HEADER_MODE", "off")).strip().lower()
+    if mode in {"llm", "heuristic"}:
+        return mode
+    return "off"
+
+
+def _resolve_context_header_limits() -> tuple[int, int]:
+    max_chars = getattr(settings, "RAG_CONTEXT_HEADER_MAX_CHARS", 140)
+    max_words = getattr(settings, "RAG_CONTEXT_HEADER_MAX_WORDS", 14)
+    try:
+        max_chars = int(max_chars)
+    except (TypeError, ValueError):
+        max_chars = 140
+    try:
+        max_words = int(max_words)
+    except (TypeError, ValueError):
+        max_words = 14
+    return max(20, max_chars), max(4, max_words)
+
+
+def _cap_header_text(text: str, *, max_chars: int, max_words: int) -> str:
+    cleaned = " ".join(text.split())
+    if max_words > 0:
+        words = cleaned.split()
+        if len(words) > max_words:
+            cleaned = " ".join(words[:max_words])
+    if max_chars > 0 and len(cleaned) > max_chars:
+        cleaned = cleaned[: max_chars - 3].rstrip() + "..."
+    return cleaned
+
+
+def _extract_header_payload(text: str) -> str | None:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        lines = cleaned.splitlines()
+        if len(lines) >= 3:
+            cleaned = "\n".join(lines[1:-1]).strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    fragment = cleaned[start : end + 1]
+    try:
+        payload = json.loads(fragment)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    header = payload.get("header")
+    if not isinstance(header, str):
+        return None
+    header = header.strip()
+    return header or None
+
+
+def _build_context_header_prompt(
+    *,
+    title: str | None,
+    section_label: str | None,
+    chunk_preview: str | None,
+) -> tuple[str, str]:
+    prompt = load_prompt("retriever/context_header")
+    title_text = title or "None"
+    section_text = section_label or "None"
+    preview = (chunk_preview or "").strip()
+    if len(preview) > 480:
+        preview = preview[:480].rstrip()
+    prompt_text = (
+        f"{prompt['text']}\n\nTitle: {title_text}\nSection: {section_text}\n"
+        f"Preview: {preview}"
+    )
+    return prompt_text, str(prompt.get("version") or "")
+
+
+def _resolve_context_header(
+    *,
+    mode: str,
+    title: str | None,
+    section_label: str | None,
+    chunk_preview: str | None,
+    context,
+    cache: dict[str, str],
+) -> str | None:
+    key_parts = [title or "", section_label or ""]
+    cache_key = "|".join(part.strip().lower() for part in key_parts if part)
+    if cache_key in cache:
+        return cache[cache_key]
+
+    if mode == "heuristic":
+        parts = [part for part in (title, section_label) if part]
+        header = " | ".join(parts).strip()
+        if not header:
+            return None
+        cache[cache_key] = header
+        return header
+
+    if mode != "llm":
+        return None
+
+    try:
+        prompt_text, prompt_version = _build_context_header_prompt(
+            title=title, section_label=section_label, chunk_preview=chunk_preview
+        )
+        metadata = {
+            "tenant_id": context.scope.tenant_id,
+            "case_id": context.business.case_id,
+            "trace_id": context.scope.trace_id,
+            "prompt_version": prompt_version,
+        }
+        response = llm_client.call(
+            getattr(settings, "RAG_CONTEXT_HEADER_MODEL", "fast"),
+            prompt_text,
+            metadata,
+            response_format={"type": "json_object"},
+        )
+        header = _extract_header_payload(str(response.get("text") or ""))
+        if header:
+            cache[cache_key] = header
+            return header
+    except (LlmClientError, RateLimitError) as exc:
+        logger.warning(
+            "ingestion.context_header.failed",
+            extra={
+                "error": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning(
+            "ingestion.context_header.failed",
+            extra={
+                "error": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+    return None
+
 
 _REFERENCE_ID_PATTERN = re.compile(
     r"(?:doc|document|ref)[:/]{1,2}([0-9a-fA-F-]{32,36})",
@@ -410,6 +556,51 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
             config=pipeline_config,
         )
 
+        header_mode = _resolve_context_header_mode()
+        max_header_chars, max_header_words = _resolve_context_header_limits()
+        header_cache: dict[str, str] = {}
+        if header_mode != "off":
+            doc_title = str(meta.get("title") or external_id or "").strip() or None
+            for entry in chunk_entries:
+                chunk_text = str(entry.get("text") or "")
+                if not chunk_text.strip():
+                    continue
+                section_path = entry.get("section_path")
+                if isinstance(section_path, Sequence) and not isinstance(
+                    section_path, (str, bytes, bytearray)
+                ):
+                    section_label = " > ".join(
+                        str(part).strip() for part in section_path if part
+                    ).strip()
+                else:
+                    section_label = None
+                preview = chunk_text[:500]
+                header = _resolve_context_header(
+                    mode=header_mode,
+                    title=doc_title,
+                    section_label=section_label,
+                    chunk_preview=preview,
+                    context=context,
+                    cache=header_cache,
+                )
+                if not header:
+                    continue
+                header = _cap_header_text(
+                    header, max_chars=max_header_chars, max_words=max_header_words
+                )
+                if not header:
+                    continue
+                if not chunk_text.lstrip().startswith(header):
+                    chunk_text = f"{header}\n{chunk_text}"
+                    entry["text"] = chunk_text
+                entry_meta = entry.get("metadata")
+                if not isinstance(entry_meta, dict):
+                    entry_meta = {}
+                entry_meta["context_header"] = header
+                entry_meta["context_header_len"] = len(header)
+                entry_meta["context_header_mode"] = header_mode
+                entry["metadata"] = entry_meta
+
         document_id = str(processing_context.metadata.document_id)
         parent_nodes: Dict[str, Dict[str, object]] = {}
         doc_title = str(meta.get("title") or external_id or "").strip()
@@ -468,6 +659,30 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
                 "parent_ids": parent_ids,
                 "document_id": document_id,
             }
+            header_meta = None
+            header_mode_meta = None
+            header_len_meta = None
+            entry_meta_for_header = entry.get("metadata")
+            if isinstance(entry_meta_for_header, dict):
+                header_meta = entry_meta_for_header.get("context_header")
+                header_mode_meta = entry_meta_for_header.get("context_header_mode")
+                header_len_meta = entry_meta_for_header.get("context_header_len")
+            if isinstance(header_meta, str) and header_meta:
+                chunk_meta["context_header"] = header_meta
+                if isinstance(header_len_meta, int):
+                    chunk_meta["context_header_len"] = header_len_meta
+                if isinstance(header_mode_meta, str) and header_mode_meta:
+                    chunk_meta["context_header_mode"] = header_mode_meta
+            section_path_text = None
+            section_path = entry.get("section_path")
+            if isinstance(section_path, Sequence) and not isinstance(
+                section_path, (str, bytes, bytearray)
+            ):
+                section_path_text = " > ".join(
+                    str(part).strip() for part in section_path if part
+                ).strip()
+            if section_path_text:
+                chunk_meta["section_path_text"] = section_path_text
             entry_meta = entry.get("meta") if isinstance(entry, Mapping) else None
             reference_ids = _extract_reference_ids(chunk_text, entry_meta or meta)
             if reference_ids:
@@ -498,6 +713,13 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
                     "meta": chunk_meta,
                 }
             )
+
+        total_chunks = len(chunks)
+        for idx, chunk in enumerate(chunks):
+            meta = chunk.get("meta")
+            if isinstance(meta, dict):
+                meta["chunk_index"] = idx
+                meta["chunk_count"] = total_chunks
 
         limited_parents = limit_parent_payload(parent_nodes)
         payload = {"chunks": chunks, "parents": limited_parents}
@@ -543,6 +765,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
             document_id = candidate_text or None
 
     doc_title = str(meta.get("title") or meta.get("external_id") or "").strip()
+    header_mode = _resolve_context_header_mode()
+    max_header_chars, max_header_words = _resolve_context_header_limits()
+    header_cache: dict[str, str] = {}
     # Use compact UUIDs for parent identifiers to align with external document_id formatting
     parent_prefix = document_id if document_id else str(external_id)
     root_id = f"{parent_prefix}#doc"
@@ -788,6 +1013,30 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
                         if chunk_text
                         else combined_prefix
                     )
+            if header_mode != "off" and chunk_text.strip():
+                section_titles: list[str] = []
+                for parent_id in parent_ids:
+                    info = parent_nodes.get(parent_id)
+                    if not isinstance(info, MappingABC):
+                        continue
+                    title_value = info.get("title")
+                    if isinstance(title_value, str) and title_value.strip():
+                        section_titles.append(title_value.strip())
+                section_label = " > ".join(section_titles[1:]) if section_titles else ""
+                header = _resolve_context_header(
+                    mode=header_mode,
+                    title=doc_title or None,
+                    section_label=section_label or None,
+                    chunk_preview=chunk_text[:500],
+                    context=context,
+                    cache=header_cache,
+                )
+                if header:
+                    header = _cap_header_text(
+                        header, max_chars=max_header_chars, max_words=max_header_words
+                    )
+                if header and not chunk_text.lstrip().startswith(header):
+                    chunk_text = f"{header}\n{chunk_text}"
             normalised = normalise_text(chunk_text)
             chunk_hash_input = f"{content_hash}:{chunk_index}".encode("utf-8")
             chunk_hash = hashlib.sha256(chunk_hash_input).hexdigest()
@@ -801,6 +1050,26 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
                 # Provide per-chunk parent lineage for compatibility with existing tests
                 "parent_ids": parent_ids,
             }
+            section_titles: list[str] = []
+            for parent_id in parent_ids:
+                info = parent_nodes.get(parent_id)
+                if not isinstance(info, MappingABC):
+                    continue
+                title_value = info.get("title")
+                if isinstance(title_value, str) and title_value.strip():
+                    section_titles.append(title_value.strip())
+            section_path_text = " > ".join(section_titles[1:]) if section_titles else ""
+            if section_path_text:
+                chunk_meta["section_path_text"] = section_path_text
+            if header_mode != "off":
+                header_meta = None
+                lines = chunk_text.splitlines()
+                if lines:
+                    header_meta = lines[0].strip()
+                if header_meta:
+                    chunk_meta["context_header"] = header_meta
+                    chunk_meta["context_header_len"] = len(header_meta)
+                    chunk_meta["context_header_mode"] = header_mode
             reference_ids = _extract_reference_ids(chunk_text, meta)
             if reference_ids:
                 chunk_meta["reference_ids"] = reference_ids
@@ -835,6 +1104,13 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
                 }
             )
             chunk_index += 1
+
+    total_chunks = len(chunks)
+    for idx, chunk in enumerate(chunks):
+        meta = chunk.get("meta")
+        if isinstance(meta, dict):
+            meta["chunk_index"] = idx
+            meta["chunk_count"] = total_chunks
 
     for parent_id, info in parent_nodes.items():
         content_parts = parent_contents.get(parent_id) or []

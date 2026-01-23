@@ -86,6 +86,21 @@ def run(
     )
 
 
+def run_extract_questions(
+    context: ToolContext,
+    params: ComposeInput,
+) -> ComposeOutput:
+    """Extract question-style prompts from retrieved snippets using the LLM."""
+    prompt = load("retriever/extract_questions")
+    metadata = _build_llm_metadata(context, prompt_version=prompt["version"])
+    return _run(
+        prompt,
+        params,
+        metadata=metadata,
+        stream_callback=params.stream_callback,
+    )
+
+
 def _resolve_snippet_label(snippet: Mapping[str, Any], index: int) -> str:
     raw_label = snippet.get("citation")
     if not isinstance(raw_label, str) or not raw_label.strip():
@@ -202,15 +217,22 @@ def _parse_rag_response(
         except json.JSONDecodeError:
             meta = {}
 
+        # Parse used_sources with individual error handling
+        used_sources: list[SourceRef] = []
+        for s in meta.get("used_sources", []):
+            if not isinstance(s, dict):
+                continue
+            try:
+                used_sources.append(SourceRef.model_validate(s))
+            except ValidationError:
+                # Skip malformed source entries but continue parsing
+                pass
+
         response = RagResponse(
             reasoning=RagReasoning(analysis=thought, gaps=[]),
             answer_markdown=answer
             or raw_text,  # Fallback to full text if <answer> missing
-            used_sources=[
-                SourceRef.model_validate(s)
-                for s in meta.get("used_sources", [])
-                if isinstance(s, dict)
-            ],
+            used_sources=used_sources,
             suggested_followups=meta.get("suggested_followups", []),
         )
     else:

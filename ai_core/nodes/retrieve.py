@@ -112,6 +112,7 @@ class RetrieveMeta(BaseModel):
     deleted_matches_blocked: int
     visibility_effective: str
     diversify_strength: float
+    lexical_index_used: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -409,6 +410,76 @@ def _normalise_identifier(value: object) -> str | None:
     return text or None
 
 
+def _extract_match_chunk_id(match: Mapping[str, Any]) -> str | None:
+    meta = match.get("meta")
+    if isinstance(meta, Mapping):
+        chunk_id = _normalise_identifier(meta.get("chunk_id"))
+        if chunk_id:
+            return chunk_id
+        meta_id = _normalise_identifier(meta.get("id"))
+        if meta_id:
+            return meta_id
+    return None
+
+
+def _extend_matches_unique(
+    base: list[Dict[str, Any]], extra: list[Dict[str, Any]]
+) -> list[Dict[str, Any]]:
+    seen = {_match_key(match, idx) for idx, match in enumerate(base)}
+    for match in extra:
+        key = _match_key(match, len(seen))
+        if key in seen:
+            continue
+        base.append(match)
+        seen.add(key)
+    return base
+
+
+def _fetch_neighbor_chunks(
+    tenant_client: Any,
+    *,
+    tenant_id: str,
+    matches: list[Dict[str, Any]],
+) -> list[Chunk]:
+    fetcher = getattr(tenant_client, "fetch_adjacent_chunks", None)
+    if not callable(fetcher):
+        return []
+    chunk_ids = []
+    for match in matches:
+        chunk_id = _extract_match_chunk_id(match)
+        if chunk_id:
+            chunk_ids.append(chunk_id)
+    if not chunk_ids:
+        return []
+    try:
+        try:
+            neighbor_map = fetcher(chunk_ids=chunk_ids, window=1)
+        except TypeError:
+            neighbor_map = fetcher(tenant_id=tenant_id, chunk_ids=chunk_ids, window=1)
+    except Exception as exc:
+        logger.warning(
+            "rag.retrieve.neighbor_fetch_failed",
+            extra={"tenant_id": tenant_id, "error": str(exc)},
+        )
+        return []
+    if not isinstance(neighbor_map, Mapping):
+        return []
+    neighbors: list[Chunk] = []
+    for anchor_id in chunk_ids:
+        entries = neighbor_map.get(anchor_id)
+        if not isinstance(entries, Iterable):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            text = entry.get("text") or ""
+            meta = entry.get("metadata") or {}
+            if not isinstance(meta, Mapping):
+                meta = {}
+            neighbors.append(Chunk(content=str(text), meta=dict(meta), embedding=None))
+    return neighbors
+
+
 def _match_key(match: Mapping[str, Any], index: int) -> tuple[str, ...]:
     meta = match.get("meta")
     if isinstance(meta, Mapping):
@@ -597,8 +668,18 @@ def _apply_diversification(
     lambda_param = 1.0 - normalised_strength
 
     relevance_scores = [float(match.get("score", 0.0)) for match in matches]
-    token_sets = [
+    chunk_tokens = [
         _tokenise(match.get("text") or match.get("content") or "") for match in matches
+    ]
+    doc_ids = [_extract_document_id(match) for match in matches]
+    doc_token_sets: dict[str, set[str]] = {}
+    for doc_id, tokens in zip(doc_ids, chunk_tokens, strict=False):
+        if not doc_id:
+            continue
+        doc_token_sets.setdefault(doc_id, set()).update(tokens)
+    token_sets = [
+        doc_token_sets.get(doc_id, chunk_tokens[idx])
+        for idx, doc_id in enumerate(doc_ids)
     ]
 
     ordered_indices = list(range(len(matches)))
@@ -614,13 +695,27 @@ def _apply_diversification(
 
         best_index: int | None = None
         best_score = float("-inf")
+        selected_doc_ids = {doc_ids[chosen] for chosen in selected if doc_ids[chosen]}
         for idx in candidate_pool:
+            candidate_doc_id = doc_ids[idx]
+            if candidate_doc_id and candidate_doc_id in selected_doc_ids:
+                diversity_penalty = 0.0
+                mmr_score = lambda_param * relevance_scores[idx]
+                if mmr_score > best_score or (
+                    math.isclose(mmr_score, best_score) and idx < (best_index or idx)
+                ):
+                    best_score = mmr_score
+                    best_index = idx
+                continue
             diversity_penalty = 0.0
             if selected:
-                diversity_penalty = max(
+                penalties = [
                     _similarity(token_sets[idx], token_sets[chosen])
                     for chosen in selected
-                )
+                    if doc_ids[chosen] != candidate_doc_id
+                ]
+                if penalties:
+                    diversity_penalty = max(penalties)
             mmr_score = lambda_param * relevance_scores[idx] - (
                 (1.0 - lambda_param) * diversity_penalty
             )
@@ -889,9 +984,8 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         top_k=hybrid_config.top_k,
         strength=hybrid_config.diversify_strength,
     )
-    final_matches = diversified[: hybrid_config.top_k]
     final_matches = _filter_matches_by_permissions(
-        final_matches,
+        diversified,
         context=context,
         permission_type="VIEW",
     )
@@ -947,6 +1041,20 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
                 meta_section["parents"] = parents_payload
                 meta_section["parent_ids"] = ordered_ids
 
+    neighbor_chunks = _fetch_neighbor_chunks(
+        tenant_client,
+        tenant_id=tenant_id,
+        matches=final_matches,
+    )
+    if neighbor_chunks:
+        neighbor_matches = [_chunk_to_match(chunk) for chunk in neighbor_chunks]
+        neighbor_matches = _filter_matches_by_permissions(
+            neighbor_matches,
+            context=context,
+            permission_type="VIEW",
+        )
+        final_matches = _extend_matches_unique(final_matches, neighbor_matches)
+
     alpha_value = _coerce_float_value(
         getattr(hybrid_result, "alpha", hybrid_config.alpha), hybrid_config.alpha
     )
@@ -978,6 +1086,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         "visibility_effective": visibility_effective,
         "took_ms": took_ms,
         "diversify_strength": hybrid_config.diversify_strength,
+        "lexical_index_used": getattr(hybrid_result, "lexical_index_used", None),
     }
 
     return RetrieveOutput(matches=final_matches, meta=RetrieveMeta(**meta_payload))

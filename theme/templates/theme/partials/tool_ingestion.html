@@ -3,8 +3,11 @@
     <div class="lg:col-span-4 space-y-6">
 
         <form hx-post="{% url 'ingestion-submit' %}" hx-encoding="multipart/form-data"
-            hx-target="#ingestion-status-area" hx-disabled-elt="#ingestion-submit-button"
-            hx-indicator="#ingestion-submit-indicator" class="space-y-6">
+            hx-target="#ingestion-status-area" hx-swap="innerHTML"
+            hx-disabled-elt="#ingestion-submit-button" hx-indicator="#ingestion-submit-indicator"
+            hx-on:htmx:sendError="document.getElementById('ingestion-status-area').innerHTML = '<div class=&quot;rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-600&quot;>Upload request failed (network error).</div>'"
+            hx-on:htmx:responseError="document.getElementById('ingestion-status-area').innerHTML = '<div class=&quot;rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-600&quot;>Upload failed (server error).</div>'"
+            class="space-y-6">
             {% csrf_token %}
             <input type="hidden" name="case_id" value="{{ case_id }}">
 

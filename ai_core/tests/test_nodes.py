@@ -319,6 +319,43 @@ def test_retrieve_deduplicates_matches(monkeypatch):
     }
 
 
+def test_retrieve_diversification_allows_same_document_chunks():
+    matches = [
+        {
+            "id": "doc-1",
+            "text": "alpha beta",
+            "score": 0.9,
+            "source": "a",
+            "meta": {"chunk_id": "chunk-1", "document_id": "doc-1"},
+        },
+        {
+            "id": "doc-1",
+            "text": "alpha beta gamma",
+            "score": 0.85,
+            "source": "a",
+            "meta": {"chunk_id": "chunk-2", "document_id": "doc-1"},
+        },
+        {
+            "id": "doc-2",
+            "text": "alpha beta",
+            "score": 0.84,
+            "source": "b",
+            "meta": {"chunk_id": "chunk-3", "document_id": "doc-2"},
+        },
+    ]
+
+    diversified = retrieve._apply_diversification(
+        list(matches),
+        top_k=2,
+        strength=1.0,
+    )
+
+    assert [match["meta"]["chunk_id"] for match in diversified[:2]] == [
+        "chunk-1",
+        "chunk-2",
+    ]
+
+
 def test_retrieve_raises_on_chunks_without_ids(monkeypatch):
     _patch_routing(monkeypatch)
 

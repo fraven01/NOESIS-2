@@ -34,6 +34,8 @@ from common.constants import (
     X_DOCUMENT_ID_HEADER,
     X_DOCUMENT_VERSION_ID_HEADER,
 )
+from common.logging import get_log_context
+from structlog.contextvars import get_contextvars
 
 from ai_core.contracts.business import BusinessContext
 from ai_core.contracts.scope import ScopeContext
@@ -114,7 +116,12 @@ def _build_scope_context(request: Any) -> ScopeContext:
     # Fallback for non-HttpRequest objects (e.g. dicts or mocks)
     # This logic mimics the normalizer but for generic objects
     tenant_id_raw = _coalesce(request, X_TENANT_ID_HEADER, META_TENANT_ID_KEY)
-    trace_id = _coalesce(request, X_TRACE_ID_HEADER, META_TRACE_ID_KEY) or uuid4().hex
+    trace_id = (
+        _coalesce(request, X_TRACE_ID_HEADER, META_TRACE_ID_KEY)
+        or get_contextvars().get("trace_id")
+        or get_log_context().get("trace_id")
+        or uuid4().hex
+    )
     idempotency_key = _coalesce(request, IDEMPOTENCY_KEY_HEADER, META_IDEMPOTENCY_KEY)
     tenant_schema = _resolve_tenant_schema(request)
 

@@ -99,6 +99,7 @@ class EvidenceGraph:
         children: Mapping[str, set[str]],
         references: Mapping[str, set[str]],
         backreferences: Mapping[str, set[str]],
+        doc_order: Mapping[str, list[str]],
     ) -> None:
         self._nodes = dict(nodes)
         self._adjacency = {key: set(value) for key, value in adjacency.items()}
@@ -107,6 +108,9 @@ class EvidenceGraph:
         self._references = {key: set(value) for key, value in references.items()}
         self._backreferences = {
             key: set(value) for key, value in backreferences.items()
+        }
+        self._doc_order = {
+            key: list(value) for key, value in doc_order.items() if value
         }
 
     @property
@@ -123,6 +127,7 @@ class EvidenceGraph:
         references: dict[str, set[str]] = {}
         backreferences: dict[str, set[str]] = {}
         doc_index: dict[str, set[str]] = {}
+        doc_order: dict[str, list[str]] = {}
         ordering: list[tuple[str, str | None, tuple[str, ...], int | None, int]] = []
 
         for index, chunk in enumerate(materialized):
@@ -172,6 +177,17 @@ class EvidenceGraph:
                 adjacency.setdefault(current_id, set()).add(next_id)
                 adjacency.setdefault(next_id, set()).add(current_id)
 
+        doc_grouped: dict[str, list[tuple[int | None, int, str]]] = {}
+        for chunk_id, document_id, _section_path, chunk_index, rank in ordering:
+            if not document_id:
+                continue
+            doc_grouped.setdefault(document_id, []).append(
+                (chunk_index, rank, chunk_id)
+            )
+        for document_id, entries in doc_grouped.items():
+            entries.sort(key=lambda item: (item[0] is None, item[0] or 0, item[1]))
+            doc_order[document_id] = [entry[2] for entry in entries]
+
         for chunk_id, node in nodes.items():
             if not node.reference_ids:
                 continue
@@ -190,6 +206,7 @@ class EvidenceGraph:
             children=children,
             references=references,
             backreferences=backreferences,
+            doc_order=doc_order,
         )
 
     def get_adjacent(self, chunk_id: str, *, max_hops: int = 1) -> set[str]:
@@ -221,6 +238,9 @@ class EvidenceGraph:
     def get_backreferences(self, chunk_id: str) -> set[str]:
         return set(self._backreferences.get(chunk_id, set()))
 
+    def get_all_document_chunks(self, document_id: str) -> list[str]:
+        return list(self._doc_order.get(document_id, []))
+
     def get_subgraph(
         self, chunk_ids: Iterable[str], *, max_hops: int = 1
     ) -> "EvidenceGraph":
@@ -233,6 +253,7 @@ class EvidenceGraph:
                 children={},
                 references={},
                 backreferences={},
+                doc_order={},
             )
 
         expanded = set(seed)
@@ -270,6 +291,11 @@ class EvidenceGraph:
             }
             for cid in nodes
         }
+        doc_order = {}
+        for doc_id, chunk_ids in self._doc_order.items():
+            filtered = [cid for cid in chunk_ids if cid in expanded]
+            if filtered:
+                doc_order[doc_id] = filtered
 
         return EvidenceGraph(
             nodes=nodes,
@@ -278,6 +304,7 @@ class EvidenceGraph:
             children=children,
             references=references,
             backreferences=backreferences,
+            doc_order=doc_order,
         )
 
 

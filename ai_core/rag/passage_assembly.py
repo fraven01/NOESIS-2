@@ -9,7 +9,9 @@ from ai_core.rag.evidence_graph import EvidenceGraph
 from ai_core.rag.schemas import Chunk
 
 
-def _estimate_tokens(text: str) -> int:
+def estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
     return max(1, len(text) // 4)
 
 
@@ -59,7 +61,7 @@ def assemble_passages(
         anchor_section = section_paths.get(anchor_id, ())
         passage_ids: list[str] = [anchor_id]
         used.add(anchor_id)
-        token_budget = max_tokens - _estimate_tokens(anchor_chunk.content or "")
+        token_budget = max_tokens - estimate_tokens(anchor_chunk.content or "")
 
         neighbors = graph.get_adjacent(anchor_id, max_hops=1)
         neighbor_ids = [
@@ -76,7 +78,7 @@ def assemble_passages(
             if neighbor_chunk is None:
                 continue
             chunk_text = neighbor_chunk.content or ""
-            chunk_tokens = _estimate_tokens(chunk_text)
+            chunk_tokens = estimate_tokens(chunk_text)
             if chunk_tokens > token_budget:
                 continue
             passage_ids.append(neighbor_id)
@@ -105,4 +107,4 @@ def assemble_passages(
     return passages
 
 
-__all__ = ["Passage", "assemble_passages"]
+__all__ = ["Passage", "assemble_passages", "estimate_tokens"]

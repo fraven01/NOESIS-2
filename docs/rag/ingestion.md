@@ -193,6 +193,10 @@ python manage.py reembed_documents --tenant=<schema> --embedding-profile=<profil
 | --- | --- | --- | --- |
 | `RAG_CHUNK_TARGET_TOKENS` | 450 Tokens | Hard-Limit 512 Tokens (per Code) | Zielgröße eines Textchunks; größere Werte erhöhen Kontext, kleinere reduzieren Kosten |
 | `RAG_CHUNK_OVERLAP_TOKENS` | 80 Tokens | Konfigurierbar, keine harte Obergrenze | Überlappung zwischen Chunks; reduziert Informationsverlust |
+| `RAG_CONTEXT_HEADER_MODE` | `heuristic` | `off` / `heuristic` / `llm` | Aktiviert kontextuelle Header für Chunks (Präfix) zur besseren Retrieval-Qualität. |
+| `RAG_CONTEXT_HEADER_MODEL` | `fast` | MODEL_ROUTING-Label | LLM-Label für Header-Generierung im Modus `llm`. |
+| `RAG_CONTEXT_HEADER_MAX_CHARS` | 140 | >= 20 | Maximalzeichen für den Header. |
+| `RAG_CONTEXT_HEADER_MAX_WORDS` | 14 | >= 4 | Maximale Wortanzahl für den Header. |
 | `EMBEDDINGS_BATCH_SIZE` | 64 Chunks | Worker erzwingt nur `>= 1` | Anzahl Embeddings pro LiteLLM-Call; beeinflusst Latenz und Rate-Limit |
 
 ## Fehlertoleranz und Deduplizierung

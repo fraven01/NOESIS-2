@@ -22,7 +22,13 @@ from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID, uuid5
 
-from ai_core.rag.chunking.utils import split_sentences
+from ai_core.rag.chunking.utils import (
+    build_chunk_prefix,
+    extract_numbered_list_index,
+    find_numbered_list_runs,
+    is_numbered_list_item,
+    split_sentences,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +115,9 @@ class LateChunker:
         overlap_tokens: int = 80,
         similarity_threshold: float = 0.7,
         dimension: int = 1536,
-        # Phase 2: SOTA Embedding-based Similarity
-        use_embedding_similarity: bool = False,
+        # Embedding-based Similarity (default on)
+        use_embedding_similarity: bool = True,
+        allow_jaccard_fallback: bool = False,
         window_size: int = 3,
         batch_size: int = 16,
         use_content_based_ids: bool = True,
@@ -127,7 +134,8 @@ class LateChunker:
             overlap_tokens: Overlap between chunks in tokens
             similarity_threshold: Similarity threshold for boundary detection (lower = more boundaries)
             dimension: Embedding dimension (must match model)
-            use_embedding_similarity: Enable embedding-based window similarity (Phase 2, default: False)
+            use_embedding_similarity: Enable embedding-based window similarity (default: True)
+            allow_jaccard_fallback: Allow Jaccard fallback when embedding fails (default: False)
             window_size: Sentences per window for embedding (Phase 2, default: 3)
             batch_size: Windows to embed in parallel (Phase 2, default: 16)
             use_content_based_ids: Use SHA256-based chunk IDs for determinism (Phase 2, default: True)
@@ -141,8 +149,9 @@ class LateChunker:
         self.similarity_threshold = similarity_threshold
         self.dimension = dimension
 
-        # Phase 2: SOTA features
+        # Embedding-based similarity
         self.use_embedding_similarity = use_embedding_similarity
+        self.allow_jaccard_fallback = allow_jaccard_fallback
         self.window_size = window_size
         self.batch_size = batch_size
         self.use_content_based_ids = use_content_based_ids
@@ -153,6 +162,8 @@ class LateChunker:
         self,
         parsed: Any,  # ParsedResult
         context: Any,  # DocumentProcessingContext
+        *,
+        document: Any | None = None,
     ) -> List[Mapping[str, Any]]:
         """
         Chunk document using Late Chunking strategy.
@@ -164,14 +175,35 @@ class LateChunker:
         Returns:
             List of chunk dicts with chunk_id, text, parent_ref, metadata
         """
+        document_title = self._resolve_document_title(document)
+        document_ref = self._resolve_document_ref(document) or document_title
+        doc_type = self._resolve_doc_type(document)
         if not self.adaptive_enabled:
-            return self._chunk_legacy(parsed, context)
-        return self._chunk_adaptive(parsed, context)
+            chunks = self._chunk_legacy(
+                parsed,
+                context,
+                document_title=document_title,
+                document_ref=document_ref,
+                doc_type=doc_type,
+            )
+        else:
+            chunks = self._chunk_adaptive(
+                parsed,
+                context,
+                document_title=document_title,
+                document_ref=document_ref,
+                doc_type=doc_type,
+            )
+        return self._apply_chunk_counts(chunks)
 
     def _chunk_legacy(
         self,
         parsed: Any,
         context: Any,
+        *,
+        document_title: str | None,
+        document_ref: str | None,
+        doc_type: str | None,
     ) -> List[Mapping[str, Any]]:
         """Legacy Late Chunking path (kept for backward compatibility)."""
         # 1. Build full text from parsed blocks
@@ -189,13 +221,31 @@ class LateChunker:
                 },
             )
             # Split into sections, process each independently
-            return self._chunk_by_sections(parsed, context)
+            return self._chunk_by_sections(
+                parsed,
+                context,
+                document_title=document_title,
+                document_ref=document_ref,
+                doc_type=doc_type,
+            )
 
         # 3. Split into sentences
         sentences = self._split_sentences(full_text)
 
-        # 4. Detect chunk boundaries (Phase 1: Jaccard, Phase 2: Embedding-based)
-        boundaries = self._detect_boundaries(sentences, context)
+        # 4. Detect chunk boundaries (embedding-based by default)
+        list_run_map, list_run_tokens = self._build_list_run_map(sentences)
+        boundaries = self._detect_boundaries(
+            sentences,
+            context,
+            list_run_map=list_run_map,
+            list_run_tokens=list_run_tokens,
+        )
+        boundaries = self._merge_list_run_boundaries(
+            boundaries,
+            list_run_map=list_run_map,
+            list_run_tokens=list_run_tokens,
+        )
+        boundaries = self._merge_heading_only_boundaries(sentences, boundaries)
 
         # 5. Build chunks with metadata
         namespace_id = self._resolve_chunk_namespace_id(context)
@@ -205,6 +255,10 @@ class LateChunker:
             block_map=block_map,
             document_id=namespace_id,
             parsed=parsed,
+            document_title=document_title,
+            document_ref=document_ref,
+            doc_type=doc_type,
+            list_run_map=list_run_map,
         )
 
         logger.info(
@@ -213,6 +267,8 @@ class LateChunker:
                 "chunk_count": len(chunks),
                 "document_id": str(context.metadata.document_id),
                 "token_count": token_count,
+                "document_ref": document_ref,
+                "doc_type": doc_type,
             },
         )
 
@@ -222,6 +278,10 @@ class LateChunker:
         self,
         parsed: Any,
         context: Any,
+        *,
+        document_title: str | None,
+        document_ref: str | None,
+        doc_type: str | None,
     ) -> List[Mapping[str, Any]]:
         """Adaptive, structure-first chunking with optional asset chunks."""
         full_text, _block_map = self._build_full_text(parsed)
@@ -237,17 +297,35 @@ class LateChunker:
                     "chunker_mode": "adaptive",
                 },
             )
-            chunks = self._chunk_by_sections_adaptive(parsed, context)
+            chunks = self._chunk_by_sections_adaptive(
+                parsed,
+                context,
+                document_title=document_title,
+                document_ref=document_ref,
+                doc_type=doc_type,
+            )
         else:
             runs = self._build_text_runs(parsed)
             chunks = []
             for run in runs:
-                run_chunks = self._chunk_run(run, context)
+                run_chunks = self._chunk_run(
+                    run,
+                    context,
+                    document_title=document_title,
+                    document_ref=document_ref,
+                    doc_type=doc_type,
+                )
                 if run_chunks:
                     chunks.extend(run_chunks)
 
         if self.asset_chunks_enabled:
-            asset_chunks = self._build_asset_chunks(parsed, context)
+            asset_chunks = self._build_asset_chunks(
+                parsed,
+                context,
+                document_title=document_title,
+                document_ref=document_ref,
+                doc_type=doc_type,
+            )
             if asset_chunks:
                 chunks.extend(asset_chunks)
 
@@ -258,6 +336,8 @@ class LateChunker:
                 "document_id": str(context.metadata.document_id),
                 "token_count": token_count,
                 "chunker_mode": "adaptive",
+                "document_ref": document_ref,
+                "doc_type": doc_type,
             },
         )
 
@@ -426,19 +506,39 @@ class LateChunker:
         self,
         run: TextRun,
         context: Any,
+        *,
+        document_title: str | None,
+        document_ref: str | None,
+        doc_type: str | None,
     ) -> List[Mapping[str, Any]]:
         if not run.text:
             return []
         sentences = self._split_sentences(run.text)
         if not sentences:
             return []
-        boundaries = self._detect_boundaries(sentences, context)
+        list_run_map, list_run_tokens = self._build_list_run_map(sentences)
+        boundaries = self._detect_boundaries(
+            sentences,
+            context,
+            list_run_map=list_run_map,
+            list_run_tokens=list_run_tokens,
+        )
+        boundaries = self._merge_list_run_boundaries(
+            boundaries,
+            list_run_map=list_run_map,
+            list_run_tokens=list_run_tokens,
+        )
+        boundaries = self._merge_heading_only_boundaries(sentences, boundaries)
         namespace_id = self._resolve_chunk_namespace_id(context)
         return self._build_chunks_adaptive(
             run=run,
             sentences=sentences,
             boundaries=boundaries,
             document_id=namespace_id,
+            document_title=document_title,
+            document_ref=document_ref,
+            doc_type=doc_type,
+            list_run_map=list_run_map,
         )
 
     def _count_tokens(self, text: str) -> int:
@@ -457,7 +557,7 @@ class LateChunker:
         client = get_embedding_client()
 
         try:
-            response = client.embed([text], model=self.model)
+            response = client.embed([text])
             embedding = response.vectors[0]  # Already a list
 
             logger.debug(
@@ -578,7 +678,7 @@ class LateChunker:
 
             try:
                 # Batch embed
-                response = client.embed(texts, model=self.model)
+                response = client.embed(texts)
                 embeddings = response.vectors
 
                 # Create new windows with embeddings
@@ -602,13 +702,34 @@ class LateChunker:
                 )
 
             except Exception as exc:
+                text_lengths = [len(text) for text in texts if isinstance(text, str)]
                 logger.error(
-                    "late_chunker_batch_embed_failed",
+                    (
+                        "late_chunker_batch_embed_failed: %s (type=%s batch_start=%s "
+                        "batch_size=%s text_count=%s max_chars=%s total_chars=%s model=%s)"
+                    )
+                    % (
+                        str(exc),
+                        type(exc).__name__,
+                        batch_start,
+                        len(batch),
+                        len(texts),
+                        max(text_lengths) if text_lengths else 0,
+                        sum(text_lengths) if text_lengths else 0,
+                        self.model,
+                    ),
                     extra={
                         "document_id": str(context.metadata.document_id),
                         "batch_start": batch_start,
+                        "batch_size": len(batch),
+                        "text_count": len(texts),
+                        "max_chars": max(text_lengths) if text_lengths else 0,
+                        "total_chars": sum(text_lengths) if text_lengths else 0,
+                        "model": self.model,
+                        "exc_type": type(exc).__name__,
                         "error": str(exc),
                     },
+                    exc_info=True,
                 )
                 # On failure, fallback to Jaccard similarity by raising exception
                 raise
@@ -665,15 +786,18 @@ class LateChunker:
         self,
         sentences: List[str],
         context: Any = None,
+        *,
+        list_run_map: dict[int, tuple[int, int]] | None = None,
+        list_run_tokens: dict[tuple[int, int], int] | None = None,
     ) -> List[LateBoundary]:
         """
         Detect chunk boundaries using similarity.
 
-        Phase 1 (use_embedding_similarity=False):
+        Optional (use_embedding_similarity=False):
           - Uses Jaccard similarity (text-based, deterministic)
-          - Fast but semantically limited
+          - Only when embedding similarity is explicitly disabled
 
-        Phase 2 (use_embedding_similarity=True):
+        Embedding similarity (use_embedding_similarity=True):
           - Uses embedding-based window similarity
           - Semantically aware, captures paraphrases/synonyms
           - Batch embedding for performance
@@ -695,14 +819,26 @@ class LateChunker:
         if self.use_embedding_similarity:
             if context is None:
                 raise ValueError("Context required for embedding-based similarity")
-            return self._detect_boundaries_embedding(sentences, context)
+            return self._detect_boundaries_embedding(
+                sentences,
+                context,
+                list_run_map=list_run_map,
+                list_run_tokens=list_run_tokens,
+            )
 
-        # Phase 1: Jaccard similarity (fallback)
-        return self._detect_boundaries_jaccard(sentences)
+        # Jaccard similarity (only when explicitly disabled)
+        return self._detect_boundaries_jaccard(
+            sentences,
+            list_run_map=list_run_map,
+            list_run_tokens=list_run_tokens,
+        )
 
     def _detect_boundaries_jaccard(
         self,
         sentences: List[str],
+        *,
+        list_run_map: dict[int, tuple[int, int]] | None = None,
+        list_run_tokens: dict[tuple[int, int], int] | None = None,
     ) -> List[LateBoundary]:
         """
         Detect chunk boundaries using Jaccard similarity (Phase 1).
@@ -715,6 +851,8 @@ class LateChunker:
         boundaries = []
         current_start = 0
         current_tokens = 0
+        run_map = list_run_map or {}
+        run_tokens = list_run_tokens or {}
 
         for i, sentence in enumerate(sentences):
             sentence_tokens = self._count_tokens(sentence)
@@ -722,6 +860,13 @@ class LateChunker:
 
             # Check if we've reached target size
             if current_tokens >= self.target_tokens:
+                run = run_map.get(i)
+                in_list_run = run is not None and i + 1 < run[1]
+                preserve_list = (
+                    in_list_run and run_tokens.get(run, 0) <= self.target_tokens
+                )
+                if preserve_list:
+                    continue
                 # Check similarity with next sentence (if exists)
                 if i + 1 < len(sentences):
                     similarity = self._compute_sentence_similarity(
@@ -756,8 +901,17 @@ class LateChunker:
                         similarity_score=1.0,  # Forced boundary
                     )
                 )
-                current_start = i + 1
-                current_tokens = 0
+                if in_list_run and run_tokens.get(run, 0) > self.target_tokens:
+                    overlap_sentences = self._get_overlap_sentences(
+                        sentences[current_start : i + 1]
+                    )
+                    current_start = i + 1 - len(overlap_sentences)
+                    current_tokens = sum(
+                        self._count_tokens(s) for s in overlap_sentences
+                    )
+                else:
+                    current_start = i + 1
+                    current_tokens = 0
 
         # Add final chunk
         if current_start < len(sentences):
@@ -814,6 +968,9 @@ class LateChunker:
         self,
         sentences: List[str],
         context: Any,
+        *,
+        list_run_map: dict[int, tuple[int, int]] | None = None,
+        list_run_tokens: dict[tuple[int, int], int] | None = None,
     ) -> List[LateBoundary]:
         """
         Detect chunk boundaries using embedding-based window similarity (Phase 2 - SOTA).
@@ -848,20 +1005,37 @@ class LateChunker:
         try:
             embedded_windows = self._embed_windows_batch(windows, context)
         except Exception as exc:
-            logger.warning(
-                "late_chunker_embedding_failed_fallback_jaccard",
-                extra={
-                    "document_id": str(context.metadata.document_id),
-                    "error": str(exc),
-                },
+            log_extra = {
+                "document_id": str(context.metadata.document_id),
+                "error": str(exc),
+                "exc_type": type(exc).__name__,
+            }
+            if self.allow_jaccard_fallback:
+                logger.warning(
+                    "late_chunker_embedding_failed_fallback_jaccard: %s (type=%s)",
+                    str(exc),
+                    type(exc).__name__,
+                    extra=log_extra,
+                )
+                return self._detect_boundaries_jaccard(
+                    sentences,
+                    list_run_map=list_run_map,
+                    list_run_tokens=list_run_tokens,
+                )
+            logger.error(
+                "late_chunker_embedding_failed_no_fallback: %s (type=%s)",
+                str(exc),
+                type(exc).__name__,
+                extra=log_extra,
             )
-            # Fallback to Jaccard on embedding failure
-            return self._detect_boundaries_jaccard(sentences)
+            raise
 
         # 3. Detect boundaries using cosine similarity between windows
         boundaries = []
         current_start = 0
         current_tokens = 0
+        run_map = list_run_map or {}
+        run_tokens = list_run_tokens or {}
 
         for i, sentence in enumerate(sentences):
             sentence_tokens = self._count_tokens(sentence)
@@ -869,6 +1043,13 @@ class LateChunker:
 
             # Check if we've reached target size
             if current_tokens >= self.target_tokens:
+                run = run_map.get(i)
+                in_list_run = run is not None and i + 1 < run[1]
+                preserve_list = (
+                    in_list_run and run_tokens.get(run, 0) <= self.target_tokens
+                )
+                if preserve_list:
+                    continue
                 # Check embedding similarity with next window (if exists)
                 if i + 1 < len(sentences):
                     # Find windows that start at current position and next position
@@ -928,8 +1109,17 @@ class LateChunker:
                         similarity_score=1.0,  # Forced boundary
                     )
                 )
-                current_start = i + 1
-                current_tokens = 0
+                if in_list_run and run_tokens.get(run, 0) > self.target_tokens:
+                    overlap_sentences = self._get_overlap_sentences(
+                        sentences[current_start : i + 1]
+                    )
+                    current_start = i + 1 - len(overlap_sentences)
+                    current_tokens = sum(
+                        self._count_tokens(s) for s in overlap_sentences
+                    )
+                else:
+                    current_start = i + 1
+                    current_tokens = 0
 
         # Add final chunk
         if current_start < len(sentences):
@@ -975,18 +1165,48 @@ class LateChunker:
         sentences: List[str],
         boundaries: List[LateBoundary],
         document_id: UUID,
+        document_title: str | None,
+        document_ref: str | None,
+        doc_type: str | None,
+        list_run_map: dict[int, tuple[int, int]] | None = None,
         chunker_label: str = "late",
     ) -> List[Mapping[str, Any]]:
         """Build adaptive text chunks with structure-aware metadata."""
         chunks: list[Mapping[str, Any]] = []
         parent_ref = self._resolve_text_parent_ref(run)
         section_path = list(run.section_path) if run.section_path else []
+        run_map = list_run_map or {}
 
+        total_chunks = len(boundaries)
         for idx, boundary in enumerate(boundaries):
             chunk_sentences = sentences[boundary.start_idx : boundary.end_idx]
             chunk_text = " ".join(chunk_sentences)
             if not chunk_text.strip():
                 continue
+            list_header = self._resolve_list_header(
+                sentences,
+                run_map,
+                boundary.start_idx,
+            )
+            chunk_position = self._format_chunk_position(idx, total_chunks)
+            prefix = build_chunk_prefix(
+                document_ref=document_ref or document_title,
+                doc_type=doc_type,
+                section_path=section_path,
+                chunk_position=chunk_position,
+                list_header=list_header,
+            )
+            if idx == 0 and prefix:
+                self._log_prefix_sample(
+                    document_id=document_id,
+                    document_ref=document_ref or document_title,
+                    doc_type=doc_type,
+                    prefix=prefix,
+                    section_path=section_path,
+                    chunk_position=chunk_position,
+                )
+            if prefix:
+                chunk_text = f"{prefix}{chunk_text}"
             locator = f"run:{run.index}:{boundary.start_idx}:{boundary.end_idx}:{idx}"
             chunk_id = self._build_adaptive_chunk_id(
                 document_id=document_id,
@@ -1041,6 +1261,10 @@ class LateChunker:
         self,
         parsed: Any,
         context: Any,
+        *,
+        document_title: str | None = None,
+        document_ref: str | None = None,
+        doc_type: str | None = None,
     ) -> List[Mapping[str, Any]]:
         """Adaptive fallback chunking when document exceeds max_tokens."""
         logger.warning(
@@ -1061,12 +1285,28 @@ class LateChunker:
             sentences = self._split_sentences(run.text)
             if not sentences:
                 continue
-            boundaries = self._detect_boundaries(sentences, context)
+            list_run_map, list_run_tokens = self._build_list_run_map(sentences)
+            boundaries = self._detect_boundaries(
+                sentences,
+                context,
+                list_run_map=list_run_map,
+                list_run_tokens=list_run_tokens,
+            )
+            boundaries = self._merge_list_run_boundaries(
+                boundaries,
+                list_run_map=list_run_map,
+                list_run_tokens=list_run_tokens,
+            )
+            boundaries = self._merge_heading_only_boundaries(sentences, boundaries)
             run_chunks = self._build_chunks_adaptive(
                 run=run,
                 sentences=sentences,
                 boundaries=boundaries,
                 document_id=namespace_id,
+                document_title=document_title,
+                document_ref=document_ref,
+                doc_type=doc_type,
+                list_run_map=list_run_map,
                 chunker_label="late-fallback",
             )
             if run_chunks:
@@ -1077,6 +1317,10 @@ class LateChunker:
         self,
         parsed: Any,
         context: Any,
+        *,
+        document_title: str | None = None,
+        document_ref: str | None = None,
+        doc_type: str | None = None,
     ) -> List[Mapping[str, Any]]:
         assets = getattr(parsed, "assets", None)
         if not assets:
@@ -1085,10 +1329,34 @@ class LateChunker:
         document_id = context.metadata.document_id
         namespace_id = self._resolve_chunk_namespace_id(context)
 
+        total_assets = len(assets)
         for index, asset in enumerate(assets):
             chunk_text = self._build_asset_text(asset, index)
             if not chunk_text:
                 continue
+            chunk_position = self._format_chunk_position(
+                index,
+                total_assets,
+                label="Asset",
+            )
+            prefix = build_chunk_prefix(
+                document_ref=document_ref or document_title,
+                doc_type=doc_type,
+                section_path=None,
+                chunk_position=chunk_position,
+                list_header=None,
+            )
+            if index == 0 and prefix:
+                self._log_prefix_sample(
+                    document_id=document_id,
+                    document_ref=document_ref or document_title,
+                    doc_type=doc_type,
+                    prefix=prefix,
+                    section_path=(),
+                    chunk_position=chunk_position,
+                )
+            if prefix:
+                chunk_text = f"{prefix}{chunk_text}"
             parent_ref = self._resolve_asset_parent_ref(asset, index, document_id)
             chunk_id = self._build_adaptive_chunk_id(
                 document_id=namespace_id,
@@ -1182,14 +1450,49 @@ class LateChunker:
         block_map: dict,
         document_id: UUID,
         parsed: Any,
+        document_title: str | None,
+        document_ref: str | None,
+        doc_type: str | None,
+        list_run_map: dict[int, tuple[int, int]] | None = None,
     ) -> List[Mapping[str, Any]]:
         """Build chunks with metadata from boundaries."""
         chunks = []
+        run_map = list_run_map or {}
 
+        total_chunks = len(boundaries)
         for idx, boundary in enumerate(boundaries):
             # Extract chunk text
             chunk_sentences = sentences[boundary.start_idx : boundary.end_idx]
             chunk_text = " ".join(chunk_sentences)
+            # Determine parent_ref and section_path from first sentence
+            # (simplified - can be improved with block_map lookups)
+            parent_ref = f"late-chunk:{idx}"
+            section_path = []
+
+            list_header = self._resolve_list_header(
+                sentences,
+                run_map,
+                boundary.start_idx,
+            )
+            chunk_position = self._format_chunk_position(idx, total_chunks)
+            prefix = build_chunk_prefix(
+                document_ref=document_ref or document_title,
+                doc_type=doc_type,
+                section_path=section_path,
+                chunk_position=chunk_position,
+                list_header=list_header,
+            )
+            if idx == 0 and prefix:
+                self._log_prefix_sample(
+                    document_id=document_id,
+                    document_ref=document_ref or document_title,
+                    doc_type=doc_type,
+                    prefix=prefix,
+                    section_path=section_path,
+                    chunk_position=chunk_position,
+                )
+            if prefix:
+                chunk_text = f"{prefix}{chunk_text}"
 
             # Generate chunk_id (Phase 2: content-based SHA256 or uuid5)
             if self.use_content_based_ids:
@@ -1206,11 +1509,6 @@ class LateChunker:
                 # Phase 1: UUID5 based on document_id + locator
                 locator = f"late:{idx}:{boundary.start_idx}:{boundary.end_idx}"
                 chunk_id = str(uuid5(document_id, f"chunk:{locator}"))
-
-            # Determine parent_ref and section_path from first sentence
-            # (simplified - can be improved with block_map lookups)
-            parent_ref = f"late-chunk:{idx}"
-            section_path = []
 
             # Build chunk dict
             chunk = {
@@ -1235,6 +1533,10 @@ class LateChunker:
         self,
         parsed: Any,
         context: Any,
+        *,
+        document_title: str | None = None,
+        document_ref: str | None = None,
+        doc_type: str | None = None,
     ) -> List[Mapping[str, Any]]:
         """
         Fallback: Chunk by sections when document exceeds max_tokens.
@@ -1258,18 +1560,214 @@ class LateChunker:
             sentences = self._split_sentences(run.text)
             if not sentences:
                 continue
-            boundaries = self._detect_boundaries(sentences, context)
+            list_run_map, list_run_tokens = self._build_list_run_map(sentences)
+            boundaries = self._detect_boundaries(
+                sentences,
+                context,
+                list_run_map=list_run_map,
+                list_run_tokens=list_run_tokens,
+            )
+            boundaries = self._merge_list_run_boundaries(
+                boundaries,
+                list_run_map=list_run_map,
+                list_run_tokens=list_run_tokens,
+            )
+            boundaries = self._merge_heading_only_boundaries(sentences, boundaries)
             run_chunks = self._build_chunks_adaptive(
                 run=run,
                 sentences=sentences,
                 boundaries=boundaries,
                 document_id=namespace_id,
+                document_title=document_title,
+                document_ref=document_ref,
+                doc_type=doc_type,
+                list_run_map=list_run_map,
                 chunker_label="late-fallback",
             )
             if run_chunks:
                 chunks.extend(run_chunks)
 
         return chunks
+
+    @staticmethod
+    def _resolve_document_title(document: Any | None) -> str | None:
+        if document is None:
+            return None
+        if isinstance(document, dict):
+            meta = document.get("meta") or {}
+            title = meta.get("title") or document.get("title")
+            return str(title).strip() if title else None
+        meta = getattr(document, "meta", None)
+        title = getattr(meta, "title", None) if meta is not None else None
+        if title:
+            return str(title).strip()
+        return None
+
+    @staticmethod
+    def _resolve_document_ref(document: Any | None) -> str | None:
+        if document is None:
+            return None
+        if isinstance(document, dict):
+            meta = document.get("meta") or {}
+            for key in ("document_ref", "doc_ref", "external_id", "ref", "title"):
+                value = meta.get(key) or document.get(key)
+                if value:
+                    return str(value).strip()
+            return None
+        meta = getattr(document, "meta", None)
+        for key in ("document_ref", "doc_ref", "external_id", "ref", "title"):
+            value = getattr(meta, key, None) if meta is not None else None
+            if value:
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _resolve_doc_type(document: Any | None) -> str | None:
+        if document is None:
+            return None
+        if isinstance(document, dict):
+            meta = document.get("meta") or {}
+            for key in ("doc_type", "doc_class", "document_type", "type"):
+                value = meta.get(key) or document.get(key)
+                if value:
+                    return str(value).strip()
+            return None
+        meta = getattr(document, "meta", None)
+        for key in ("doc_type", "doc_class", "document_type", "type"):
+            value = getattr(meta, key, None) if meta is not None else None
+            if value:
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _format_chunk_position(
+        index: int, total: int, *, label: str = "Chunk"
+    ) -> str | None:
+        if total <= 0:
+            return None
+        return f"{label} {index + 1} von {total}"
+
+    @staticmethod
+    def _apply_chunk_counts(chunks: List[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks):
+            meta = chunk.get("metadata")
+            if not isinstance(meta, dict):
+                meta = dict(meta) if isinstance(meta, Mapping) else {}
+                chunk["metadata"] = meta
+            meta["chunk_index"] = idx
+            meta["chunk_count"] = total
+        return chunks
+
+    @staticmethod
+    def _log_prefix_sample(
+        *,
+        document_id: UUID,
+        document_ref: str | None,
+        doc_type: str | None,
+        prefix: str,
+        section_path: Sequence[str],
+        chunk_position: str | None,
+    ) -> None:
+        if not prefix.strip():
+            return
+        try:
+            logger.info(
+                "ingestion.chunk.prefix_sample",
+                extra={
+                    "document_id": str(document_id),
+                    "document_ref": document_ref,
+                    "doc_type": doc_type,
+                    "section_path": list(section_path),
+                    "chunk_position": chunk_position,
+                    "prefix": prefix.strip(),
+                },
+            )
+        except Exception:
+            pass
+
+    def _build_list_run_map(
+        self, sentences: List[str]
+    ) -> tuple[dict[int, tuple[int, int]], dict[tuple[int, int], int]]:
+        runs = find_numbered_list_runs(sentences)
+        run_map: dict[int, tuple[int, int]] = {}
+        run_tokens: dict[tuple[int, int], int] = {}
+        token_counts = [self._count_tokens(sentence) for sentence in sentences]
+        token_prefix: list[int] = [0]
+        for count in token_counts:
+            token_prefix.append(token_prefix[-1] + count)
+        for start, end in runs:
+            run_tokens[(start, end)] = token_prefix[end] - token_prefix[start]
+            for idx in range(start, end):
+                run_map[idx] = (start, end)
+        return run_map, run_tokens
+
+    @staticmethod
+    def _resolve_list_header(
+        sentences: List[str],
+        run_map: dict[int, tuple[int, int]],
+        start_idx: int,
+    ) -> str | None:
+        run = run_map.get(start_idx)
+        if not run:
+            return None
+        run_start, _run_end = run
+        if start_idx <= run_start:
+            return None
+        header_idx = run_start - 1
+        if header_idx < 0:
+            return None
+        candidate = sentences[header_idx].strip()
+        if candidate and not is_numbered_list_item(candidate):
+            return candidate
+        item_number = extract_numbered_list_index(sentences[start_idx])
+        if item_number is None:
+            return "Fortsetzung"
+        return f"Fortsetzung (Punkt {item_number})"
+
+    def _merge_list_run_boundaries(
+        self,
+        boundaries: List[LateBoundary],
+        *,
+        list_run_map: dict[int, tuple[int, int]] | None = None,
+        list_run_tokens: dict[tuple[int, int], int] | None = None,
+    ) -> List[LateBoundary]:
+        if not boundaries:
+            return boundaries
+        run_map = list_run_map or {}
+        run_tokens = list_run_tokens or {}
+        merged: list[LateBoundary] = []
+        idx = 0
+        while idx < len(boundaries):
+            boundary = boundaries[idx]
+            start_idx = boundary.start_idx
+            end_idx = boundary.end_idx
+            run = run_map.get(max(end_idx - 1, 0))
+            if run and end_idx < run[1]:
+                run_token_count = run_tokens.get(run, 0)
+                if run_token_count <= self.target_tokens:
+                    logger.warning(
+                        "late_chunker_list_split_merged",
+                        extra={
+                            "run_start": run[0],
+                            "run_end": run[1],
+                            "run_tokens": run_token_count,
+                            "boundary_end": end_idx,
+                        },
+                    )
+                    end_idx = run[1]
+            while idx + 1 < len(boundaries) and boundaries[idx + 1].start_idx < end_idx:
+                idx += 1
+                end_idx = max(end_idx, boundaries[idx].end_idx)
+            merged.append(
+                LateBoundary(
+                    start_idx=start_idx,
+                    end_idx=end_idx,
+                    similarity_score=boundary.similarity_score,
+                )
+            )
+            idx += 1
+        return merged
 
     def _resolve_chunk_namespace_id(self, context: Any) -> UUID:
         document_id = context.metadata.document_id
@@ -1284,3 +1782,48 @@ class LateChunker:
             )
         except (TypeError, ValueError, AttributeError):
             return document_id
+
+    def _merge_heading_only_boundaries(
+        self,
+        sentences: List[str],
+        boundaries: List[LateBoundary],
+    ) -> List[LateBoundary]:
+        if len(boundaries) < 2:
+            return boundaries
+
+        merged: list[LateBoundary] = []
+        idx = 0
+        while idx < len(boundaries):
+            boundary = boundaries[idx]
+            if idx < len(boundaries) - 1:
+                chunk_sentences = sentences[boundary.start_idx : boundary.end_idx]
+                chunk_text = " ".join(chunk_sentences).strip()
+                if self._is_heading_only_chunk(chunk_text):
+                    next_boundary = boundaries[idx + 1]
+                    merged.append(
+                        LateBoundary(
+                            start_idx=boundary.start_idx,
+                            end_idx=next_boundary.end_idx,
+                            similarity_score=next_boundary.similarity_score,
+                        )
+                    )
+                    idx += 2
+                    continue
+            merged.append(boundary)
+            idx += 1
+
+        return merged
+
+    @staticmethod
+    def _is_heading_only_chunk(text: str) -> bool:
+        if not text:
+            return False
+        if len(text) > 140:
+            return False
+        if "\n" in text:
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if len(lines) > 3:
+                return False
+        if any(punct in text for punct in ".!?"):
+            return False
+        return True

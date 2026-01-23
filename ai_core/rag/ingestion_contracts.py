@@ -85,6 +85,8 @@ class ChunkMeta(BaseModel):
     collection_id: str | None = None
     document_id: str | None = None
     document_version_id: str | None = None
+    chunk_index: int | None = None
+    chunk_count: int | None = None
     is_latest: bool | None = None
     lifecycle_state: str | None = None
     chunker: str | None = None

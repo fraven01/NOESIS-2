@@ -10,7 +10,7 @@ from uuid import UUID
 
 from celery import group, shared_task
 from celery.exceptions import TimeoutError as CeleryTimeoutError
-from common.celery import ScopedTask
+from common.celery import ScopedTask, with_scope_apply_async
 from common.logging import get_logger
 from django.utils import timezone
 from django.conf import settings
@@ -1014,7 +1014,15 @@ def run_ingestion(
                 for doc_id in valid_ids
             )
             try:
-                async_result = job_group.apply_async()
+                async_result = with_scope_apply_async(
+                    job_group,
+                    {
+                        "trace_id": trace_id,
+                        "tenant_id": tenant,
+                        "case_id": case,
+                        "run_id": run_id,
+                    },
+                )
             except Exception as exc:  # pragma: no cover - defensive path
                 failure = exc
                 log.exception(

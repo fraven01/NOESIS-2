@@ -208,7 +208,7 @@ class TestAgenticChunker:
 
             # Should use fallback
             assert mock_fallback.called
-            assert chunks == [{"chunk_id": "fallback"}]
+            assert chunks[0]["chunk_id"] == "fallback"
 
     def test_fallback_on_token_budget_exceeded(
         self, sample_parsed_result, sample_processing_context
@@ -228,7 +228,7 @@ class TestAgenticChunker:
 
             # Should use fallback
             assert mock_fallback.called
-            assert chunks == [{"chunk_id": "fallback"}]
+            assert chunks[0]["chunk_id"] == "fallback"
 
     def test_fallback_on_llm_error(
         self, sample_parsed_result, sample_processing_context
@@ -248,18 +248,18 @@ class TestAgenticChunker:
                 chunks = chunker.chunk(sample_parsed_result, sample_processing_context)
 
         assert mock_fallback.called
-        assert chunks == [{"chunk_id": "fallback"}]
+        assert chunks[0]["chunk_id"] == "fallback"
 
     def test_build_chunks_from_boundaries(self, sample_processing_context):
         """Test chunk construction from boundaries."""
         chunker = AgenticChunker(use_content_based_ids=True)
 
         sentences = [
-            "First sentence",
-            "Second sentence",
-            "Third sentence",
-            "Fourth sentence",
-            "Fifth sentence",
+            "First sentence.",
+            "Second sentence.",
+            "Third sentence.",
+            "Fourth sentence.",
+            "Fifth sentence.",
         ]
 
         # Boundaries at indices 2 and 4 (splits into 3 chunks)
@@ -528,4 +528,4 @@ class TestAgenticChunkerIntegration:
 
             # Should use fallback due to rate limit
             assert mock_fallback.called
-            assert chunks3 == [{"chunk_id": "fallback"}]
+            assert chunks3[0]["chunk_id"] == "fallback"

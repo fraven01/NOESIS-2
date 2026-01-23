@@ -12,6 +12,11 @@ from ai_core.rag.schemas import Chunk
 from structlog.testing import capture_logs
 
 
+@pytest.fixture(autouse=True)
+def _force_trgm_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAG_LEXICAL_MODE", "trgm")
+
+
 def _make_vector_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[vector_client.PgVectorClient, list[tuple[str, tuple | None]]]:

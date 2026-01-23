@@ -15,15 +15,15 @@ from __future__ import annotations
 
 import contextvars
 import json
-import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Mapping
 
 from ai_core.llm.routing import load_map, resolve as resolve_model_label
+from common.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 CHUNK_QUALITY_PROMPT = """Evaluate this text chunk on the following criteria (0-100 scale):
@@ -245,15 +245,15 @@ class ChunkQualityEvaluator:
             for index, score in enumerate(scores)
         ]
 
+        scores_payload = [score.to_dict() for score in scores]
         logger.info(
             "quality_eval_completed",
-            extra={
-                "chunk_count": len(chunks),
-                "evaluated_count": len([s for s in scores if s.coherence > 0]),
-                "mean_overall": (
-                    sum(s.overall for s in scores) / len(scores) if scores else 0
-                ),
-            },
+            chunk_count=len(chunks),
+            evaluated_count=len([s for s in scores if s.coherence > 0]),
+            mean_overall=(
+                sum(s.overall for s in scores) / len(scores) if scores else 0
+            ),
+            scores=scores_payload,
         )
 
         return scores

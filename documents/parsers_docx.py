@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import posixpath
+import re
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -32,6 +33,26 @@ from documents.parsers import (
     build_parsed_asset_with_meta,
     build_parsed_result,
     build_parsed_text_block,
+)
+
+_HEADING_TEXT_MAX_WORDS = 14
+_HEADING_TEXT_MAX_CHARS = 120
+_HEADING_UPPER_RATIO = 0.7
+_HEADING_PREFIX_PATTERN = re.compile(r"^(?P<num>\d+(?:\.\d+){0,4})\s+")
+_HEADING_ROMAN_PATTERN = re.compile(r"^(?:[IVXLC]+)\.?\s+")
+_HEADING_KEYWORDS = (
+    "section",
+    "chapter",
+    "appendix",
+    "annex",
+    "schedule",
+    "part",
+    "article",
+    "anlage",
+    "abschnitt",
+    "kapitel",
+    "teil",
+    "anhang",
 )
 
 
@@ -274,6 +295,35 @@ def _heading_level(paragraph: ET.Element) -> Optional[int]:
     return None
 
 
+def _infer_heading_level_from_text(text: str) -> Optional[int]:
+    if not text:
+        return None
+    first_line = text.splitlines()[0].strip()
+    if not first_line:
+        return None
+    if len(first_line) > _HEADING_TEXT_MAX_CHARS:
+        return None
+    words = first_line.split()
+    if len(words) > _HEADING_TEXT_MAX_WORDS:
+        return None
+    match = _HEADING_PREFIX_PATTERN.match(first_line)
+    if match:
+        parts = match.group("num").split(".")
+        return min(len(parts), 6)
+    if _HEADING_ROMAN_PATTERN.match(first_line):
+        return 1
+    lowered = first_line.lower()
+    for keyword in _HEADING_KEYWORDS:
+        if lowered == keyword or lowered.startswith(f"{keyword} "):
+            return 1
+    letters = [char for char in first_line if char.isalpha()]
+    if letters:
+        upper_ratio = sum(1 for char in letters if char.isupper()) / len(letters)
+        if upper_ratio >= _HEADING_UPPER_RATIO and len(first_line) >= 4:
+            return 1
+    return None
+
+
 def _is_list_paragraph(paragraph: ET.Element) -> bool:
     ppr = paragraph.find("w:pPr", namespaces=_NS)
     if ppr is None:
@@ -472,9 +522,9 @@ class DocxDocumentParser(DocumentParser):
                     else:
                         normalized_items.append((kind, value))
 
+                paragraph_counter += 1
                 level = _heading_level(element)
                 is_list = _is_list_paragraph(element)
-                paragraph_counter += 1
                 if level is not None:
                     heading_counts[level] = heading_counts.get(level, 0) + 1
                     current_parent_ref = f"heading:{level}:{heading_counts[level]}"
@@ -487,6 +537,11 @@ class DocxDocumentParser(DocumentParser):
                     value for kind, value in normalized_items if kind == "text"
                 ]
                 paragraph_text = " ".join(paragraph_fragments).strip()
+                if paragraph_text and level is None:
+                    inferred_level = _infer_heading_level_from_text(paragraph_text)
+                    if inferred_level is not None:
+                        level = inferred_level
+                        is_list = False
 
                 for index, (kind, value) in enumerate(normalized_items):
                     if kind != "image":

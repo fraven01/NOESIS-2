@@ -239,13 +239,13 @@ class SemanticCache:
         except EmbeddingClientError as exc:
             logger.warning(
                 "rag.semantic_cache.embedding_failed",
-                extra={"error": type(exc).__name__, "message": str(exc)},
+                extra={"error": type(exc).__name__, "error_message": str(exc)},
             )
             return None
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.warning(
                 "rag.semantic_cache.embedding_failed",
-                extra={"error": type(exc).__name__, "message": str(exc)},
+                extra={"error": type(exc).__name__, "error_message": str(exc)},
             )
             return None
 

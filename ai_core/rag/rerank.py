@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_POOL_SIZE = 20
 POOL_SIZE_CAP = 50
+DEFAULT_RERANK_MODE = "llm"
+RERANK_LLM_LABEL = "rerank"
+RERANK_SNIPPET_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -100,17 +103,66 @@ def _heuristic_order(chunks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _summarize_meta(meta: Mapping[str, Any]) -> str:
+    def _coerce(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    fields: list[str] = []
+    chunk_id = _coerce(meta.get("chunk_id"))
+    if chunk_id:
+        fields.append(f"chunk_id={chunk_id}")
+    document_id = _coerce(meta.get("document_id"))
+    if document_id:
+        fields.append(f"document_id={document_id}")
+    chunk_index = meta.get("chunk_index")
+    if chunk_index is not None:
+        try:
+            fields.append(f"chunk_index={int(chunk_index)}")
+        except (TypeError, ValueError):
+            pass
+    doc_type = _coerce(meta.get("doc_type") or meta.get("document_type"))
+    if doc_type:
+        fields.append(f"doc_type={doc_type}")
+    section_path = meta.get("section_path")
+    if isinstance(section_path, Sequence) and not isinstance(
+        section_path, (str, bytes, bytearray)
+    ):
+        path_text = " > ".join(
+            str(part).strip() for part in section_path if str(part).strip()
+        ).strip()
+        if path_text:
+            fields.append(f"section_path={path_text}")
+    confidence = meta.get("confidence")
+    if confidence is not None:
+        try:
+            fields.append(f"confidence={float(confidence):.3f}")
+        except (TypeError, ValueError):
+            pass
+    return " ".join(fields)
+
+
 def _render_candidates(chunks: Sequence[dict[str, Any]]) -> str:
     lines: list[str] = []
     for index, chunk in enumerate(chunks, start=1):
         identifier = _chunk_identifier(chunk, index - 1)
         text = str(chunk.get("text") or "")
         source = str(chunk.get("source") or "")
-        snippet = _truncate(text.replace("\n", " ").strip(), 700)
+        snippet = _truncate(text.replace("\n", " ").strip(), RERANK_SNIPPET_CHARS)
+        meta = chunk.get("meta")
+        meta_line = ""
+        if isinstance(meta, Mapping):
+            meta_summary = _summarize_meta(meta)
+            if meta_summary:
+                meta_line = f"\nmeta={meta_summary}"
         if source:
-            lines.append(f"{index}. id={identifier} source={source}\ntext={snippet}")
+            lines.append(
+                f"{index}. id={identifier} source={source}\ntext={snippet}{meta_line}"
+            )
         else:
-            lines.append(f"{index}. id={identifier}\ntext={snippet}")
+            lines.append(f"{index}. id={identifier}\ntext={snippet}{meta_line}")
     return "\n".join(lines)
 
 
@@ -163,18 +215,25 @@ def rerank_chunks(
     top_k: int | None = None,
     candidate_pool: int | None = None,
     mode: str | None = None,
+    intent: str | None = None,
 ) -> RerankResult:
     materialized = [dict(chunk) for chunk in chunks if isinstance(chunk, Mapping)]
     if not materialized:
         return RerankResult(chunks=[], mode="off")
 
+    question_density_by_id: dict[str, float] = {}
     try:
         quality_mode = os.getenv("RAG_RERANK_QUALITY_MODE")
+        if intent == "extract_questions":
+            quality_mode = "extract"
         features = extract_rerank_features(
             materialized,
             context=context,
             quality_mode=quality_mode,
         )
+        question_density_by_id = {
+            feature.chunk_id: feature.question_density for feature in features
+        }
         feature_summary = summarise_features(features)
         if feature_summary:
             weights = resolve_weight_profile(quality_mode, context=context)
@@ -187,18 +246,27 @@ def rerank_chunks(
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug(
             "rag.rerank_features.failed",
-            extra={"error": type(exc).__name__, "message": str(exc)},
+            extra={"error": type(exc).__name__, "error_message": str(exc)},
         )
 
     resolved_mode = (
         str(mode).strip().lower()
         if mode is not None
-        else str(os.getenv("RAG_RERANK_MODE", "heuristic")).strip().lower()
+        else str(os.getenv("RAG_RERANK_MODE", DEFAULT_RERANK_MODE)).strip().lower()
     )
     if resolved_mode in {"off", "disabled", "false"}:
         return RerankResult(chunks=materialized, mode="disabled")
 
     ordered = _heuristic_order(materialized)
+    if intent == "extract_questions" and question_density_by_id:
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for index, item in enumerate(ordered):
+            base = _coerce_score(item.get("score"))
+            chunk_id = _chunk_identifier(item, index)
+            boosted = base + 0.15 * question_density_by_id.get(chunk_id, 0.0)
+            scored.append((boosted, item))
+        scored.sort(key=lambda entry: (-entry[0], str(entry[1].get("id") or "")))
+        ordered = [entry[1] for entry in scored]
     limit = top_k if top_k is not None else len(ordered)
     pool_limit = _resolve_pool_size(candidate_pool or os.getenv("RAG_RERANK_POOL"))
     pool = ordered[:pool_limit]
@@ -216,7 +284,12 @@ def rerank_chunks(
         "prompt_version": prompt["version"],
     }
     try:
-        response = llm_client.call("analyze", prompt_text, metadata)
+        response = llm_client.call(
+            RERANK_LLM_LABEL,
+            prompt_text,
+            metadata,
+            response_format={"type": "json_object"},
+        )
         payload = _extract_json_object(str(response.get("text") or ""))
         ranked = payload.get("ranked") or payload.get("results")
         if not isinstance(ranked, Sequence) or isinstance(
@@ -243,7 +316,7 @@ def rerank_chunks(
             "rag.rerank.failed",
             extra={
                 "error": type(exc).__name__,
-                "message": str(exc),
+                "error_message": str(exc),
             },
         )
         return RerankResult(
@@ -257,7 +330,7 @@ def rerank_chunks(
             "rag.rerank.failed",
             extra={
                 "error": type(exc).__name__,
-                "message": str(exc),
+                "error_message": str(exc),
             },
         )
         return RerankResult(

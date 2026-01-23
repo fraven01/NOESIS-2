@@ -16,8 +16,10 @@ from theme.chat_utils import (
     build_hybrid_config_from_payload,
     build_passage_items_for_workbench,
     build_snippet_items,
-    link_citations,
+    build_used_source_items,
     load_history,
+    link_citations_markdown,
+    render_markdown_answer,
 )
 from theme.websocket_payloads import RagChatPayload
 from theme.helpers.context import prepare_workbench_context
@@ -122,21 +124,18 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
             retrieval_meta = dict(retrieval_meta)
             retrieval_meta["passages"] = passages
             result_payload["retrieval"] = retrieval_meta
-        try:
-            top_k = int(retrieval_meta.get("top_k_effective") or 0)
-        except (TypeError, ValueError):
-            top_k = 0
-        snippet_limit = top_k or len(snippets) or None
+        snippet_limit = len(snippets) or None
         snippet_items = build_snippet_items(snippets, limit=snippet_limit)
-        answer = link_citations(answer, snippet_items)
+        answer_markdown = link_citations_markdown(answer, snippet_items)
+        answer = render_markdown_answer(answer_markdown)
         reasoning = result_payload.get("reasoning")
         if not isinstance(reasoning, dict):
             reasoning = None
-        used_sources = result_payload.get("used_sources")
-        if not isinstance(used_sources, list):
-            used_sources = []
-        if snippet_limit and snippet_limit > 0:
-            used_sources = used_sources[:snippet_limit]
+        used_sources = build_used_source_items(
+            result_payload.get("used_sources"),
+            snippet_items=snippet_items,
+            limit=snippet_limit,
+        )
         suggested_followups = result_payload.get("suggested_followups")
         if not isinstance(suggested_followups, list):
             suggested_followups = []
