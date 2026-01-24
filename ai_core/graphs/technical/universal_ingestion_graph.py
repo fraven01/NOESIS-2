@@ -139,6 +139,44 @@ class UniversalIngestionState(TypedDict):
     output: UniversalIngestionOutput | None
 
 
+class ValidateInputNodeOutput(TypedDict, total=False):
+    """Typed output for validate_input_node."""
+
+    error: str | None
+    tool_context: ToolContext | None
+    normalized_document: NormalizedDocument | None
+
+
+class DeduplicationNodeOutput(TypedDict, total=False):
+    """Typed output for dedup_node."""
+
+    dedup_status: Literal["new", "duplicate"]
+    existing_document_ref: Any | None
+    error: str | None
+
+
+class PersistNodeOutput(TypedDict, total=False):
+    """Typed output for persist_node."""
+
+    ingestion_result: dict[str, Any]
+    normalized_document: NormalizedDocument
+    error: str | None
+
+
+class ProcessNodeOutput(TypedDict, total=False):
+    """Typed output for process_node."""
+
+    processing_result: dict[str, Any]
+    error: str | None
+
+
+class FinalizeNodeOutput(TypedDict, total=False):
+    """Typed output for finalize_node."""
+
+    output: dict[str, Any]
+    error: str | None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,7 +227,7 @@ def bind_context_node(state: UniversalIngestionState) -> UniversalIngestionState
 
 
 @observe_span(name="node.validate_input")
-def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
+def validate_input_node(state: UniversalIngestionState) -> ValidateInputNodeOutput:
     """Validate input contract and context."""
     try:
         graph_input = UniversalIngestionGraphInput.model_validate(state)
@@ -254,7 +292,7 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
 
 
 @observe_span(name="node.dedup")
-def dedup_node(state: UniversalIngestionState) -> dict[str, Any]:
+def dedup_node(state: UniversalIngestionState) -> DeduplicationNodeOutput:
     """Check deduplication status (Layer 1: Document Level)."""
     if state.get("error"):
         return {}
@@ -270,7 +308,7 @@ def dedup_node(state: UniversalIngestionState) -> dict[str, Any]:
 
 
 @observe_span(name="node.persist")
-def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
+def persist_node(state: UniversalIngestionState) -> PersistNodeOutput:
     """Persist document to repository (Upsert)."""
     if state.get("error"):
         return {}
@@ -343,7 +381,7 @@ def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
 @observe_span(name="node.process")
 def process_node(
     state: UniversalIngestionState, config: RunnableConfig
-) -> dict[str, Any]:
+) -> ProcessNodeOutput:
     """Run RAG processing (Chunking/Embedding)."""
     if state.get("error"):
         return {}
@@ -411,7 +449,7 @@ def process_node(
 
 
 @observe_span(name="node.finalize")
-def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
+def finalize_node(state: UniversalIngestionState) -> FinalizeNodeOutput:
     """Build final Unified Output."""
     error = state.get("error")
     tool_context = state.get("tool_context")

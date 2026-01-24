@@ -774,7 +774,7 @@ def test_bm25_lexical_query_uses_tsvector(monkeypatch):
 
     assert len(result.chunks) == 1
     executed_sql = "\n".join(sql for sql, _ in cursor.executed).lower()
-    assert "plainto_tsquery" in executed_sql
+    assert "websearch_to_tsquery" in executed_sql
     assert "text_tsv" in executed_sql
 
 

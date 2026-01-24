@@ -227,6 +227,7 @@ class TestChunkerConfig:
         assert config.mode == ChunkerMode.LATE
         assert config.late_chunk_model == "embedding"  # MODEL_ROUTING.yaml label
         assert config.enable_quality_metrics is True
+        assert config.enable_contextual_enrichment is False
         assert config.max_chunk_tokens == 450
         assert config.adaptive_chunking_enabled is True
         assert config.asset_chunks_enabled is True
@@ -237,6 +238,7 @@ class TestChunkerConfig:
             mode=ChunkerMode.AGENTIC,
             late_chunk_model="custom-model",
             enable_quality_metrics=False,
+            enable_contextual_enrichment=True,
             max_chunk_tokens=600,
             adaptive_chunking_enabled=False,
             asset_chunks_enabled=False,
@@ -245,6 +247,7 @@ class TestChunkerConfig:
         assert config.mode == ChunkerMode.AGENTIC
         assert config.late_chunk_model == "custom-model"
         assert config.enable_quality_metrics is False
+        assert config.enable_contextual_enrichment is True
         assert config.max_chunk_tokens == 600
         assert config.adaptive_chunking_enabled is False
         assert config.asset_chunks_enabled is False

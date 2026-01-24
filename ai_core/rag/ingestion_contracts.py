@@ -17,7 +17,7 @@ from common.logging import get_log_context, get_logger
 from ai_core.infra.observability import record_span
 from ai_core.tools import InputError
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from documents.contracts import NormalizedDocument
 from documents.providers import parse_provider_reference
@@ -69,31 +69,87 @@ class IngestionProfileResolution:
 class ChunkMeta(BaseModel):
     """Validated chunk metadata persisted alongside embeddings."""
 
-    tenant_id: str
-    case_id: str
-    source: str
-    hash: str
-    external_id: str
-    content_hash: str
-    embedding_profile: str | None = None
-    embedding_model_version: str | None = None
-    embedding_created_at: str | None = None
-    vector_space_id: str | None = None
-    process: str | None = None
-    workflow_id: str | None = None
-    parent_ids: list[str] | None = None
-    collection_id: str | None = None
-    document_id: str | None = None
-    document_version_id: str | None = None
-    chunk_index: int | None = None
-    chunk_count: int | None = None
-    is_latest: bool | None = None
-    lifecycle_state: str | None = None
-    chunker: str | None = None
-    chunker_mode: str | None = None
-    reference_ids: list[str] | None = None
-    reference_labels: list[str] | None = None
-    trace_id: str | None = None
+    tenant_id: str = Field(description="Tenant identifier for the chunk owner.")
+    case_id: str = Field(description="Case identifier associated with the chunk.")
+    source: str = Field(description="Source label for the originating content.")
+    hash: str = Field(description="Stable chunk hash for deduplication.")
+    external_id: str = Field(description="Upstream document identifier.")
+    content_hash: str = Field(
+        description="Hash of normalized content for deduplication."
+    )
+    embedding_profile: str | None = Field(
+        default=None, description="Embedding profile label used for indexing."
+    )
+    embedding_model_version: str | None = Field(
+        default=None, description="Resolved embedding model version string."
+    )
+    embedding_created_at: str | None = Field(
+        default=None, description="ISO timestamp when embedding was created."
+    )
+    vector_space_id: str | None = Field(
+        default=None, description="Vector space identifier for the embedding."
+    )
+    process: str | None = Field(
+        default=None, description="Ingestion process label (pipeline provenance)."
+    )
+    workflow_id: str | None = Field(
+        default=None, description="Workflow identifier for the ingestion run."
+    )
+    parent_ids: list[str] | None = Field(
+        default=None, description="Parent document identifiers for hierarchy linking."
+    )
+    collection_id: str | None = Field(
+        default=None, description="Collection identifier for retrieval scoping."
+    )
+    document_id: str | None = Field(
+        default=None, description="Document identifier for the chunk."
+    )
+    document_version_id: str | None = Field(
+        default=None, description="Document version identifier for traceability."
+    )
+    chunk_index: int | None = Field(
+        default=None, description="Zero-based index of this chunk within document."
+    )
+    chunk_count: int | None = Field(
+        default=None, description="Total number of chunks for the document."
+    )
+    is_latest: bool | None = Field(
+        default=None, description="True when chunk belongs to latest document version."
+    )
+    lifecycle_state: str | None = Field(
+        default=None, description="Document lifecycle state at ingestion time."
+    )
+    chunker: str | None = Field(
+        default=None, description="Chunker implementation identifier."
+    )
+    chunker_mode: str | None = Field(
+        default=None, description="Chunker mode or strategy label."
+    )
+    context_header: str | None = Field(
+        default=None, description="Context header prefix used during ingestion."
+    )
+    context_header_len: int | None = Field(
+        default=None, description="Character length of the context header."
+    )
+    context_header_mode: str | None = Field(
+        default=None, description="Context header generation mode."
+    )
+    section_path_text: str | None = Field(
+        default=None, description="Section path derived from document structure."
+    )
+    contextual_prefix: str | None = Field(
+        default=None,
+        description="LLM-generated contextual prefix for semantic enrichment.",
+    )
+    reference_ids: list[str] | None = Field(
+        default=None, description="Referenced document identifiers extracted at ingest."
+    )
+    reference_labels: list[str] | None = Field(
+        default=None, description="Human labels for reference identifiers."
+    )
+    trace_id: str | None = Field(
+        default=None, description="Trace identifier for observability correlation."
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -109,21 +165,45 @@ class IngestionAction(str, Enum):
 class CrawlerIngestionPayload(BaseModel):
     """Normalized crawler ingestion metadata forwarded to vector services."""
 
-    action: IngestionAction
-    lifecycle_state: str
-    policy_events: tuple[str, ...] = ()
-    adapter_metadata: Mapping[str, object]
-    document_id: str
-    workflow_id: str | None = None
-    tenant_id: str
-    case_id: str
-    content_hash: str | None = None
-    chunk_meta: ChunkMeta | None = None
-    embedding_profile: str | None = None
-    vector_space_id: str | None = None
-    delta_status: str | None = None
-    content_raw: str | None = None
-    content_normalized: str | None = None
+    action: IngestionAction = Field(
+        description="Ingestion action emitted by crawler planning."
+    )
+    lifecycle_state: str = Field(
+        description="Lifecycle state for the ingested document."
+    )
+    policy_events: tuple[str, ...] = Field(
+        default=(), description="Policy signals recorded during ingestion planning."
+    )
+    adapter_metadata: Mapping[str, object] = Field(
+        description="Adapter metadata forwarded to vector services."
+    )
+    document_id: str = Field(description="Document identifier for ingestion.")
+    workflow_id: str | None = Field(
+        default=None, description="Workflow identifier for the ingestion request."
+    )
+    tenant_id: str = Field(description="Tenant identifier for ingestion scoping.")
+    case_id: str = Field(description="Case identifier for ingestion scoping.")
+    content_hash: str | None = Field(
+        default=None, description="Hash of normalized document content."
+    )
+    chunk_meta: ChunkMeta | None = Field(
+        default=None, description="Chunk metadata payload for downstream services."
+    )
+    embedding_profile: str | None = Field(
+        default=None, description="Embedding profile requested for ingestion."
+    )
+    vector_space_id: str | None = Field(
+        default=None, description="Resolved vector space identifier."
+    )
+    delta_status: str | None = Field(
+        default=None, description="Delta status emitted by deduplication checks."
+    )
+    content_raw: str | None = Field(
+        default=None, description="Raw content snapshot (if forwarded)."
+    )
+    content_normalized: str | None = Field(
+        default=None, description="Normalized content snapshot (if forwarded)."
+    )
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

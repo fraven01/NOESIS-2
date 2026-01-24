@@ -3,6 +3,7 @@
 from ai_core.contracts.business import BusinessContext
 from ai_core.contracts.scope import ScopeContext
 from ai_core.rag.query_planner import plan_query
+from ai_core.rag.filter_spec import FilterSpec
 from ai_core.tool_contracts import tool_context_from_scope
 
 
@@ -34,12 +35,15 @@ def test_plan_query_constraints_from_filters():
         "incident response",
         context=_context(),
         doc_class=None,
-        filters={
-            "collection_id": "col-2",
-            "must_include": ["breach", "timeline"],
-            "date_from": "2024-01-01",
-            "date_to": "2024-12-31",
-        },
+        filters=FilterSpec(
+            tenant_id="tenant",
+            collection_id="col-2",
+            metadata={
+                "must_include": ["breach", "timeline"],
+                "date_from": "2024-01-01",
+                "date_to": "2024-12-31",
+            },
+        ),
     )
     constraints = plan.constraints
     assert "col-2" in constraints.collections

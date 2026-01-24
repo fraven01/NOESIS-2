@@ -63,6 +63,10 @@ from ai_core.rag.chunking.utils import (
     is_numbered_list_item,
     split_sentences,
 )
+from ai_core.rag.contextual_enrichment import (
+    generate_contextual_prefixes,
+    resolve_contextual_enrichment_config,
+)
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, LlmTimeoutError, RateLimitError
 from documents.pipeline import DocumentProcessingContext, ParsedResult
@@ -242,6 +246,7 @@ class AgenticChunker:
         max_chunk_sentences: int = 50,
         confidence_threshold: float = 0.7,
         use_content_based_ids: bool = True,
+        enable_contextual_enrichment: bool = False,
     ):
         """
         Initialize Agentic Chunker.
@@ -264,6 +269,7 @@ class AgenticChunker:
         self.max_chunk_sentences = max_chunk_sentences
         self.confidence_threshold = confidence_threshold
         self.use_content_based_ids = use_content_based_ids
+        self.enable_contextual_enrichment = enable_contextual_enrichment
 
         # Rate limiting and budget controls
         self.rate_limiter = RateLimiter(
@@ -275,6 +281,7 @@ class AgenticChunker:
         self.fallback_chunker = LateChunker(
             model="embedding",  # MODEL_ROUTING.yaml label
             use_content_based_ids=use_content_based_ids,
+            enable_contextual_enrichment=enable_contextual_enrichment,
         )
 
         logger.info(
@@ -350,6 +357,12 @@ class AgenticChunker:
                 document_ref=document_ref,
                 doc_type=doc_type,
             )
+            if self.enable_contextual_enrichment:
+                chunks = self._apply_contextual_enrichment(
+                    chunks,
+                    document_text,
+                    context,
+                )
 
             logger.info(
                 "agentic_chunker_completed",
@@ -815,6 +828,60 @@ class AgenticChunker:
             meta["chunk_count"] = total
         return chunks
 
+    def _apply_contextual_enrichment(
+        self,
+        chunks: list[dict[str, Any]],
+        document_text: str,
+        context: DocumentProcessingContext,
+    ) -> list[dict[str, Any]]:
+        if not chunks:
+            return chunks
+        if self._has_contextual_prefix(chunks):
+            return chunks
+        config = resolve_contextual_enrichment_config(True)
+        if not config.enabled:
+            return chunks
+        started_at = time.perf_counter()
+        entries = [
+            {"text": str(chunk.get("text") or ""), "metadata": chunk.get("metadata")}
+            for chunk in chunks
+        ]
+        prefixes = generate_contextual_prefixes(
+            document_text,
+            entries,
+            context,
+            config,
+        )
+        duration_ms = int(round((time.perf_counter() - started_at) * 1000))
+        logger.info(
+            "agentic_chunker_contextual_enrichment",
+            extra={
+                "document_id": str(context.metadata.document_id),
+                "chunk_count": len(chunks),
+                "duration_ms": duration_ms,
+            },
+        )
+        for chunk, prefix in zip(chunks, prefixes):
+            if not prefix:
+                continue
+            meta = chunk.get("metadata")
+            if not isinstance(meta, dict):
+                meta = dict(meta) if isinstance(meta, Mapping) else {}
+                chunk["metadata"] = meta
+            meta["contextual_prefix"] = prefix
+        return chunks
+
+    @staticmethod
+    def _has_contextual_prefix(chunks: Sequence[Mapping[str, Any]]) -> bool:
+        for chunk in chunks:
+            meta = chunk.get("metadata")
+            if not isinstance(meta, Mapping):
+                continue
+            value = meta.get("contextual_prefix")
+            if isinstance(value, str) and value.strip():
+                return True
+        return False
+
     @staticmethod
     def _build_list_run_map(
         sentences: list[str],
@@ -884,4 +951,7 @@ def get_default_agentic_chunker() -> AgenticChunker:
             settings, "RAG_AGENTIC_CHUNK_TOKEN_BUDGET", 100000
         ),
         use_content_based_ids=getattr(settings, "RAG_USE_CONTENT_BASED_IDS", True),
+        enable_contextual_enrichment=getattr(
+            settings, "RAG_CONTEXTUAL_ENRICHMENT", False
+        ),
     )

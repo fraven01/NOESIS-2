@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tool_contracts import ToolContext
+from ai_core.rag.filter_spec import FilterSpec
 
 
 class QueryConstraints(BaseModel):
@@ -80,7 +81,7 @@ def _infer_doc_type(query: str, doc_class: str | None) -> str | None:
 def _build_constraints(
     *,
     context: ToolContext | None,
-    filters: Mapping[str, Any] | None,
+    filters: FilterSpec | None,
 ) -> QueryConstraints:
     must_include: list[str] = []
     collections: list[str] = []
@@ -88,8 +89,12 @@ def _build_constraints(
     date_from = None
     date_to = None
 
-    if filters:
-        raw_must_include = filters.get("must_include")
+    filters_payload: Mapping[str, Any] | None = None
+    if filters is not None:
+        filters_payload = filters.as_mapping()
+
+    if filters_payload:
+        raw_must_include = filters_payload.get("must_include")
         if isinstance(raw_must_include, list):
             must_include = [
                 str(item).strip() for item in raw_must_include if str(item).strip()
@@ -98,19 +103,23 @@ def _build_constraints(
             must_include = [raw_must_include.strip()]
 
         for key in ("collection_id", "collection"):
-            candidate = _coerce_str(filters.get(key))
+            candidate = _coerce_str(filters_payload.get(key))
             if candidate:
                 collections.append(candidate)
                 break
 
         for key in ("document_id", "id"):
-            candidate = _coerce_str(filters.get(key))
+            candidate = _coerce_str(filters_payload.get(key))
             if candidate:
                 document_ids.append(candidate)
                 break
 
-        date_from = _coerce_str(filters.get("date_from") or filters.get("start_date"))
-        date_to = _coerce_str(filters.get("date_to") or filters.get("end_date"))
+        date_from = _coerce_str(
+            filters_payload.get("date_from") or filters_payload.get("start_date")
+        )
+        date_to = _coerce_str(
+            filters_payload.get("date_to") or filters_payload.get("end_date")
+        )
 
     if context is not None:
         collection_id = _coerce_str(context.business.collection_id)
@@ -131,7 +140,7 @@ def _build_rule_plan(
     *,
     context: ToolContext | None,
     doc_class: str | None,
-    filters: Mapping[str, Any] | None,
+    filters: FilterSpec | None,
 ) -> QueryPlan:
     doc_type = _infer_doc_type(query, doc_class)
     expansions = [query]
@@ -152,8 +161,11 @@ def _build_llm_plan(
     *,
     context: ToolContext | None,
     doc_class: str | None,
-    filters: Mapping[str, Any] | None,
+    filters: FilterSpec | None,
 ) -> QueryPlan:
+    filters_payload: Mapping[str, Any] | None = None
+    if filters is not None:
+        filters_payload = filters.as_mapping()
     prompt = (
         "You are a query planner. Return JSON only with the schema:\n"
         "{"
@@ -170,7 +182,7 @@ def _build_llm_plan(
         "Use 1-5 queries, include the original query. Keep expansions tight.\n"
         f"Query: {query}\n"
         f"Doc class: {doc_class or 'none'}\n"
-        f"Filters: {json.dumps(filters or {}, ensure_ascii=True)}\n"
+        f"Filters: {json.dumps(filters_payload or {}, ensure_ascii=True)}\n"
     )
     metadata = {
         "tenant_id": context.scope.tenant_id if context else None,
@@ -209,7 +221,7 @@ def plan_query(
     *,
     context: ToolContext | None = None,
     doc_class: str | None = None,
-    filters: Mapping[str, Any] | None = None,
+    filters: FilterSpec | None = None,
 ) -> QueryPlan:
     base_query = (query or "").strip()
     if not base_query:

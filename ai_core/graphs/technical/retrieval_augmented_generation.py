@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 import math
 import os
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, Tuple, TypedDict, cast
 
+from common.logging import get_logger
 from ai_core.graph.core import GraphContext, ThreadAwareCheckpointer
 from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import emit_event, observe_span, update_observation
@@ -31,7 +31,7 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DEFAULT_MAX_RETRIES = 1
 DEFAULT_SCORE_THRESHOLD = 0.65
@@ -165,8 +165,8 @@ class ComposeNode(Protocol):
 class RetrievalAugmentedGenerationState(TypedDict, total=False):
     """Runtime state for the retrieval augmented generation LangGraph."""
 
-    state: MutableMapping[str, Any]
-    meta: MutableMapping[str, Any]
+    state: dict[str, Any]
+    meta: dict[str, Any]
     context: ToolContext
     graph_input: RetrievalAugmentedGenerationInput
     chat_history: list[Mapping[str, Any]]
@@ -185,18 +185,18 @@ class RetrievalAugmentedGenerationState(TypedDict, total=False):
 
 
 def _ensure_mutable_state(
-    state: Mapping[str, Any] | MutableMapping[str, Any],
-) -> MutableMapping[str, Any]:
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
     if isinstance(state, MutableMapping):
-        return state
+        return dict(state)
     return dict(state)
 
 
 def _ensure_mutable_meta(
-    meta: Mapping[str, Any] | MutableMapping[str, Any],
-) -> MutableMapping[str, Any]:
+    meta: Mapping[str, Any],
+) -> dict[str, Any]:
     if isinstance(meta, MutableMapping):
-        return meta
+        return dict(meta)
     return dict(meta)
 
 
@@ -279,7 +279,85 @@ def _normalise_snippets(
     return normalised
 
 
-def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
+def _snippet_document_id(snippet: Mapping[str, Any]) -> str | None:
+    meta = snippet.get("meta")
+    meta_payload: Mapping[str, Any] = meta if isinstance(meta, Mapping) else {}
+    return _coerce_str(meta_payload.get("document_id") or snippet.get("id"))
+
+
+def _snippet_chunk_id(snippet: Mapping[str, Any]) -> str | None:
+    raw = snippet.get("id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    meta = snippet.get("meta")
+    meta_payload: Mapping[str, Any] = meta if isinstance(meta, Mapping) else {}
+    chunk_id = _coerce_str(meta_payload.get("chunk_id"))
+    if chunk_id:
+        return chunk_id
+    return None
+
+
+def _select_primary_document_id(
+    snippets: Sequence[Mapping[str, Any]],
+    *,
+    top_k: int,
+) -> str | None:
+    if top_k <= 0:
+        return None
+    candidates = snippets[: min(top_k, len(snippets))]
+    if not candidates:
+        return None
+    counts: dict[str, int] = {}
+    for snippet in candidates:
+        if not isinstance(snippet, Mapping):
+            continue
+        doc_id = _snippet_document_id(snippet)
+        if not doc_id:
+            continue
+        counts[doc_id] = counts.get(doc_id, 0) + 1
+    if not counts:
+        return None
+    for snippet in candidates:
+        if not isinstance(snippet, Mapping):
+            continue
+        doc_id = _snippet_document_id(snippet)
+        if not doc_id:
+            continue
+        if counts.get(doc_id, 0) >= 2:
+            return doc_id
+    return None
+
+
+def _log_chunk_preview(
+    *,
+    event: str,
+    items: Sequence[Mapping[str, Any]],
+    context: ToolContext,
+    limit: int = 15,
+) -> None:
+    preview: list[dict[str, object]] = []
+    for match in items[:limit]:
+        meta = match.get("meta")
+        meta_payload: Mapping[str, Any] = meta if isinstance(meta, Mapping) else {}
+        preview.append(
+            {
+                "id": match.get("id"),
+                "score": match.get("score"),
+                "document_id": meta_payload.get("document_id"),
+                "neighbor": meta_payload.get("neighbor"),
+                "chunk_index": meta_payload.get("chunk_index"),
+            }
+        )
+    logger.debug(
+        event,
+        tenant_id=context.scope.tenant_id,
+        case_id=context.business.case_id,
+        count=len(items),
+        items=preview,
+    )
+
+
+def _build_tool_context(meta: Mapping[str, Any]) -> ToolContext:
     try:
         return tool_context_from_meta(meta)
     except Exception as exc:
@@ -711,17 +789,38 @@ def _select_snippets_for_budget(
     snippets: Sequence[Mapping[str, Any]],
     *,
     max_tokens: int,
+    primary_document_id: str | None = None,
 ) -> tuple[list[Mapping[str, Any]], int]:
     if max_tokens <= 0:
         return [], 0
     expanded_ids, id_to_snippet, _scores = _expand_snippet_ids(snippets)
     if not expanded_ids:
         return [], 0
+    ordered_ids = expanded_ids
+    if primary_document_id:
+        primary: list[str] = []
+        others: list[str] = []
+        for chunk_id in expanded_ids:
+            snippet = id_to_snippet.get(chunk_id)
+            if snippet is None:
+                continue
+            doc_id = _snippet_document_id(snippet)
+            if doc_id == primary_document_id:
+                primary.append(chunk_id)
+            else:
+                others.append(chunk_id)
+        primary.sort(
+            key=lambda cid: _coerce_int(
+                (id_to_snippet.get(cid) or {}).get("meta", {}).get("chunk_index"),
+                fallback=0,
+            )
+        )
+        ordered_ids = [*primary, *others]
 
     selected: list[Mapping[str, Any]] = []
     remaining = max_tokens
     used_tokens = 0
-    for chunk_id in expanded_ids:
+    for chunk_id in ordered_ids:
         snippet = id_to_snippet.get(chunk_id)
         if snippet is None:
             continue
@@ -1156,6 +1255,26 @@ def _build_compiled_graph(
             raise ValueError("retrieval produced no results")
 
         deduped = _dedupe_matches(matches)
+        retrieval_scores: dict[str, float] = {}
+        for match in deduped:
+            if not isinstance(match, Mapping):
+                continue
+            chunk_id = _snippet_chunk_id(match)
+            if not chunk_id:
+                continue
+            retrieval_scores[chunk_id] = _coerce_score(match.get("score"))
+        primary_document_id = _select_primary_document_id(
+            deduped, top_k=retrieval_top_k
+        )
+        try:
+            _log_chunk_preview(
+                event="rag.retrieve.pool_preview",
+                items=deduped,
+                context=context,
+                limit=15,
+            )
+        except Exception:  # pragma: no cover - defensive logging
+            pass
         if intent in {EXTRACT_INTENT, CHECKLIST_INTENT}:
             update_observation(
                 metadata={
@@ -1211,6 +1330,17 @@ def _build_compiled_graph(
         retrieval_meta = _aggregate_retrieval_meta(outputs, deduped)
         working_state["matches"] = deduped
         working_state["snippets"] = deduped
+        working_state["primary_document_id"] = primary_document_id
+        working_state["retrieval_scores"] = retrieval_scores
+        try:
+            _log_chunk_preview(
+                event="rag.retrieve.matches_assigned",
+                items=deduped,
+                context=context,
+                limit=15,
+            )
+        except Exception:  # pragma: no cover - defensive logging
+            pass
         working_state["retrieval"] = retrieval_meta
 
         update_observation(
@@ -1250,9 +1380,20 @@ def _build_compiled_graph(
             base_query,
             context,
             intent=working_state.get("intent"),
+            primary_document_id=working_state.get("primary_document_id"),
+            retrieval_scores=working_state.get("retrieval_scores"),
         )
         working_state["snippets"] = rerank_result.chunks
         working_state["matches"] = rerank_result.chunks
+        try:
+            _log_chunk_preview(
+                event="rag.rerank.result_preview",
+                items=rerank_result.chunks,
+                context=context,
+                limit=15,
+            )
+        except Exception:  # pragma: no cover - defensive logging
+            pass
 
         update_observation(
             metadata={
@@ -1340,8 +1481,18 @@ def _build_compiled_graph(
         snippets, used_tokens = _select_snippets_for_budget(
             snippets,
             max_tokens=context_budget_tokens,
+            primary_document_id=working_state.get("primary_document_id"),
         )
         working_state["snippets"] = list(snippets)
+        try:
+            _log_chunk_preview(
+                event="rag.context.selected_preview",
+                items=snippets,
+                context=context,
+                limit=15,
+            )
+        except Exception:  # pragma: no cover - defensive logging
+            pass
         doc_expand = working_state.get("doc_expand")
         if isinstance(doc_expand, Mapping):
             document_id = _coerce_str(doc_expand.get("document_id"))
@@ -1596,9 +1747,9 @@ class RetrievalAugmentedGenerationGraph:
 
     def run(
         self,
-        state: Mapping[str, Any] | MutableMapping[str, Any],
-        meta: Mapping[str, Any] | MutableMapping[str, Any],
-    ) -> Tuple[MutableMapping[str, Any], Mapping[str, Any]]:
+        state: Mapping[str, Any],
+        meta: Mapping[str, Any],
+    ) -> Tuple[dict[str, Any], Mapping[str, Any]]:
         working_state = _ensure_mutable_state(state)
         working_meta = _ensure_mutable_meta(meta)
         context = _build_tool_context(working_meta)
@@ -1686,9 +1837,9 @@ def build_graph() -> RetrievalAugmentedGenerationGraph:
 
 
 def run(
-    state: Mapping[str, Any] | MutableMapping[str, Any],
-    meta: Mapping[str, Any] | MutableMapping[str, Any],
-) -> Tuple[MutableMapping[str, Any], Mapping[str, Any]]:
+    state: Mapping[str, Any],
+    meta: Mapping[str, Any],
+) -> Tuple[dict[str, Any], Mapping[str, Any]]:
     """Module-level convenience delegating to :func:`build_graph`.
 
     MVP 2025-10 — Breaking Contract v2: Response enthält answer, prompt_version, retrieval, snippets.

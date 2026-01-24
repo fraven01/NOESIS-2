@@ -43,6 +43,7 @@ class ChunkerConfig:
     late_chunk_max_tokens: int = 8000
     agentic_chunk_model: str = "agentic-chunk"  # MODEL_ROUTING.yaml label
     enable_quality_metrics: bool = True
+    enable_contextual_enrichment: bool = False
     quality_model: str = "quality-eval"  # MODEL_ROUTING.yaml label
     quality_max_workers: int = 8  # Parallel workers for quality evaluation
     quality_sample_rate: float = 1.0  # Evaluate all chunks (0.0-1.0)
@@ -73,6 +74,9 @@ def get_default_chunker_config() -> ChunkerConfig:
             settings, "RAG_AGENTIC_CHUNK_MODEL", "agentic-chunk"
         ),
         enable_quality_metrics=getattr(settings, "RAG_ENABLE_QUALITY_METRICS", True),
+        enable_contextual_enrichment=getattr(
+            settings, "RAG_CONTEXTUAL_ENRICHMENT", False
+        ),
         quality_model=getattr(settings, "RAG_QUALITY_EVAL_MODEL", "quality-eval"),
         quality_max_workers=getattr(settings, "RAG_QUALITY_MAX_WORKERS", 8),
         quality_sample_rate=getattr(settings, "RAG_QUALITY_SAMPLE_RATE", 1.0),
@@ -132,10 +136,20 @@ def get_chunker_config_from_routing(
     """
     from django.conf import settings
 
-    from ai_core.rag.routing_rules import resolve_chunker_mode
+    from ai_core.rag.routing_rules import (
+        resolve_chunker_mode,
+        resolve_contextual_enrichment,
+    )
 
     # Resolve mode from routing rules
     mode_str = resolve_chunker_mode(
+        tenant=tenant_id,
+        collection_id=collection_id,
+        doc_class=doc_class,
+        workflow_id=workflow_id,
+        process=process,
+    )
+    enrichment_override = resolve_contextual_enrichment(
         tenant=tenant_id,
         collection_id=collection_id,
         doc_class=doc_class,
@@ -152,6 +166,11 @@ def get_chunker_config_from_routing(
             settings, "RAG_AGENTIC_CHUNK_MODEL", "agentic-chunk"
         ),
         enable_quality_metrics=getattr(settings, "RAG_ENABLE_QUALITY_METRICS", True),
+        enable_contextual_enrichment=(
+            enrichment_override
+            if enrichment_override is not None
+            else getattr(settings, "RAG_CONTEXTUAL_ENRICHMENT", False)
+        ),
         quality_model=getattr(settings, "RAG_QUALITY_EVAL_MODEL", "quality-eval"),
         max_chunk_tokens=getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450),
         overlap_tokens=getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 80),
@@ -203,6 +222,7 @@ class HybridChunker:
             use_content_based_ids=config.use_content_based_ids,
             adaptive_enabled=config.adaptive_chunking_enabled,
             asset_chunks_enabled=config.asset_chunks_enabled,
+            enable_contextual_enrichment=config.enable_contextual_enrichment,
         )
 
         # Initialize Agentic Chunker (Phase 2)
@@ -211,6 +231,7 @@ class HybridChunker:
         self.agentic_chunker = AgenticChunker(
             model=config.agentic_chunk_model,
             use_content_based_ids=config.use_content_based_ids,
+            enable_contextual_enrichment=config.enable_contextual_enrichment,
         )
 
         # Initialize Quality Evaluator (if enabled)

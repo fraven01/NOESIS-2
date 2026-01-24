@@ -239,18 +239,38 @@ def handle_document_upload(
 
     # Fail fast if the same document (tenant/source/hash) already exists.
     with schema_context(tenant_obj.schema_name):
+        from django.utils import timezone
+        from datetime import timedelta
+
         Document = apps.get_model("documents", "Document")
         existing_document = (
             Document.objects.filter(tenant=tenant_obj, source=source, hash=checksum)
-            .only("id", "lifecycle_state", "soft_deleted_at")
+            .only("id", "lifecycle_state", "soft_deleted_at", "created_at")
             .first()
         )
+
     if existing_document and not existing_document.soft_deleted_at:
-        return _error_response(
-            "Document with the same content already exists.",
-            "duplicate_document",
-            status.HTTP_409_CONFLICT,
-        )
+        # ALLOWance: If the document is stuck in 'pending' for more than 2 hours,
+        # we treat it as a failed ingestion and allow a retry/overwrite.
+        is_stale_pending = existing_document.lifecycle_state == "pending" and (
+            timezone.now() - existing_document.created_at
+        ) > timedelta(hours=2)
+
+        if not is_stale_pending:
+            return _error_response(
+                "Document with the same content already exists.",
+                "duplicate_document",
+                status.HTTP_409_CONFLICT,
+            )
+        else:
+            logger.info(
+                "upload.overwriting_stale_pending_document",
+                extra={
+                    "tenant_id": tenant_identifier,
+                    "document_id": str(existing_document.id),
+                    "created_at": str(existing_document.created_at),
+                },
+            )
 
     # Improved MIME type detection
     detected_mime = _infer_media_type(upload)

@@ -37,6 +37,7 @@ class RoutingErrorCode:
     RULES_NOT_SEQUENCE = "ROUTE_RULES_TYPE"
     UNKNOWN_PROFILE_DEFAULT = "ROUTE_UNKNOWN_PROFILE_DEFAULT"
     UNKNOWN_PROFILE_RULE = "ROUTE_UNKNOWN_PROFILE_RULE"
+    FIELD_INVALID_BOOL = "ROUTE_FIELD_INVALID_BOOL"
     DUPLICATE_SELECTOR = "ROUTE_DUP_SELECTOR"
     DUPLICATE_SELECTOR_SAME_TARGET = "ROUTE_DUP_SAME_TARGET"
     NO_MATCH = "ROUTE_NO_MATCH"
@@ -82,6 +83,7 @@ class RoutingRule:
     workflow_id: str | None = None
     doc_class: str | None = None
     chunker_mode: str | None = None  # late | agentic | hybrid
+    contextual_enrichment: bool | None = None
 
     def matches(
         self,
@@ -322,6 +324,25 @@ def _normalise_optional(value: object | None, *, field: str) -> str | None:
     return normalized
 
 
+def _normalise_optional_bool(value: object | None, *, field: str) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    raise RoutingConfigurationError(
+        _format_error(
+            RoutingErrorCode.FIELD_INVALID_BOOL,
+            f"{field} must be a boolean when provided",
+        )
+    )
+
+
 def _use_collection_routing() -> bool:
     flags: Mapping[str, Any] | None = getattr(settings, "RAG_ROUTING_FLAGS", None)
     if isinstance(flags, Mapping):
@@ -379,6 +400,10 @@ def _build_rules(raw_rules: Sequence[object]) -> tuple[RoutingRule, ...]:
         chunker_mode = _normalise_optional(
             raw.get("chunker_mode"), field="chunker_mode"
         )
+        contextual_enrichment = _normalise_optional_bool(
+            raw.get("contextual_enrichment"),
+            field="contextual_enrichment",
+        )
 
         if use_collection_routing and collection_id is None and doc_class is not None:
             collection_id = doc_class
@@ -393,6 +418,7 @@ def _build_rules(raw_rules: Sequence[object]) -> tuple[RoutingRule, ...]:
             workflow_id=workflow_id,
             doc_class=doc_class,
             chunker_mode=chunker_mode,
+            contextual_enrichment=contextual_enrichment,
         )
 
         rules.append(rule)
@@ -655,6 +681,58 @@ def resolve_chunker_mode(
     return table.default_chunker_mode
 
 
+def resolve_contextual_enrichment(
+    *,
+    tenant: str,
+    process: str | None = None,
+    doc_class: str | None = None,
+    collection_id: str | None = None,
+    workflow_id: str | None = None,
+) -> bool | None:
+    """
+    Resolve contextual enrichment enablement based on routing rules.
+
+    Returns:
+        True/False when explicitly configured, otherwise None.
+    """
+    table = get_routing_table()
+
+    best_rule: RoutingRule | None = None
+    best_priority: tuple[int, int, int, int, int, int] | None = None
+
+    for rule in table.rules:
+        if rule.contextual_enrichment is None:
+            continue
+        if not rule.matches(
+            tenant=tenant,
+            process=process,
+            collection_id=collection_id,
+            workflow_id=workflow_id,
+            doc_class=doc_class,
+        ):
+            continue
+
+        priority = rule.priority_key
+
+        if best_priority is None or priority > best_priority:
+            best_rule = rule
+            best_priority = priority
+            continue
+
+        if priority == best_priority and best_rule is not None:
+            if rule.contextual_enrichment != best_rule.contextual_enrichment:
+                raise RoutingConfigurationError(
+                    _format_error(
+                        RoutingErrorCode.CONFLICT,
+                        "Ambiguous routing rules match the same selector for contextual_enrichment",
+                    )
+                )
+
+    if best_rule is None:
+        return None
+    return best_rule.contextual_enrichment
+
+
 def validate_routing_rules() -> None:
     """Validate routing rules at startup."""
 
@@ -677,6 +755,7 @@ __all__ = [
     "is_collection_routing_enabled",
     "resolve_embedding_profile_id",
     "resolve_chunker_mode",
+    "resolve_contextual_enrichment",
     "reset_routing_rules_cache",
     "validate_routing_rules",
 ]

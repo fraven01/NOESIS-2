@@ -363,10 +363,10 @@ def test_graph_applies_context_budget_with_neighbor_expansion(
         _scope_meta("tenant", "case", budget_tokens=20),
     )
 
-    assert captured["chunk_ids"] == ["c1", "c2"]
+    assert captured["chunk_ids"] == ["c1", "c3"]
     assert [snippet["meta"]["chunk_id"] for snippet in state["snippets"]] == [
         "c1",
-        "c2",
+        "c3",
     ]
 
 
@@ -392,8 +392,8 @@ def test_graph_includes_all_snippets_when_budget_allows(
 
     assert [snippet["meta"]["chunk_id"] for snippet in state["snippets"]] == [
         "c1",
-        "c2",
         "c3",
+        "c2",
     ]
 
 

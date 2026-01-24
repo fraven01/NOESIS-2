@@ -24,6 +24,7 @@ rules:
   - tenant: dev
     profile: standard
     chunker_mode: agentic
+    # contextual_enrichment: true
 
   # Demo tenant: demo profile, late chunking (default)
   - tenant: demo

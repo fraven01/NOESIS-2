@@ -117,6 +117,7 @@ def test_retrieve_hybrid_search(monkeypatch):
         "filters": {"category": "demo"},
         "process": "review",
         "doc_class": "invoice",
+        "tenant_id": "tenant-1",
         "hybrid": {
             "alpha": 0.6,
             "min_sim": 0.2,

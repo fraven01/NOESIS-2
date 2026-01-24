@@ -60,6 +60,10 @@ from ai_core.rag.ingestion_contracts import (
     log_embedding_quality_stats,
 )
 from ai_core.rag.chunking import RoutingAwareChunker
+from ai_core.rag.contextual_enrichment import (
+    generate_contextual_prefixes,
+    get_contextual_enrichment_config,
+)
 from ai_core.rag.embeddings import (
     EmbeddingBatchResult,
     EmbeddingClientError,
@@ -199,6 +203,35 @@ def _build_context_header_prompt(
         f"Preview: {preview}"
     )
     return prompt_text, str(prompt.get("version") or "")
+
+
+def _resolve_contextual_text(
+    content: str,
+    normalized: str | None,
+    meta: Mapping[str, object] | None,
+) -> str:
+    prefix_value = None
+    if isinstance(meta, MappingABC):
+        prefix_value = meta.get("contextual_prefix")
+    prefix = str(prefix_value or "").strip()
+    if prefix:
+        combined = f"{prefix}\n\n{content}".strip()
+        return normalise_text(combined)
+    if normalized:
+        return normalized
+    return normalise_text(content)
+
+
+def _has_contextual_prefix(entries: Sequence[Mapping[str, Any]]) -> bool:
+    for entry in entries:
+        meta = entry.get("metadata")
+        if not isinstance(meta, MappingABC):
+            meta = entry.get("meta")
+        if isinstance(meta, MappingABC):
+            value = meta.get("contextual_prefix")
+            if isinstance(value, str) and value.strip():
+                return True
+    return False
 
 
 def _resolve_context_header(
@@ -601,6 +634,23 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
                 entry_meta["context_header_mode"] = header_mode
                 entry["metadata"] = entry_meta
 
+        enrichment_config = get_contextual_enrichment_config()
+        if enrichment_config.enabled and not _has_contextual_prefix(chunk_entries):
+            prefixes = generate_contextual_prefixes(
+                text,
+                chunk_entries,
+                context,
+                enrichment_config,
+            )
+            for entry, prefix in zip(chunk_entries, prefixes):
+                if not prefix:
+                    continue
+                entry_meta = entry.get("metadata")
+                if not isinstance(entry_meta, dict):
+                    entry_meta = {}
+                entry_meta["contextual_prefix"] = prefix
+                entry["metadata"] = entry_meta
+
         document_id = str(processing_context.metadata.document_id)
         parent_nodes: Dict[str, Dict[str, object]] = {}
         doc_title = str(meta.get("title") or external_id or "").strip()
@@ -662,17 +712,21 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
             header_meta = None
             header_mode_meta = None
             header_len_meta = None
+            contextual_prefix = None
             entry_meta_for_header = entry.get("metadata")
             if isinstance(entry_meta_for_header, dict):
                 header_meta = entry_meta_for_header.get("context_header")
                 header_mode_meta = entry_meta_for_header.get("context_header_mode")
                 header_len_meta = entry_meta_for_header.get("context_header_len")
+                contextual_prefix = entry_meta_for_header.get("contextual_prefix")
             if isinstance(header_meta, str) and header_meta:
                 chunk_meta["context_header"] = header_meta
                 if isinstance(header_len_meta, int):
                     chunk_meta["context_header_len"] = header_len_meta
                 if isinstance(header_mode_meta, str) and header_mode_meta:
                     chunk_meta["context_header_mode"] = header_mode_meta
+            if isinstance(contextual_prefix, str) and contextual_prefix:
+                chunk_meta["contextual_prefix"] = contextual_prefix
             section_path_text = None
             section_path = entry.get("section_path")
             if isinstance(section_path, Sequence) and not isinstance(
@@ -1090,20 +1144,40 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, Any]:
             if context.business.workflow_id:
                 chunk_meta["workflow_id"] = context.business.workflow_id
 
-            if document_id:
-                # Ensure canonical dashed UUID format for document_id in chunk meta
-                try:
-                    chunk_meta["document_id"] = str(uuid.UUID(str(document_id)))
-                except Exception:
-                    chunk_meta["document_id"] = document_id
-            chunks.append(
-                {
-                    "content": chunk_text,
-                    "normalized": normalised,
-                    "meta": chunk_meta,
-                }
-            )
-            chunk_index += 1
+        if document_id:
+            # Ensure canonical dashed UUID format for document_id in chunk meta
+            try:
+                chunk_meta["document_id"] = str(uuid.UUID(str(document_id)))
+            except Exception:
+                chunk_meta["document_id"] = document_id
+        chunks.append(
+            {
+                "content": chunk_text,
+                "normalized": normalised,
+                "meta": chunk_meta,
+            }
+        )
+        chunk_index += 1
+
+    enrichment_config = get_contextual_enrichment_config()
+    if enrichment_config.enabled and chunks and not _has_contextual_prefix(chunks):
+        placeholder_entries = [
+            {"text": str(chunk.get("content") or "")} for chunk in chunks
+        ]
+        prefixes = generate_contextual_prefixes(
+            text,
+            placeholder_entries,
+            context,
+            enrichment_config,
+        )
+        for chunk, prefix in zip(chunks, prefixes):
+            if not prefix:
+                continue
+            meta_payload = chunk.get("meta")
+            if not isinstance(meta_payload, dict):
+                meta_payload = {}
+            meta_payload["contextual_prefix"] = prefix
+            chunk["meta"] = meta_payload
 
     total_chunks = len(chunks)
     for idx, chunk in enumerate(chunks):
@@ -1308,14 +1382,18 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, Any]:
 
         with _observed_embed_section("chunk") as chunk_metrics:
             for ch in chunks:
-                normalised = ch.get("normalized") or normalise_text(
-                    ch.get("content", "")
-                )
-                text = normalised or ""
-                meta_payload: Dict[str, Any] = {}
+                content_value = str(ch.get("content", ""))
                 raw_meta = ch.get("meta")
+                meta_payload: Dict[str, Any] = {}
                 if isinstance(raw_meta, MappingABC):
                     meta_payload = dict(raw_meta)
+                text = _resolve_contextual_text(
+                    content_value,
+                    ch.get("normalized"),
+                    meta_payload if meta_payload else None,
+                )
+                if not text.strip():
+                    continue
                 if embedding_model_version:
                     meta_payload["embedding_model_version"] = embedding_model_version
                     meta_payload["embedding_created_at"] = embedding_created_at

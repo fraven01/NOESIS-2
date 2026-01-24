@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any
 
 from ai_core.contracts import BusinessContext, ScopeContext
 from ai_core.graphs.technical.rag_retrieval import RagRetrievalGraph
 from ai_core.nodes import retrieve
 from ai_core.rag import rerank as rag_rerank
+from ai_core.rag.filter_spec import FilterSpec
 
 
 def _tool_context() -> Any:
@@ -128,11 +129,12 @@ def test_rerank_toggle_changes_order() -> None:
 
 def test_document_id_scoping_overrides_filters() -> None:
     context = _tool_context()
-    captured_filters: list[Mapping[str, Any]] = []
+    captured_filters: list[FilterSpec] = []
 
     class StubRetrieve:
         def __call__(self, _context, params):
-            captured_filters.append(params.filters or {})
+            if params.filters is not None:
+                captured_filters.append(params.filters)
             return _retrieve_output([])
 
     graph = RagRetrievalGraph(retrieve_node=StubRetrieve())
@@ -152,8 +154,8 @@ def test_document_id_scoping_overrides_filters() -> None:
     graph.invoke(state)
 
     assert captured_filters
-    assert captured_filters[0]["id"] == "doc-123"
-    assert captured_filters[0]["type"] == "framework"
+    assert captured_filters[0].document_id == "doc-123"
+    assert captured_filters[0].metadata.get("type") == "framework"
 
 
 def test_reference_expansion_adds_matches(monkeypatch) -> None:
@@ -161,7 +163,7 @@ def test_reference_expansion_adds_matches(monkeypatch) -> None:
 
     class StubRetrieve:
         def __call__(self, _context, params):
-            if params.filters and params.filters.get("id") == "doc-ref":
+            if params.filters and params.filters.document_id == "doc-ref":
                 return _retrieve_output(
                     [
                         {

@@ -32,7 +32,8 @@ from ai_core.infra.policy import (
     get_session_scope,
 )
 from ai_core.metrics.task_metrics import record_task_retry
-from ai_core.tool_contracts.base import ToolContext, tool_context_from_meta
+from ai_core.tool_contracts.base import ToolContext
+from ai_core.tool_contracts.task_context import TaskContext, task_context_from_meta
 from ai_core.tools.errors import (
     InputError,
     PermanentError,
@@ -281,11 +282,6 @@ class ContextTask(Task):
         context.update(self._from_meta(kwargs.get("meta")))
         context.update(self._from_tool_context(kwargs.get("tool_context")))
 
-        if args and not kwargs.get("meta"):
-            context.update(self._from_meta(args[0]))
-            if len(args) > 1:
-                context.update(self._from_meta(args[1]))
-
         return {key: value for key, value in context.items() if value}
 
     def _from_headers(self, headers: Any) -> dict[str, str]:
@@ -313,52 +309,44 @@ class ContextTask(Task):
         if not isinstance(meta, Mapping):
             return {}
 
-        context: dict[str, str] = {}
-
         try:
-            tool_context = tool_context_from_meta(meta)
-        except (TypeError, ValueError):
+            task_context = task_context_from_meta(meta)
+        except (TypeError, ValueError, ValidationError):
             return {}
 
+        return self._from_task_context(task_context)
+
+    def _from_task_context(self, task_context: TaskContext) -> dict[str, str]:
+        context: dict[str, str] = {}
+
+        scope = task_context.scope
+        business = task_context.business
+
         # Infrastructure IDs from scope_context
-        trace_id = tool_context.scope.trace_id
-        if trace_id:
-            context["trace_id"] = self._normalize(trace_id)
-
-        tenant = tool_context.scope.tenant_id
-        if tenant:
-            context["tenant_id"] = self._normalize(tenant)
-
-        run_id = tool_context.scope.run_id
-        if run_id:
-            context["run_id"] = self._normalize(run_id)
-
-        ingestion_run_id = tool_context.scope.ingestion_run_id
-        if ingestion_run_id:
-            context["ingestion_run_id"] = self._normalize(ingestion_run_id)
+        if scope.trace_id:
+            context["trace_id"] = self._normalize(scope.trace_id)
+        if scope.tenant_id:
+            context["tenant_id"] = self._normalize(scope.tenant_id)
+        if scope.run_id:
+            context["run_id"] = self._normalize(scope.run_id)
+        if scope.ingestion_run_id:
+            context["ingestion_run_id"] = self._normalize(scope.ingestion_run_id)
 
         # Business IDs from business_context (BREAKING CHANGE)
-        case = tool_context.business.case_id
-        if case:
-            context["case_id"] = self._normalize(case)
+        if business.case_id:
+            context["case_id"] = self._normalize(business.case_id)
+        if business.collection_id:
+            context["collection_id"] = self._normalize(business.collection_id)
+        if business.workflow_id:
+            context["workflow_id"] = self._normalize(business.workflow_id)
+        if business.document_id:
+            context["document_id"] = self._normalize(business.document_id)
+        if business.document_version_id:
+            context["document_version_id"] = self._normalize(
+                business.document_version_id
+            )
 
-        collection_id = tool_context.business.collection_id
-        if collection_id:
-            context["collection_id"] = self._normalize(collection_id)
-
-        workflow_id = tool_context.business.workflow_id
-        if workflow_id:
-            context["workflow_id"] = self._normalize(workflow_id)
-
-        document_id = tool_context.business.document_id
-        if document_id:
-            context["document_id"] = self._normalize(document_id)
-
-        document_version_id = tool_context.business.document_version_id
-        if document_version_id:
-            context["document_version_id"] = self._normalize(document_version_id)
-
-        key_alias = meta.get("key_alias")
+        key_alias = task_context.metadata.key_alias
         if key_alias:
             context["key_alias"] = self._normalize(key_alias)
 
@@ -378,8 +366,23 @@ class ContextTask(Task):
         document_version_id = None
         run_id = None
         ingestion_run_id = None
+        key_alias = None
 
-        if isinstance(tool_context, ToolContext):
+        if isinstance(tool_context, TaskContext):
+            scope = tool_context.scope
+            business = tool_context.business
+            tenant_id = scope.tenant_id
+            trace_id = scope.trace_id
+            idempotency_key = scope.idempotency_key
+            case_id = business.case_id
+            collection_id = business.collection_id
+            workflow_id = business.workflow_id
+            document_id = business.document_id
+            document_version_id = business.document_version_id
+            run_id = scope.run_id
+            ingestion_run_id = scope.ingestion_run_id
+            key_alias = tool_context.metadata.key_alias
+        elif isinstance(tool_context, ToolContext):
             scope = tool_context.scope
             business = tool_context.business
             tenant_id = scope.tenant_id
@@ -441,6 +444,9 @@ class ContextTask(Task):
 
         if document_version_id:
             context["document_version_id"] = self._normalize(document_version_id)
+
+        if key_alias:
+            context["key_alias"] = self._normalize(key_alias)
 
         return context
 

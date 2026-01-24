@@ -8,6 +8,7 @@ re-exporting the canonical context model.
 from __future__ import annotations
 
 from .base import ToolContext, tool_context_from_meta, tool_context_from_scope
+from .task_context import TaskContext, task_context_from_meta
 from .validation import require_business_field, require_runtime_id
 
 
@@ -57,6 +58,7 @@ class InconsistentMetadataError(ToolError):
 
 __all__ = [
     "ToolContext",
+    "TaskContext",
     "ToolError",
     "InputError",
     "ContextError",
@@ -70,4 +72,5 @@ __all__ = [
     "require_runtime_id",
     "tool_context_from_meta",
     "tool_context_from_scope",
+    "task_context_from_meta",
 ]

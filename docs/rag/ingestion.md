@@ -197,6 +197,13 @@ python manage.py reembed_documents --tenant=<schema> --embedding-profile=<profil
 | `RAG_CONTEXT_HEADER_MODEL` | `fast` | MODEL_ROUTING-Label | LLM-Label für Header-Generierung im Modus `llm`. |
 | `RAG_CONTEXT_HEADER_MAX_CHARS` | 140 | >= 20 | Maximalzeichen für den Header. |
 | `RAG_CONTEXT_HEADER_MAX_WORDS` | 14 | >= 4 | Maximale Wortanzahl für den Header. |
+| `RAG_CONTEXTUAL_ENRICHMENT` | `false` | `true` / `false` | Aktiviert LLM-basiertes Contextual Enrichment pro Chunk (`contextual_prefix`). |
+| `RAG_CONTEXTUAL_ENRICHMENT_MODEL` | `fast` | MODEL_ROUTING-Label | LLM-Label für Contextual Enrichment. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_DOC_CHARS` | 12000 | >= 0 | Maximale Zeichen des Dokuments im Prompt. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNK_CHARS` | 2000 | >= 0 | Maximale Zeichen pro Chunk im Prompt. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNKS` | 120 | >= 0 | Maximal anzureichernde Chunks pro Dokument. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_CHARS` | 800 | >= 0 | Maximalzeichen für den Prefix. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_WORDS` | 120 | >= 0 | Maximale Wortanzahl für den Prefix. |
 | `EMBEDDINGS_BATCH_SIZE` | 64 Chunks | Worker erzwingt nur `>= 1` | Anzahl Embeddings pro LiteLLM-Call; beeinflusst Latenz und Rate-Limit |
 
 ## Fehlertoleranz und Deduplizierung

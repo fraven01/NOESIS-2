@@ -144,6 +144,13 @@ def _summarize_meta(meta: Mapping[str, Any]) -> str:
     return " ".join(fields)
 
 
+def _is_neighbor_chunk(chunk: Mapping[str, Any]) -> bool:
+    meta = chunk.get("meta")
+    if isinstance(meta, Mapping):
+        return bool(meta.get("neighbor"))
+    return False
+
+
 def _render_candidates(chunks: Sequence[dict[str, Any]]) -> str:
     lines: list[str] = []
     for index, chunk in enumerate(chunks, start=1):
@@ -207,6 +214,103 @@ def _apply_ranked_order(
     return ordered, scores
 
 
+def _chunk_score_key(chunk: Mapping[str, Any]) -> str | None:
+    raw = chunk.get("id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    meta = chunk.get("meta")
+    if isinstance(meta, Mapping):
+        meta_id = meta.get("chunk_id")
+        if isinstance(meta_id, str) and meta_id.strip():
+            return meta_id.strip()
+    return None
+
+
+def _primary_document_id(chunk: Mapping[str, Any]) -> str | None:
+    meta = chunk.get("meta")
+    if isinstance(meta, Mapping):
+        doc_id = meta.get("document_id")
+        if isinstance(doc_id, str) and doc_id.strip():
+            return doc_id.strip()
+    return None
+
+
+def _apply_primary_document_scores(
+    chunks: Sequence[dict[str, Any]],
+    *,
+    primary_document_id: str,
+    retrieval_scores: Mapping[str, float] | None,
+) -> list[dict[str, Any]]:
+    if not retrieval_scores:
+        return list(chunks)
+    updated: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if _primary_document_id(chunk) != primary_document_id:
+            updated.append(chunk)
+            continue
+        chunk_id = _chunk_score_key(chunk)
+        if not chunk_id:
+            updated.append(chunk)
+            continue
+        retrieval_score = retrieval_scores.get(chunk_id)
+        if retrieval_score is None:
+            updated.append(chunk)
+            continue
+        current = _coerce_score(chunk.get("score"))
+        if retrieval_score > current:
+            replaced = dict(chunk)
+            replaced["score"] = retrieval_score
+            updated.append(replaced)
+        else:
+            updated.append(chunk)
+    return updated
+
+
+def _build_primary_chunks(
+    chunks: Sequence[dict[str, Any]],
+    *,
+    primary_document_id: str,
+    retrieval_scores: Mapping[str, float] | None,
+) -> list[dict[str, Any]]:
+    primary = [
+        dict(chunk)
+        for chunk in chunks
+        if _primary_document_id(chunk) == primary_document_id
+    ]
+    if retrieval_scores:
+        primary = _apply_primary_document_scores(
+            primary,
+            primary_document_id=primary_document_id,
+            retrieval_scores=retrieval_scores,
+        )
+    primary.sort(
+        key=lambda item: (
+            int((item.get("meta") or {}).get("chunk_index") or 0),
+            str(item.get("id") or ""),
+        )
+    )
+    return primary
+
+
+def _merge_primary_chunks(
+    base: Sequence[dict[str, Any]],
+    *,
+    primary_chunks: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not primary_chunks:
+        return list(base)
+    primary_ids = {
+        _chunk_score_key(chunk) for chunk in primary_chunks if _chunk_score_key(chunk)
+    }
+    merged = list(primary_chunks)
+    for chunk in base:
+        chunk_id = _chunk_score_key(chunk)
+        if chunk_id and chunk_id in primary_ids:
+            continue
+        merged.append(chunk)
+    return merged
+
+
 def rerank_chunks(
     chunks: Sequence[Mapping[str, Any]],
     query: str,
@@ -216,6 +320,8 @@ def rerank_chunks(
     candidate_pool: int | None = None,
     mode: str | None = None,
     intent: str | None = None,
+    primary_document_id: str | None = None,
+    retrieval_scores: Mapping[str, float] | None = None,
 ) -> RerankResult:
     materialized = [dict(chunk) for chunk in chunks if isinstance(chunk, Mapping)]
     if not materialized:
@@ -268,11 +374,62 @@ def rerank_chunks(
         scored.sort(key=lambda entry: (-entry[0], str(entry[1].get("id") or "")))
         ordered = [entry[1] for entry in scored]
     limit = top_k if top_k is not None else len(ordered)
+    primary_chunks: list[dict[str, Any]] = []
+    if primary_document_id:
+        primary_chunks = _build_primary_chunks(
+            materialized,
+            primary_document_id=primary_document_id,
+            retrieval_scores=retrieval_scores,
+        )
+        if primary_chunks:
+            limit = max(limit, len(primary_chunks))
     pool_limit = _resolve_pool_size(candidate_pool or os.getenv("RAG_RERANK_POOL"))
     pool = ordered[:pool_limit]
+    if pool_limit < len(ordered):
+        pool_ids = {
+            _chunk_identifier(chunk, idx)
+            for idx, chunk in enumerate(ordered[:pool_limit])
+        }
+        for idx, chunk in enumerate(ordered[pool_limit:], start=pool_limit):
+            if not _is_neighbor_chunk(chunk):
+                continue
+            chunk_id = _chunk_identifier(chunk, idx)
+            if chunk_id in pool_ids:
+                continue
+            pool.append(chunk)
+            pool_ids.add(chunk_id)
+    try:
+        preview = []
+        for idx, chunk in enumerate(pool[:15]):
+            meta = chunk.get("meta")
+            meta_payload: Mapping[str, Any] = meta if isinstance(meta, Mapping) else {}
+            preview.append(
+                {
+                    "id": chunk.get("id"),
+                    "score": chunk.get("score"),
+                    "document_id": meta_payload.get("document_id"),
+                    "neighbor": meta_payload.get("neighbor"),
+                    "chunk_index": meta_payload.get("chunk_index"),
+                }
+            )
+        logger.debug(
+            "rag.rerank.pool_preview",
+            tenant_id=context.scope.tenant_id,
+            case_id=context.business.case_id,
+            count=len(pool),
+            items=preview,
+        )
+    except Exception:  # pragma: no cover - defensive logging
+        pass
 
     if resolved_mode != "llm":
-        return RerankResult(chunks=ordered[:limit], mode="heuristic")
+        final_chunks = ordered[:limit]
+        if primary_document_id and primary_chunks:
+            final_chunks = _merge_primary_chunks(
+                final_chunks,
+                primary_chunks=primary_chunks,
+            )
+        return RerankResult(chunks=final_chunks, mode="heuristic")
 
     prompt = load("retriever/rerank")
     prompt_text = f"{prompt['text']}\n\nQuestion: {query}\n\nCandidates:\n{_render_candidates(pool)}"
@@ -305,8 +462,14 @@ def rerank_chunks(
                 if _chunk_identifier(chunk, idx) not in pool_ids
             ]
             reranked.extend(remainder)
+        final_chunks = reranked[:limit]
+        if primary_document_id and primary_chunks:
+            final_chunks = _merge_primary_chunks(
+                final_chunks,
+                primary_chunks=primary_chunks,
+            )
         return RerankResult(
-            chunks=reranked[:limit],
+            chunks=final_chunks,
             mode="llm",
             prompt_version=prompt.get("version"),
             scores=scores,
@@ -319,8 +482,14 @@ def rerank_chunks(
                 "error_message": str(exc),
             },
         )
+        final_chunks = ordered[:limit]
+        if primary_document_id and primary_chunks:
+            final_chunks = _merge_primary_chunks(
+                final_chunks,
+                primary_chunks=primary_chunks,
+            )
         return RerankResult(
-            chunks=ordered[:limit],
+            chunks=final_chunks,
             mode="fallback",
             prompt_version=prompt.get("version"),
             error=str(exc),
@@ -333,8 +502,14 @@ def rerank_chunks(
                 "error_message": str(exc),
             },
         )
+        final_chunks = ordered[:limit]
+        if primary_document_id and primary_chunks:
+            final_chunks = _merge_primary_chunks(
+                final_chunks,
+                primary_chunks=primary_chunks,
+            )
         return RerankResult(
-            chunks=ordered[:limit],
+            chunks=final_chunks,
             mode="fallback",
             prompt_version=prompt.get("version"),
             error=str(exc),

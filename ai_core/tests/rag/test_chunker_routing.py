@@ -3,6 +3,7 @@
 import pytest
 from ai_core.rag.routing_rules import (
     resolve_chunker_mode,
+    resolve_contextual_enrichment,
     get_routing_table,
     reset_routing_rules_cache,
 )
@@ -39,6 +40,10 @@ def test_resolve_chunker_mode_with_workflow_id():
     """Test chunker mode resolution with workflow_id."""
     mode = resolve_chunker_mode(tenant="demo", workflow_id="onboarding")
     assert mode == "late"  # Configured in rag_routing_rules.yaml
+
+
+def test_resolve_contextual_enrichment_defaults_to_none():
+    assert resolve_contextual_enrichment(tenant="unknown") is None
 
 
 def test_get_chunker_config_from_routing_returns_late_mode():

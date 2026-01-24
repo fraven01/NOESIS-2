@@ -568,6 +568,7 @@ class Command(BaseCommand):
                 "chunk_count": len(chunks),
             },
             "statistics": self._compute_statistics(chunks),
+            "contextual_enrichment": self._summarize_contextual_enrichment(chunks),
             "coverage": coverage,
             "boundaries": self._analyze_boundaries(chunks, boundary_context),
             "problems": self._detect_problems(chunks),
@@ -585,6 +586,35 @@ class Command(BaseCommand):
         report["recommendations"] = self._generate_recommendations(report)
 
         return report
+
+    def _summarize_contextual_enrichment(
+        self, chunks: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        prefixes: list[str] = []
+        for chunk in chunks:
+            meta = chunk.get("metadata")
+            if not isinstance(meta, dict):
+                continue
+            value = meta.get("contextual_prefix")
+            if isinstance(value, str) and value.strip():
+                prefixes.append(value.strip())
+
+        total = len(chunks)
+        with_prefix = len(prefixes)
+        lengths = [len(prefix) for prefix in prefixes]
+        sample_limit = 3
+        samples = [prefix[:160] for prefix in prefixes[:sample_limit]]
+
+        return {
+            "enabled": with_prefix > 0,
+            "chunk_count": total,
+            "with_prefix": with_prefix,
+            "missing_prefix": max(0, total - with_prefix),
+            "coverage_ratio": (with_prefix / total) if total else 0.0,
+            "mean_prefix_length": statistics.mean(lengths) if lengths else 0,
+            "max_prefix_length": max(lengths) if lengths else 0,
+            "samples": samples,
+        }
 
     def _compute_statistics(self, chunks: list[dict[str, Any]]) -> dict[str, Any]:
         """Compute chunk statistics."""
@@ -1049,10 +1079,10 @@ class Command(BaseCommand):
         lines.append("")
 
         # Coverage
-        lines.append("-" * 70)
-        lines.append("COVERAGE")
-        lines.append("-" * 70)
         if coverage.get("available"):
+            lines.append("-" * 70)
+            lines.append("COVERAGE")
+            lines.append("-" * 70)
             lines.append(f"  Source characters: {coverage.get('source_chars', 0):,}")
             lines.append(f"  Chunk characters:  {coverage.get('chunk_chars', 0):,}")
             lines.append(f"  Coverage ratio:    {coverage.get('ratio', 0.0):.3f}")
@@ -1067,8 +1097,28 @@ class Command(BaseCommand):
                         size = hint.get("chunk_chars")
                         if section:
                             lines.append(f"    - {section}: {size}")
-        else:
-            lines.append("  Coverage unavailable (no normalized document text found).")
+            lines.append("")
+
+        # Contextual Enrichment
+        lines.append("-" * 70)
+        lines.append("CONTEXTUAL ENRICHMENT")
+        lines.append("-" * 70)
+        enrichment = report.get("contextual_enrichment") or {}
+        lines.append(f"  Enabled:            {enrichment.get('enabled', False)}")
+        lines.append(f"  Chunks with prefix: {enrichment.get('with_prefix', 0)}")
+        lines.append(f"  Missing prefix:     {enrichment.get('missing_prefix', 0)}")
+        lines.append(
+            f"  Coverage ratio:     {enrichment.get('coverage_ratio', 0.0):.3f}"
+        )
+        lines.append(
+            f"  Mean prefix length: {enrichment.get('mean_prefix_length', 0):.0f}"
+        )
+        lines.append(f"  Max prefix length:  {enrichment.get('max_prefix_length', 0)}")
+        samples = enrichment.get("samples") or []
+        if samples:
+            lines.append("  Samples:")
+            for sample in samples:
+                lines.append(f"    - {sample}")
         lines.append("")
 
         # Boundary Analysis
@@ -1169,6 +1219,13 @@ class Command(BaseCommand):
             lines.append(
                 f"Chunk {chunk['ord']} (ID: {chunk['chunk_id']}) - Length: {chunk['text_length']}"
             )
+            meta = chunk.get("metadata")
+            if isinstance(meta, dict):
+                contextual_prefix = meta.get("contextual_prefix")
+                if isinstance(contextual_prefix, str) and contextual_prefix.strip():
+                    lines.append(
+                        f"Contextual Prefix: {contextual_prefix.strip()[:160]}"
+                    )
             lines.append("-" * 20)
             lines.append(chunk["text"])
             lines.append("")

@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.nodes import retrieve
 from ai_core.rag import rerank as rag_rerank
+from ai_core.rag.filter_spec import FilterSpec, build_filter_spec
 from ai_core.rag.query_planner import plan_query
 from ai_core.tool_contracts import ToolContext
 
@@ -107,12 +108,17 @@ def _coerce_queries(queries: Sequence[str]) -> list[str]:
 
 
 def _merge_filters(
-    base_filters: Mapping[str, Any] | None, document_id: str | None
-) -> dict[str, Any]:
-    merged = dict(base_filters or {})
-    if document_id:
-        merged["id"] = document_id
-    return merged
+    base_filters: FilterSpec,
+    *,
+    document_id: str | None,
+) -> FilterSpec:
+    if not document_id:
+        return base_filters
+    metadata = dict(base_filters.metadata)
+    metadata["id"] = document_id
+    return base_filters.model_copy(
+        update={"document_id": document_id, "metadata": metadata}
+    )
 
 
 def _match_key(match: Mapping[str, Any], index: int) -> tuple[str, ...]:
@@ -275,11 +281,20 @@ class RagRetrievalGraph:
         context = graph_input.tool_context
         queries = _coerce_queries(graph_input.queries)
         document_id = graph_input.document_id
+        base_filters = graph_input.retrieve.filters
+        if base_filters is None:
+            base_filters = build_filter_spec(
+                tenant_id=context.scope.tenant_id,
+                case_id=context.business.case_id,
+                collection_id=context.business.collection_id,
+                document_id=context.business.document_id,
+                document_version_id=context.business.document_version_id,
+            )
         plan = plan_query(
             queries[0],
             context=context,
             doc_class=graph_input.retrieve.doc_class,
-            filters=graph_input.retrieve.filters,
+            filters=base_filters,
         )
         if len(queries) > 1:
             plan = plan.model_copy(
@@ -293,12 +308,13 @@ class RagRetrievalGraph:
         matches: list[Mapping[str, Any]] = []
 
         base_payload = graph_input.retrieve.model_dump(mode="json", exclude_none=True)
+        base_payload["filters"] = base_filters.as_mapping()
         for query in queries:
             params_payload = dict(base_payload)
             params_payload["query"] = query
             params_payload["filters"] = _merge_filters(
-                params_payload.get("filters"), document_id
-            )
+                base_filters, document_id=document_id
+            ).as_mapping()
             params = retrieve.RetrieveInput.model_validate(params_payload)
             try:
                 retrieve_output = self.retrieve_node(context, params)
@@ -356,9 +372,9 @@ class RagRetrievalGraph:
                 for ref_id in reference_ids:
                     params_payload = dict(base_payload)
                     params_payload["query"] = ref_query
-                    ref_filters = dict(params_payload.get("filters") or {})
-                    ref_filters["id"] = ref_id
-                    params_payload["filters"] = ref_filters
+                    params_payload["filters"] = _merge_filters(
+                        base_filters, document_id=ref_id
+                    ).as_mapping()
                     params_payload["top_k"] = ref_top_k
                     params = retrieve.RetrieveInput.model_validate(params_payload)
                     try:

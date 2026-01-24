@@ -11,6 +11,7 @@ from common.logging import get_logger
 
 from ai_core.nodes._hybrid_params import parse_hybrid_parameters
 from ai_core.rag.profile_resolver import resolve_embedding_profile
+from ai_core.rag.filter_spec import FilterSpec, build_filter_spec
 from ai_core.rag.vector_space_resolver import resolve_vector_space_full
 from ai_core.rag.vector_client import get_client_for_schema, get_default_schema
 from ai_core.rag.schemas import Chunk
@@ -24,7 +25,7 @@ from ai_core.tool_contracts import (
     NotFoundError,
     ToolContext,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RetrieveInput(BaseModel):
@@ -42,7 +43,7 @@ class RetrieveInput(BaseModel):
     """
 
     query: str = ""
-    filters: Mapping[str, Any] | None = None
+    filters: FilterSpec | None = None
     process: str | None = None
     doc_class: str | None = None
     visibility: str | None = None
@@ -69,6 +70,16 @@ class RetrieveInput(BaseModel):
             "visibility": state.get("visibility"),
             "hybrid": state.get("hybrid"),
         }
+        raw_filters = state.get("filters")
+        tenant_id = state.get("tenant_id")
+        if raw_filters is not None:
+            if isinstance(raw_filters, FilterSpec):
+                data["filters"] = raw_filters
+            else:
+                data["filters"] = build_filter_spec(
+                    tenant_id=str(tenant_id) if tenant_id else None,
+                    raw_filters=raw_filters if isinstance(raw_filters, Mapping) else {},
+                )
         state_top_k: Any | None = None
         if top_k is not None:
             state_top_k = top_k
@@ -100,19 +111,31 @@ class RetrieveRouting(BaseModel):
 class RetrieveMeta(BaseModel):
     """Metadata emitted by the retrieval tool."""
 
-    routing: RetrieveRouting
-    took_ms: int
-    alpha: float
-    min_sim: float
-    top_k_effective: int
-    matches_returned: int
-    max_candidates_effective: int
-    vector_candidates: int
-    lexical_candidates: int
-    deleted_matches_blocked: int
-    visibility_effective: str
-    diversify_strength: float
-    lexical_index_used: str | None = None
+    routing: RetrieveRouting = Field(
+        description="Resolved routing metadata for the retrieval run."
+    )
+    took_ms: int = Field(description="End-to-end retrieval latency in milliseconds.")
+    alpha: float = Field(description="Hybrid weight between vector and lexical scores.")
+    min_sim: float = Field(description="Minimum similarity threshold for candidates.")
+    top_k_effective: int = Field(description="Final top-k value used after overrides.")
+    matches_returned: int = Field(description="Number of matches returned.")
+    max_candidates_effective: int = Field(
+        description="Max candidate pool used in hybrid retrieval."
+    )
+    vector_candidates: int = Field(description="Vector candidates evaluated.")
+    lexical_candidates: int = Field(description="Lexical candidates evaluated.")
+    deleted_matches_blocked: int = Field(
+        description="Matches filtered due to deleted-document checks."
+    )
+    visibility_effective: str = Field(
+        description="Resolved visibility filter applied in retrieval."
+    )
+    diversify_strength: float = Field(
+        description="Diversification strength applied to the ranking."
+    )
+    lexical_index_used: str | None = Field(
+        default=None, description="Lexical index identifier used for retrieval."
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -654,6 +677,11 @@ def _similarity(tokens_a: set[str], tokens_b: set[str]) -> float:
 def _apply_diversification(
     matches: list[Dict[str, Any]], *, top_k: int, strength: float
 ) -> list[Dict[str, Any]]:
+    """Apply MMR-style diversification to reduce near-duplicate chunks.
+
+    NOTE: The retrieval flow currently bypasses this step for pre-MVP accuracy
+    testing. Keep the implementation so it can be re-enabled without rework.
+    """
     if len(matches) <= 1:
         return matches
 
@@ -821,7 +849,20 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         else None
     )
 
-    filters = _ensure_mapping(params.filters, field="filters")
+    filter_spec = params.filters
+    if filter_spec is None:
+        filter_spec = build_filter_spec(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            collection_id=context.business.collection_id,
+            document_id=context.business.document_id,
+            document_version_id=context.business.document_version_id,
+        )
+    elif filter_spec.tenant_id is None:
+        filter_spec = filter_spec.model_copy(update={"tenant_id": tenant_id})
+    elif filter_spec.tenant_id != tenant_id:
+        raise InputError("filters.tenant_id must match context", field="filters")
+    filters = filter_spec.as_mapping()
     process = params.process
     doc_class = params.doc_class
     collection_id = context.business.collection_id
@@ -979,11 +1020,8 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
 
     matches = [_chunk_to_match(chunk) for chunk in chunks]
     deduplicated = _deduplicate_matches(matches)
-    diversified = _apply_diversification(
-        deduplicated,
-        top_k=hybrid_config.top_k,
-        strength=hybrid_config.diversify_strength,
-    )
+    # Pre-MVP: prioritize accuracy over diversity by bypassing MMR ordering.
+    diversified = deduplicated
     final_matches = _filter_matches_by_permissions(
         diversified,
         context=context,
@@ -1048,6 +1086,12 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     )
     if neighbor_chunks:
         neighbor_matches = [_chunk_to_match(chunk) for chunk in neighbor_chunks]
+        for match in neighbor_matches:
+            meta_section = match.get("meta")
+            if not isinstance(meta_section, dict):
+                meta_section = {}
+                match["meta"] = meta_section
+            meta_section["neighbor"] = True
         neighbor_matches = _filter_matches_by_permissions(
             neighbor_matches,
             context=context,

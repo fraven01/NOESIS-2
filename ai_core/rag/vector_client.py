@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -71,6 +72,17 @@ logger.info(
     "module_loaded",
     extra={"module": __name__, "path": os.path.abspath(__file__)},
 )
+
+_LEXICAL_QUERY_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _build_lexical_websearch_query(value: str) -> str:
+    tokens = [match.group(0) for match in _LEXICAL_QUERY_TOKEN_RE.finditer(value)]
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return tokens[0]
+    return " OR ".join(tokens)
 
 
 _HYDE_PROMPT_TEMPLATE = (
@@ -1697,6 +1709,7 @@ class PgVectorClient:
             lexical_query_variant = "none"
             lexical_fallback_limit_value = None
             lexical_index_used_value = None
+            lexical_query = query_db_norm
             lexical_mode_raw = str(_get_setting("RAG_LEXICAL_MODE", "bm25")).strip()
             lexical_mode = (
                 "bm25"
@@ -1704,19 +1717,22 @@ class PgVectorClient:
                 else "trgm"
             )
             if lexical_mode == "bm25":
+                lexical_query = _build_lexical_websearch_query(query_db_norm)
                 use_contextual_lexical = _get_bool_setting(
                     "RAG_LEXICAL_CONTEXTUAL_ENABLED", False
                 )
                 if use_contextual_lexical:
                     lexical_index_used_value = "contextual"
-                    lexical_score_sql = "ts_rank_cd(c.text_context_tsv, plainto_tsquery('simple', %s)) AS lscore"
+                    lexical_score_sql = "ts_rank_cd(c.text_context_tsv, websearch_to_tsquery('simple', %s)) AS lscore"
                     lexical_match_clause = (
-                        "c.text_context_tsv @@ plainto_tsquery('simple', %s)"
+                        "c.text_context_tsv @@ websearch_to_tsquery('simple', %s)"
                     )
                 else:
                     lexical_index_used_value = "raw"
-                    lexical_score_sql = "ts_rank_cd(c.text_tsv, plainto_tsquery('simple', %s)) AS lscore"
-                    lexical_match_clause = "c.text_tsv @@ plainto_tsquery('simple', %s)"
+                    lexical_score_sql = "ts_rank_cd(c.text_tsv, websearch_to_tsquery('simple', %s)) AS lscore"
+                    lexical_match_clause = (
+                        "c.text_tsv @@ websearch_to_tsquery('simple', %s)"
+                    )
             else:
                 lexical_index_used_value = "raw"
                 lexical_score_sql = "similarity(c.text_norm, %s) AS lscore"
@@ -1748,7 +1764,7 @@ class PgVectorClient:
                     client=self,
                     conn=conn,
                     lexical_mode=lexical_mode,
-                    query_db_norm=query_db_norm,
+                    query_db_norm=lexical_query,
                     where_sql=where_sql,
                     where_params=where_params,
                     lex_limit=lex_limit_value,
@@ -1811,7 +1827,7 @@ class PgVectorClient:
                                 (*where_params, query_vec, vec_limit_value)
                             )
 
-                        if query_db_norm.strip():
+                        if lexical_query.strip():
                             if lexical_query_variant == "primary":
                                 lexical_count_sql = build_lexical_primary_sql(
                                     where_sql_without_deleted,
@@ -1824,9 +1840,9 @@ class PgVectorClient:
                                 )
                                 count_params.extend(
                                     (
-                                        query_db_norm,
+                                        lexical_query,
                                         *where_params,
-                                        query_db_norm,
+                                        lexical_query,
                                         lex_limit_value,
                                     )
                                 )
@@ -1843,9 +1859,9 @@ class PgVectorClient:
                                 )
                                 count_params.extend(
                                     (
-                                        query_db_norm,
+                                        lexical_query,
                                         *where_params,
-                                        query_db_norm,
+                                        lexical_query,
                                         lexical_fallback_limit_value,
                                         lex_limit_value,
                                     )

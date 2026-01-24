@@ -319,6 +319,13 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
 | `RAG_CONTEXT_HEADER_MODEL` | `fast` | MODEL_ROUTING-Label für LLM-Header (nur bei `llm`). |
 | `RAG_CONTEXT_HEADER_MAX_CHARS` | `140` | Maximale Zeichenlänge des Kontext-Headers. |
 | `RAG_CONTEXT_HEADER_MAX_WORDS` | `14` | Maximale Wortanzahl des Kontext-Headers. |
+| `RAG_CONTEXTUAL_ENRICHMENT` | `false` | Contextual Enrichment pro Chunk aktivieren. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MODEL` | `fast` | MODEL_ROUTING-Label für Enrichment-LLM. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_DOC_CHARS` | `12000` | Maximale Zeichen des Dokuments im Prompt. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNK_CHARS` | `2000` | Maximale Zeichen pro Chunk im Prompt. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNKS` | `120` | Maximal anzureichernde Chunks pro Dokument. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_CHARS` | `800` | Maximalzeichen für den Prefix. |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_WORDS` | `120` | Maximale Wortanzahl für den Prefix. |
 | `RAG_CONTEXT_TOKEN_BUDGET` | `1800` | Tokenbudget für die RAG-Kontextbefüllung. |
 | `RAG_CONTEXT_OVERSAMPLE_FACTOR` | `4` | Oversampling-Faktor für Retrieval vor dem Budget-Cut. |
 

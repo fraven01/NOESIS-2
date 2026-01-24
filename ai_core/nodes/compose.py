@@ -38,14 +38,26 @@ class ComposeInput(BaseModel):
 class ComposeOutput(BaseModel):
     """Structured output payload returned by the compose node."""
 
-    answer: str | None
-    prompt_version: str | None
-    snippets: list[Mapping[str, Any]] | None = None
-    retrieval: Mapping[str, Any] | None = None
-    reasoning: RagReasoning | None = None
-    used_sources: list[SourceRef] | None = None
-    suggested_followups: list[str] | None = None
-    debug_meta: dict[str, Any] | None = None
+    answer: str | None = Field(description="Composed answer text.")
+    prompt_version: str | None = Field(description="Prompt version used for compose.")
+    snippets: list[Mapping[str, Any]] | None = Field(
+        default=None, description="Snippets provided to the LLM."
+    )
+    retrieval: Mapping[str, Any] | None = Field(
+        default=None, description="Retrieval metadata for the compose output."
+    )
+    reasoning: RagReasoning | None = Field(
+        default=None, description="Structured reasoning metadata from the LLM."
+    )
+    used_sources: list[SourceRef] | None = Field(
+        default=None, description="Sources cited or used by the LLM."
+    )
+    suggested_followups: list[str] | None = Field(
+        default=None, description="Suggested follow-up questions."
+    )
+    debug_meta: dict[str, Any] | None = Field(
+        default=None, description="Debug metadata from LLM execution."
+    )
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

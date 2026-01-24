@@ -34,6 +34,21 @@ Kurze Kontext-Header werden als Präfix in Chunks geschrieben, um Retrieval zu s
 | `RAG_CONTEXT_HEADER_MAX_CHARS` | Maximale Zeichenlänge des Headers. | `140` |
 | `RAG_CONTEXT_HEADER_MAX_WORDS` | Maximale Wortanzahl des Headers. | `14` |
 
+### Contextual Enrichment (Chunk Prefix)
+
+Optionaler LLM-Schritt, der pro Chunk einen semantischen Kontext erzeugt und als `contextual_prefix`
+in den Chunk-Metadaten speichert. Der Prefix wird bei Embeddings vor den Chunk-Text gestellt.
+
+| Umgebungsvariable | Beschreibung | Standardwert |
+| ----------------- | ------------ | ------------ |
+| `RAG_CONTEXTUAL_ENRICHMENT` | Aktiviert Contextual Enrichment nach dem Chunking. | `false` |
+| `RAG_CONTEXTUAL_ENRICHMENT_MODEL` | MODEL_ROUTING-Label fuer den Enrichment-LLM-Call. | `fast` |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_DOC_CHARS` | Maximale Zeichen fuer das Dokument im Prompt. | `12000` |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNK_CHARS` | Maximale Zeichen fuer den Chunk im Prompt. | `2000` |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNKS` | Maximal anzureichernde Chunks pro Dokument. | `120` |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_CHARS` | Maximalzeichen fuer den generierten Prefix. | `800` |
+| `RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_WORDS` | Maximale Wortanzahl fuer den Prefix. | `120` |
+
 ### Kontext-Budget für Antwortgenerierung
 
 Die Anzahl der ausgewählten Snippets wird token-basiert an dieses Budget angepasst.
