@@ -1378,6 +1378,8 @@ class PgVectorClient:
         visibility_mode = Visibility(visibility_value)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         tenant = str(tenant_uuid)
+        context = get_log_context()
+        trace_id = context.get("trace_id")
         scope_plan = _prepare_scope_filters(
             tenant=tenant,
             case_id=case_id,
@@ -1471,11 +1473,10 @@ class PgVectorClient:
         raw_vec: List[float] | None = None
         hyde_enabled = _get_bool_setting("RAG_HYDE_ENABLED", False)
         if hyde_enabled and query_norm:
-            context = get_log_context()
             hyde_metadata = {
                 "tenant_id": tenant,
                 "case_id": case_value,
-                "trace_id": context.get("trace_id"),
+                "trace_id": trace_id,
                 "prompt_version": "hyde-v1",
             }
             key_alias = context.get("key_alias")
@@ -1752,6 +1753,7 @@ class PgVectorClient:
                     vec_limit=vec_limit_value,
                     tenant=tenant,
                     case_id=case_value,
+                    trace_id=trace_id,
                     statement_timeout_ms=self._statement_timeout_ms,
                     summarise_rows=_summarise_rows,
                     logger=logger,
@@ -1772,6 +1774,7 @@ class PgVectorClient:
                     requested_trgm_limit=requested_trgm_limit,
                     tenant=tenant,
                     case_id=case_value,
+                    trace_id=trace_id,
                     statement_timeout_ms=self._statement_timeout_ms,
                     schema=self._schema,
                     lexical_score_sql=lexical_score_sql,

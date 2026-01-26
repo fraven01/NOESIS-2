@@ -388,6 +388,26 @@ class CollectionSearchState(TypedDict):
     plan: ImplementationPlan | None
 
 
+class CollectionSearchGraphStateInput(TypedDict, total=False):
+    """Boundary input keys for the collection search graph."""
+
+    input: GraphInput
+    tool_context: ToolContext
+    runtime: Mapping[str, Any]
+
+
+class CollectionSearchGraphStateOutput(TypedDict, total=False):
+    """Boundary output keys for the collection search graph."""
+
+    strategy: StrategyState | None
+    search: MutableMapping[str, Any]
+    hybrid: HybridState | None
+    hitl: MutableMapping[str, Any]
+    ingestion: MutableMapping[str, Any]
+    telemetry: MutableMapping[str, Any]
+    plan: ImplementationPlan | None
+
+
 _FRESHNESS_MAP: dict[str, FreshnessMode] = {
     "standard": FreshnessMode.STANDARD,
     "software_docs_strict": FreshnessMode.SOFTWARE_DOCS_STRICT,
@@ -1528,7 +1548,11 @@ def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
 
 def build_compiled_graph():
     """Build and compile the StateGraph."""
-    workflow = StateGraph(CollectionSearchState)
+    workflow = StateGraph(
+        CollectionSearchState,
+        input_schema=CollectionSearchGraphStateInput,
+        output_schema=CollectionSearchGraphStateOutput,
+    )
 
     workflow.add_node("strategy", strategy_node)
     workflow.add_node("search", search_node)

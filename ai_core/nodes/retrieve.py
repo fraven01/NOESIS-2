@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Iterable, Mapping
 from common.logging import get_logger
 
 from ai_core.nodes._hybrid_params import parse_hybrid_parameters
+from ai_core.infra.observability import observe_span
 from ai_core.rag.profile_resolver import resolve_embedding_profile
 from ai_core.rag.filter_spec import FilterSpec, build_filter_spec
 from ai_core.rag.vector_space_resolver import resolve_vector_space_full
@@ -829,6 +830,7 @@ def _resolve_routing_metadata(
     }
 
 
+@observe_span(name="rag.retrieve")
 def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     """Execute the retrieval tool based on the provided context and parameters."""
 

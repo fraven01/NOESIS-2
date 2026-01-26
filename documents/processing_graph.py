@@ -6,7 +6,16 @@ import inspect
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, MutableMapping, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Mapping,
+    MutableMapping,
+    Optional,
+    TypedDict,
+)
 import base64
 import hashlib
 import uuid
@@ -208,6 +217,33 @@ class DocumentProcessingState:
         return result
 
 
+class DocumentProcessingGraphInput(TypedDict, total=False):
+    """Boundary input keys for the document processing graph."""
+
+    document: Any
+    config: Any
+    context: Any
+    storage: Optional[Any]
+
+
+class DocumentProcessingGraphOutput(TypedDict, total=False):
+    """Boundary output keys for the document processing graph."""
+
+    document: Any
+    config: Any
+    context: Any
+    storage: Optional[Any]
+    parsed_result: Optional[Any]
+    parse_artifact: Optional[Any]
+    chunk_artifact: Optional[Any]
+    delta_decision: Optional[Any]
+    guardrail_decision: Optional[Any]
+    run_until: DocumentProcessingPhase
+    phase: str
+    error: Optional[BaseException]
+    statistics: Dict[str, Any]
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -226,7 +262,11 @@ def build_document_processing_graph(
 ):
     """Return a compiled LangGraph coordinating document processing phases."""
 
-    graph = StateGraph(DocumentProcessingState)
+    graph = StateGraph(
+        DocumentProcessingState,
+        input_schema=DocumentProcessingState,
+        output_schema=DocumentProcessingGraphOutput,
+    )
 
     def _build_normalized_payload(
         document: Any, context: Any, storage: Optional[Any] = None

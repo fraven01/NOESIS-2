@@ -1,0 +1,469 @@
+{
+  "rag_doc_index": {
+    "meta": {
+      "source_of_truth": "code",
+      "scope": {
+        "code_root": "ai_core",
+        "rag_root": "ai_core/rag",
+        "graph_root": "ai_core/graphs/technical"
+      },
+      "contract_notes": [
+        "Graph boundary I/O is versioned via GraphIOSpec.",
+        "Business IDs live in ToolContext.business, not in input payloads."
+      ]
+    },
+    "entrypoints": {
+      "graphs": [
+        {
+          "name": "retrieval_augmented_generation",
+          "module": "ai_core/graphs/technical/retrieval_augmented_generation.py",
+          "build": "build_graph",
+          "run": "run",
+          "schema_id": "noesis.graphs.retrieval_augmented_generation",
+          "io_version": "1.1.0"
+        },
+        {
+          "name": "rag_retrieval",
+          "module": "ai_core/graphs/technical/rag_retrieval.py",
+          "build": "build_graph",
+          "run": "run",
+          "schema_id": "noesis.graphs.rag_retrieval",
+          "io_version": "1.0.0"
+        },
+        {
+          "name": "universal_ingestion",
+          "module": "ai_core/graphs/technical/universal_ingestion_graph.py",
+          "build": "build_universal_ingestion_graph",
+          "schema_id": "noesis.graphs.universal_ingestion",
+          "io_version": "1.0.0"
+        }
+      ],
+      "nodes": [
+        {
+          "name": "retrieve.run",
+          "module": "ai_core/nodes/retrieve.py",
+          "used_by": [
+            "retrieval_augmented_generation",
+            "rag_retrieval"
+          ]
+        },
+        {
+          "name": "compose.run",
+          "module": "ai_core/nodes/compose.py",
+          "used_by": [
+            "retrieval_augmented_generation"
+          ]
+        },
+        {
+          "name": "compose.run_extract_questions",
+          "module": "ai_core/nodes/compose.py",
+          "used_by": [
+            "retrieval_augmented_generation"
+          ]
+        }
+      ]
+    },
+    "graphs": {
+      "retrieval_augmented_generation": {
+        "input": {
+          "model": "RetrievalAugmentedGenerationInput",
+          "fields": [
+            "schema_id",
+            "schema_version",
+            "query",
+            "question",
+            "top_k",
+            "filters",
+            "doc_class",
+            "hybrid"
+          ]
+        },
+        "output": {
+          "model": "RetrievalAugmentedGenerationOutput",
+          "fields": [
+            "schema_id",
+            "schema_version",
+            "answer",
+            "prompt_version",
+            "retrieval",
+            "snippets",
+            "reasoning",
+            "used_sources",
+            "suggested_followups",
+            "debug_meta"
+          ]
+        },
+        "context_requirements": [
+          "tool_context_from_meta(meta) requires meta.tool_context or meta.scope_context",
+          "thread history uses ToolContext.business.thread_id when present"
+        ],
+        "state_keys": [
+          "chat_history",
+          "query_variants",
+          "retry_count",
+          "hybrid_override",
+          "cache_hit",
+          "cache_response",
+          "cache_embedding",
+          "retrieval_output",
+          "rerank_result",
+          "standalone_question",
+          "intent",
+          "result"
+        ],
+        "flow_graph": {
+          "nodes": [
+            "contextualize",
+            "cache_lookup",
+            "cache_finalize",
+            "transform",
+            "retrieve",
+            "rerank",
+            "confidence",
+            "compose"
+          ],
+          "edges": [
+            "contextualize -> cache_lookup",
+            "cache_finalize -> END",
+            "transform -> retrieve",
+            "retrieve -> rerank",
+            "rerank -> confidence",
+            "compose -> END"
+          ],
+          "conditional_edges": [
+            "cache_lookup: cache_hit ? cache_finalize : transform",
+            "confidence: retry ? transform : compose"
+          ]
+        },
+        "key_modules": [
+          "ai_core/rag/standalone_question.py",
+          "ai_core/rag/semantic_cache.py",
+          "ai_core/rag/strategy.py",
+          "ai_core/rag/evidence_graph.py",
+          "ai_core/rag/passage_assembly.py",
+          "ai_core/rag/answer_guardrails.py",
+          "ai_core/rag/rerank.py",
+          "ai_core/rag/vector_store.py"
+        ],
+        "side_effects": [
+          "ThreadAwareCheckpointer.load/save (chat history)",
+          "semantic_cache.lookup/store",
+          "emit_event (cache hit/miss, cache store)",
+          "update_observation (rag metrics)",
+          "enqueue_used_source_feedback (used_sources)"
+        ]
+      },
+      "rag_retrieval": {
+        "input": {
+          "model": "RagRetrievalGraphInput",
+          "fields": [
+            "schema_id",
+            "schema_version",
+            "tool_context",
+            "queries",
+            "retrieve",
+            "use_rerank",
+            "document_id"
+          ]
+        },
+        "output": {
+          "model": "RagRetrievalGraphOutput",
+          "fields": [
+            "schema_id",
+            "schema_version",
+            "matches",
+            "snippets",
+            "retrieval_meta",
+            "query_variants_used",
+            "rerank_meta"
+          ]
+        },
+        "flow_graph": {
+          "stages": [
+            "validate boundary input",
+            "resolve filters (build_filter_spec)",
+            "plan_query (rule or llm)",
+            "multi-query retrieve",
+            "dedupe matches",
+            "optional reference expansion",
+            "optional rerank"
+          ]
+        },
+        "key_modules": [
+          "ai_core/rag/filter_spec.py",
+          "ai_core/rag/query_planner.py",
+          "ai_core/rag/rerank.py"
+        ],
+        "side_effects": [
+          "update_observation (query plan, reference expansion)",
+          "logger.info (query plan, reference expansion)"
+        ]
+      },
+      "universal_ingestion": {
+        "input": {
+          "model": "UniversalIngestionGraphInput",
+          "fields": [
+            "schema_id",
+            "schema_version",
+            "input.normalized_document",
+            "context"
+          ]
+        },
+        "output": {
+          "model": "UniversalIngestionGraphOutput",
+          "fields": [
+            "schema_id",
+            "schema_version",
+            "decision",
+            "reason_code",
+            "reason",
+            "document_id",
+            "ingestion_run_id",
+            "telemetry"
+          ]
+        },
+        "flow_graph": {
+          "nodes": [
+            "bind_context",
+            "validate_input",
+            "dedup",
+            "persist",
+            "process",
+            "finalize"
+          ],
+          "edges": [
+            "START -> bind_context -> validate_input",
+            "validate_input -> dedup|finalize",
+            "dedup -> persist|finalize",
+            "persist -> process|finalize",
+            "process -> finalize -> END"
+          ]
+        },
+        "context_requirements": [
+          "ToolContext.model_validate(context)",
+          "BusinessContext.collection_id required"
+        ],
+        "key_modules": [
+          "documents/contracts.py",
+          "documents/pipeline.py",
+          "documents/processing_graph.py",
+          "ai_core/services/document_processing_factory.py",
+          "ai_core/api.py (trigger_embedding)"
+        ],
+        "side_effects": [
+          "documents repository upsert",
+          "document processing graph (chunking/embedding)",
+          "bind_contextvars + bind_log_context"
+        ]
+      }
+    },
+    "data_types": {
+      "chunk": {
+        "model": "ai_core/rag/schemas.py:Chunk",
+        "fields": [
+          "content",
+          "meta",
+          "embedding",
+          "parents"
+        ]
+      },
+      "rag_reasoning": {
+        "model": "ai_core/rag/schemas.py:RagReasoning",
+        "fields": [
+          "analysis",
+          "gaps"
+        ]
+      },
+      "source_ref": {
+        "model": "ai_core/rag/schemas.py:SourceRef",
+        "fields": [
+          "id",
+          "label",
+          "relevance_score"
+        ]
+      }
+    },
+    "module_map": [
+      {
+        "module": "ai_core/rag/answer_guardrails.py",
+        "role": "post-retrieval allow/deny on snippet count + top score"
+      },
+      {
+        "module": "ai_core/rag/evidence_graph.py",
+        "role": "chunk adjacency/parent/reference graph for passage expansion"
+      },
+      {
+        "module": "ai_core/rag/semantic_cache.py",
+        "role": "in-memory semantic cache keyed by tenant/case/collection/workflow"
+      },
+      {
+        "module": "ai_core/rag/strategy.py",
+        "role": "query variant generation (heuristic or LLM)"
+      },
+      {
+        "module": "ai_core/rag/query_planner.py",
+        "role": "query plan + constraints (rule or LLM)"
+      },
+      {
+        "module": "ai_core/rag/rerank.py",
+        "role": "rerank chunks (heuristic or LLM)"
+      },
+      {
+        "module": "ai_core/rag/passage_assembly.py",
+        "role": "assemble passages from evidence graph within token budget"
+      },
+      {
+        "module": "ai_core/rag/vector_store.py",
+        "role": "routing + hybrid search orchestration (pgvector backend)"
+      },
+      {
+        "module": "ai_core/rag/lexical_search.py",
+        "role": "BM25/pg_trgm lexical search with fallback similarity"
+      },
+      {
+        "module": "ai_core/rag/score_fusion.py",
+        "role": "merge lexical + vector scores"
+      },
+      {
+        "module": "ai_core/rag/hybrid_fusion.py",
+        "role": "hybrid retrieval fusion orchestration"
+      },
+      {
+        "module": "ai_core/rag/vector_search.py",
+        "role": "vector search execution"
+      }
+    ],
+    "cross_module_edges": [
+      {
+        "from": "ai_core/graphs/technical/retrieval_augmented_generation.py",
+        "to": "ai_core/nodes/retrieve.py",
+        "use": "RetrieveInput/Output"
+      },
+      {
+        "from": "ai_core/graphs/technical/retrieval_augmented_generation.py",
+        "to": "ai_core/nodes/compose.py",
+        "use": "ComposeInput/Output"
+      },
+      {
+        "from": "ai_core/graphs/technical/retrieval_augmented_generation.py",
+        "to": "ai_core/rag/semantic_cache.py",
+        "use": "lookup/store"
+      },
+      {
+        "from": "ai_core/graphs/technical/retrieval_augmented_generation.py",
+        "to": "ai_core/rag/strategy.py",
+        "use": "generate_query_variants/expand_query_variants"
+      },
+      {
+        "from": "ai_core/graphs/technical/retrieval_augmented_generation.py",
+        "to": "ai_core/rag/evidence_graph.py",
+        "use": "EvidenceGraph.from_chunks"
+      },
+      {
+        "from": "ai_core/graphs/technical/rag_retrieval.py",
+        "to": "ai_core/rag/filter_spec.py",
+        "use": "build_filter_spec"
+      },
+      {
+        "from": "ai_core/graphs/technical/rag_retrieval.py",
+        "to": "ai_core/rag/query_planner.py",
+        "use": "plan_query"
+      },
+      {
+        "from": "ai_core/graphs/technical/rag_retrieval.py",
+        "to": "ai_core/rag/rerank.py",
+        "use": "rerank_chunks"
+      },
+      {
+        "from": "ai_core/graphs/technical/universal_ingestion_graph.py",
+        "to": "documents/processing_graph.py",
+        "use": "build_document_processing_graph"
+      },
+      {
+        "from": "ai_core/graphs/technical/universal_ingestion_graph.py",
+        "to": "ai_core/services/document_processing_factory.py",
+        "use": "build_document_processing_bundle"
+      }
+    ],
+    "configuration_env": {
+      "retrieval_augmented_generation": [
+        "RAG_CHAT_HISTORY_MAX_MESSAGES",
+        "RAG_CONTEXT_TOKEN_BUDGET",
+        "RAG_CHUNK_TARGET_TOKENS",
+        "RAG_CONTEXT_OVERSAMPLE_FACTOR"
+      ],
+      "rag_retrieval": [
+        "RAG_REFERENCE_EXPANSION",
+        "RAG_REFERENCE_EXPANSION_LIMIT",
+        "RAG_REFERENCE_EXPANSION_TOP_K"
+      ],
+      "query_transform": [
+        "RAG_QUERY_MAX_VARIANTS",
+        "RAG_QUERY_TRANSFORM_MODE"
+      ],
+      "query_planner": [
+        "RAG_QUERY_PLANNER_MODE"
+      ],
+      "semantic_cache": [
+        "RAG_SEMANTIC_CACHE_ENABLED",
+        "RAG_SEMANTIC_CACHE_TTL_S",
+        "RAG_SEMANTIC_CACHE_MAX_ITEMS",
+        "RAG_SEMANTIC_CACHE_SIM_THRESHOLD"
+      ],
+      "rerank": [
+        "RAG_RERANK_MODE",
+        "RAG_RERANK_POOL",
+        "RAG_RERANK_QUALITY_MODE"
+      ],
+      "answer_guardrails": [
+        "RAG_GUARDRAIL_MIN_SNIPPETS",
+        "RAG_GUARDRAIL_MIN_TOP_SCORE"
+      ]
+    },
+    "observability": {
+      "spans": [
+        "rag.contextualize",
+        "rag.cache_lookup",
+        "rag.cache_finalize",
+        "rag.transform",
+        "rag.retrieve",
+        "rag.rerank",
+        "rag.confidence",
+        "rag.compose",
+        "node.validate_input",
+        "node.dedup",
+        "node.persist",
+        "node.process",
+        "node.finalize"
+      ],
+      "events": [
+        "rag.cache.hit",
+        "rag.cache.miss",
+        "rag.cache.store",
+        "rag.confidence.retry",
+        "rag.drift.top1"
+      ],
+      "metrics": [
+        "update_observation (rag.* metadata)",
+        "record_span (rag.hybrid.search)"
+      ]
+    },
+    "side_effects": {
+      "io": [
+        "documents repository upsert",
+        "vector store hybrid search",
+        "document processing graph invoke"
+      ],
+      "cache": [
+        "semantic_cache.store",
+        "semantic_cache.lookup",
+        "ThreadAwareCheckpointer.load/save"
+      ],
+      "telemetry": [
+        "emit_event",
+        "update_observation",
+        "record_span"
+      ]
+    }
+  }
+}

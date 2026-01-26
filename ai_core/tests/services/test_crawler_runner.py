@@ -72,11 +72,14 @@ def test_crawler_runner_does_not_trigger_legacy_ingestion_when_graph_ran(
     class _DummyGraph:
         def invoke(self, input_data):
             context = input_data.get("context", {})
+            scope = context.get("scope") if isinstance(context, dict) else None
+            if not isinstance(scope, dict):
+                scope = {}
             return {
                 "output": {
                     "decision": "ingested",
                     "reason": "Success",
-                    "ingestion_run_id": context.get("ingestion_run_id"),
+                    "ingestion_run_id": scope.get("ingestion_run_id"),
                     "document_id": "doc-123",
                     "transitions": ["validate", "normalize", "persist"],
                     "telemetry": {},
@@ -130,7 +133,10 @@ def test_crawler_runner_response_contains_canonical_ingestion_run_id(
         def invoke(self, input_data):
             nonlocal captured_context_id
             context = input_data.get("context", {})
-            captured_context_id = context.get("ingestion_run_id")
+            scope = context.get("scope") if isinstance(context, dict) else None
+            if not isinstance(scope, dict):
+                scope = {}
+            captured_context_id = scope.get("ingestion_run_id")
             return {
                 "output": {
                     "decision": "ingested",

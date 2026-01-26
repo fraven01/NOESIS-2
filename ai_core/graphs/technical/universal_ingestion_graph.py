@@ -139,6 +139,20 @@ class UniversalIngestionState(TypedDict):
     output: UniversalIngestionOutput | None
 
 
+class UniversalIngestionGraphStateInput(TypedDict, total=False):
+    """Boundary input keys for the universal ingestion graph."""
+
+    input: UniversalIngestionInput
+    context: dict[str, Any]
+    tool_context: ToolContext | dict[str, Any] | None
+
+
+class UniversalIngestionGraphStateOutput(TypedDict, total=False):
+    """Boundary output keys for the universal ingestion graph."""
+
+    output: dict[str, Any]
+
+
 class ValidateInputNodeOutput(TypedDict, total=False):
     """Typed output for validate_input_node."""
 
@@ -517,7 +531,11 @@ def finalize_node(state: UniversalIngestionState) -> FinalizeNodeOutput:
 
 def build_universal_ingestion_graph() -> StateGraph:
     """Build the Universal Ingestion Graph (Pure Primitive)."""
-    workflow = StateGraph(UniversalIngestionState)
+    workflow = StateGraph(
+        UniversalIngestionState,
+        input_schema=UniversalIngestionGraphStateInput,
+        output_schema=UniversalIngestionGraphStateOutput,
+    )
 
     workflow.add_node("bind_context", bind_context_node)
     workflow.add_node("validate_input", validate_input_node)

@@ -416,6 +416,7 @@ def rerank_chunks(
             "rag.rerank.pool_preview",
             tenant_id=context.scope.tenant_id,
             case_id=context.business.case_id,
+            trace_id=context.scope.trace_id,
             count=len(pool),
             items=preview,
         )
@@ -480,6 +481,7 @@ def rerank_chunks(
             extra={
                 "error": type(exc).__name__,
                 "error_message": str(exc),
+                "trace_id": context.scope.trace_id,
             },
         )
         final_chunks = ordered[:limit]
@@ -500,6 +502,7 @@ def rerank_chunks(
             extra={
                 "error": type(exc).__name__,
                 "error_message": str(exc),
+                "trace_id": context.scope.trace_id,
             },
         )
         final_chunks = ordered[:limit]

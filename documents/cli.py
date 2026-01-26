@@ -120,31 +120,7 @@ def _load_document(args: argparse.Namespace, context: CLIContext):
 def _build_pipeline_config(
     args: argparse.Namespace, context: CLIContext
 ) -> DocumentPipelineConfig:
-    base = context.config
-    mapping = dict(base.caption_min_confidence_by_collection)
-    kwargs = dict(
-        pdf_safe_mode=base.pdf_safe_mode,
-        caption_min_confidence_default=base.caption_min_confidence_default,
-        caption_min_confidence_by_collection=mapping,
-        enable_ocr=base.enable_ocr,
-        enable_notes_in_pptx=base.enable_notes_in_pptx,
-        emit_empty_slides=base.emit_empty_slides,
-        enable_asset_captions=base.enable_asset_captions,
-        ocr_fallback_confidence=base.ocr_fallback_confidence,
-        use_readability_html_extraction=base.use_readability_html_extraction,
-        ocr_renderer=base.ocr_renderer,
-    )
-    if getattr(args, "enable_ocr", None):
-        kwargs["enable_ocr"] = True
-    if getattr(args, "disable_notes", False):
-        kwargs["enable_notes_in_pptx"] = False
-    if getattr(args, "disable_empty_slides", False):
-        kwargs["emit_empty_slides"] = False
-    if getattr(args, "use_readability", False):
-        kwargs["use_readability_html_extraction"] = True
-    if getattr(args, "disable_captions", False):
-        kwargs["enable_asset_captions"] = False
-    return DocumentPipelineConfig(**kwargs)
+    return DocumentPipelineConfig.from_args(args, base=context.config)
 
 
 def _context_from_document(document: Any) -> DocumentProcessingContext:

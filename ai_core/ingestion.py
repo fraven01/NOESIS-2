@@ -464,34 +464,35 @@ def _serialise_text_block(block: ParsedTextBlock) -> Dict[str, object]:
     return payload
 
 
-def _persist_parsed_text(
-    tenant: str,
-    case: str | None,
-    document_identifier: UUID,
-    parsed: ParsedResult,
-) -> Dict[str, object]:
-    text_content = _render_parsed_text(parsed)
-    text_path = _parsed_text_path(tenant, case, document_identifier)
-    object_store.put_bytes(text_path, text_content.encode("utf-8"))
+# TODO: check if we still need this function
+# def _persist_parsed_text(
+#     tenant: str,
+#     case: str | None,
+#     document_identifier: UUID,
+#     parsed: ParsedResult,
+# ) -> Dict[str, object]:
+#     text_content = _render_parsed_text(parsed)
+#     text_path = _parsed_text_path(tenant, case, document_identifier)
+#     object_store.put_bytes(text_path, text_content.encode("utf-8"))
 
-    blocks_path = _parsed_blocks_path(tenant, case, document_identifier)
-    serialised_blocks = [
-        {"index": index, **_serialise_text_block(block)}
-        for index, block in enumerate(parsed.text_blocks)
-    ]
-    payload = {
-        "blocks": serialised_blocks,
-        "statistics": dict(parsed.statistics),
-        "text": text_content,
-    }
-    object_store.write_json(blocks_path, payload)
+#     blocks_path = _parsed_blocks_path(tenant, case, document_identifier)
+#     serialised_blocks = [
+#         {"index": index, **_serialise_text_block(block)}
+#         for index, block in enumerate(parsed.text_blocks)
+#     ]
+#     payload = {
+#         "blocks": serialised_blocks,
+#         "statistics": dict(parsed.statistics),
+#         "text": text_content,
+#     }
+#     object_store.write_json(blocks_path, payload)
 
-    return {
-        "path": text_path,
-        "text_path": text_path,
-        "blocks_path": blocks_path,
-        "statistics": dict(parsed.statistics),
-    }
+#     return {
+#         "path": text_path,
+#         "text_path": text_path,
+#         "blocks_path": blocks_path,
+#         "statistics": dict(parsed.statistics),
+#     }
 
 
 def _extract_blob_payload_bytes(document: object) -> bytes | None:

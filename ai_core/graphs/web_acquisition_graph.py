@@ -122,6 +122,20 @@ class WebAcquisitionState(TypedDict):
     output: WebAcquisitionOutput | None
 
 
+class WebAcquisitionGraphStateInput(TypedDict, total=False):
+    """Boundary input keys for the web acquisition graph."""
+
+    input: WebAcquisitionInput
+    tool_context: ToolContext | dict[str, Any] | None
+    context: dict[str, Any] | None
+
+
+class WebAcquisitionGraphStateOutput(TypedDict, total=False):
+    """Boundary output keys for the web acquisition graph."""
+
+    output: dict[str, Any]
+
+
 # --------------------------------------------------------------------- Helpers
 
 
@@ -338,7 +352,11 @@ def finalize_node(state: WebAcquisitionState) -> dict[str, Any]:
 
 def build_web_acquisition_graph() -> StateGraph:
     """Construct the Web Acquisition Graph."""
-    workflow = StateGraph(WebAcquisitionState)
+    workflow = StateGraph(
+        WebAcquisitionState,
+        input_schema=WebAcquisitionGraphStateInput,
+        output_schema=WebAcquisitionGraphStateOutput,
+    )
 
     workflow.add_node("validate_input", validate_input_node)
     workflow.add_node("search", search_node)

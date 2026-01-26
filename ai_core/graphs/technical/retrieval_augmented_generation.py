@@ -184,6 +184,22 @@ class RetrievalAugmentedGenerationState(TypedDict, total=False):
     result: Mapping[str, Any]
 
 
+class RetrievalAugmentedGenerationGraphStateInput(TypedDict, total=False):
+    """Boundary input keys for the retrieval augmented generation graph."""
+
+    state: Mapping[str, Any]
+    meta: Mapping[str, Any]
+    context: ToolContext
+
+
+class RetrievalAugmentedGenerationGraphStateOutput(TypedDict, total=False):
+    """Boundary output keys for the retrieval augmented generation graph."""
+
+    state: Mapping[str, Any]
+    result: Mapping[str, Any]
+    graph_input: RetrievalAugmentedGenerationInput
+
+
 def _ensure_mutable_state(
     state: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1684,7 +1700,11 @@ def _build_compiled_graph(
 
         return {"state": working_state, "result": result_payload}
 
-    workflow = StateGraph(RetrievalAugmentedGenerationState)
+    workflow = StateGraph(
+        RetrievalAugmentedGenerationState,
+        input_schema=RetrievalAugmentedGenerationGraphStateInput,
+        output_schema=RetrievalAugmentedGenerationGraphStateOutput,
+    )
     workflow.add_node("contextualize", _contextualize_step)
     workflow.add_node("cache_lookup", _cache_lookup_step)
     workflow.add_node("cache_finalize", _cache_finalize_step)

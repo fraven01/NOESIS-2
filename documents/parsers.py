@@ -404,6 +404,7 @@ def _ensure_optional_context(value: Optional[str], code: str) -> Optional[str]:
     return truncated
 
 
+# TODO: refactor to type guard?
 def _ensure_statistics_serializable(value: Any) -> None:
     if value is None:
         return

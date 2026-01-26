@@ -14,7 +14,7 @@ from celery import Task
 from celery.canvas import Signature
 from celery.exceptions import SoftTimeLimitExceeded
 from celery.result import AsyncResult
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from .constants import HEADER_CANDIDATE_MAP, X_TRACE_ID_HEADER
 from .logging import bind_log_context, clear_log_context
@@ -149,6 +149,55 @@ def _current_otel_trace_id() -> str | None:
         return None
 
 
+def _coerce_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate or None
+    try:
+        return str(value).strip() or None
+    except Exception:
+        return None
+
+
+class TaskContextMeta(BaseModel):
+    tenant_id: str | None = None
+    case_id: str | None = None
+    trace_id: str | None = None
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    @field_validator("tenant_id", "case_id", "trace_id", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value: Any) -> str | None:
+        return _coerce_optional_text(value)
+
+
+class PiiSessionContext(BaseModel):
+    session_salt: str | None = None
+    session_scope: tuple[str, str, str] | None = None
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    @field_validator("session_salt", mode="before")
+    @classmethod
+    def _normalize_session_salt(cls, value: Any) -> str | None:
+        return _coerce_optional_text(value)
+
+    @field_validator("session_scope", mode="before")
+    @classmethod
+    def _normalize_session_scope(cls, value: Any) -> tuple[str, str, str] | None:
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            return None
+        tenant_val, case_val, salt_val = value
+        return (
+            _coerce_optional_text(tenant_val) or "",
+            _coerce_optional_text(case_val) or "",
+            _coerce_optional_text(salt_val) or "",
+        )
+
+
 class ContextTask(Task):
     """Celery task base class that binds log context from headers/kwargs."""
 
@@ -281,6 +330,14 @@ class ContextTask(Task):
 
         context.update(self._from_meta(kwargs.get("meta")))
         context.update(self._from_tool_context(kwargs.get("tool_context")))
+
+        try:
+            normalized = TaskContextMeta.model_validate(context).model_dump(
+                exclude_none=True
+            )
+            context.update(normalized)
+        except ValidationError:
+            pass
 
         return {key: value for key, value in context.items() if value}
 
@@ -485,40 +542,31 @@ class ScopedTask(ContextTask):
 
         context = self._gather_context(args, call_kwargs)
 
-        def _coerce_text(value: Any) -> str | None:
-            if value is None:
-                return None
-            if isinstance(value, str):
-                candidate = value.strip()
-                return candidate or None
-            try:
-                return str(value).strip() or None
-            except Exception:
-                return None
+        pii_context = PiiSessionContext.model_validate(
+            {
+                "session_salt": scope_kwargs.get("session_salt"),
+                "session_scope": explicit_scope,
+            }
+        )
 
-        tenant_id = _coerce_text(scope_kwargs.get("tenant_id")) or _coerce_text(
-            context.get("tenant_id")
-        )
-        case_id = _coerce_text(scope_kwargs.get("case_id")) or _coerce_text(
-            context.get("case_id")
-        )
-        trace_id = _coerce_text(scope_kwargs.get("trace_id")) or _coerce_text(
-            context.get("trace_id")
-        )
-        session_salt = _coerce_text(scope_kwargs.get("session_salt"))
-        scope_override: tuple[str, str, str] | None = None
+        tenant_id = _coerce_optional_text(
+            scope_kwargs.get("tenant_id")
+        ) or _coerce_optional_text(context.get("tenant_id"))
+        case_id = _coerce_optional_text(
+            scope_kwargs.get("case_id")
+        ) or _coerce_optional_text(context.get("case_id"))
+        trace_id = _coerce_optional_text(
+            scope_kwargs.get("trace_id")
+        ) or _coerce_optional_text(context.get("trace_id"))
+        session_salt = pii_context.session_salt
+        scope_override = pii_context.session_scope
 
-        if isinstance(explicit_scope, (list, tuple)) and len(explicit_scope) == 3:
-            tenant_scope_val, case_scope_val, salt_scope_val = explicit_scope
-            scope_override = (
-                _coerce_text(tenant_scope_val) or "",
-                _coerce_text(case_scope_val) or "",
-                _coerce_text(salt_scope_val) or "",
-            )
+        if scope_override is not None:
+            tenant_scope_val, case_scope_val, salt_scope_val = scope_override
             if not case_id and case_scope_val:
-                case_id = scope_override[1] or None
+                case_id = case_scope_val or None
             if not session_salt and salt_scope_val:
-                session_salt = scope_override[2] or None
+                session_salt = salt_scope_val or None
 
         if not session_salt:
             session_salt = _derive_session_salt_from_ids(

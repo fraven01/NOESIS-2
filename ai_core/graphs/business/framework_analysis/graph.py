@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping, MutableMapping, Tuple, Callable, Awaitable
+from typing import Any, Mapping, MutableMapping, Tuple, Callable, Awaitable, TypedDict
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import asyncio
@@ -12,6 +12,7 @@ from langgraph.graph import END, StateGraph
 
 from ai_core.graph.io import GraphIOSpec
 from ai_core.infra.observability import emit_event, update_observation
+from ai_core.tool_contracts import ToolContext
 from ai_core.tools.framework_contracts import (
     FrameworkAnalysisDraft,
     FrameworkAnalysisDraftMetadata,
@@ -40,8 +41,52 @@ from .state import FrameworkAnalysisState
 logger = get_logger(__name__)
 
 
+class FrameworkAnalysisGraphStateInput(TypedDict, total=False):
+    """Boundary input keys for the framework analysis graph."""
+
+    input: Mapping[str, Any]
+    context: ToolContext
+    retrieval_service: Any
+    llm_service: Any
+    component_queries: Mapping[str, Mapping[str, str]]
+    runtime: Mapping[str, Any]
+    tenant_id: str
+    tenant_schema: str | None
+    trace_id: str
+    scope_context: Any
+    document_collection_id: str
+    document_id: str | None
+    force_reanalysis: bool
+    confidence_threshold: float
+    transitions: list[Mapping[str, Any]]
+
+
+class FrameworkAnalysisGraphStateOutput(TypedDict, total=False):
+    """Boundary output keys for the framework analysis graph."""
+
+    assembled_structure: Mapping[str, Any]
+    missing_components: list[str]
+    completeness_score: float
+    hitl_required: bool
+    hitl_reasons: list[str]
+    errors: list[Mapping[str, Any]]
+    agreement_type: str
+    type_confidence: float
+    gremium_name_raw: str
+    gremium_identifier: str
+    document_collection_id: str
+    document_id: str | None
+    confidence_threshold: float
+    force_reanalysis: bool
+    transitions: list[Mapping[str, Any]]
+
+
 def _build_compiled_graph() -> Any:
-    workflow = StateGraph(FrameworkAnalysisState)
+    workflow = StateGraph(
+        FrameworkAnalysisState,
+        input_schema=FrameworkAnalysisGraphStateInput,
+        output_schema=FrameworkAnalysisGraphStateOutput,
+    )
 
     def _resolve_node_timeout(
         state: FrameworkAnalysisState, node_name: str

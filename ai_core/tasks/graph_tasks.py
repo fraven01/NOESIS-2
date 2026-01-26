@@ -16,6 +16,7 @@ from ai_core.ingestion_orchestration import (
     ObservabilityWrapper,
 )
 from ai_core.infra import observability as observability_helpers
+from ai_core.infra.observability import observe_span
 from documents.contracts import NormalizedDocument
 from common.celery import RetryableTask
 from common.logging import get_log_context
@@ -106,6 +107,7 @@ def _build_ingestion_graph(event_emitter: Optional[Any]):
     name="ai_core.tasks.run_ingestion_graph",
     soft_time_limit=1740,  # 29 minutes
 )
+@observe_span(name="task.ingestion_graph")
 def run_ingestion_graph(
     state: Mapping[str, Any],
     meta: Optional[Mapping[str, Any]] = None,
@@ -370,6 +372,7 @@ def _prepare_working_state(
     time_limit=300,  # 5 minutes hard limit
     soft_time_limit=240,  # 4 minutes soft limit
 )
+@observe_span(name="task.business_graph")
 def run_business_graph(
     graph_name: str,
     state: Mapping[str, Any],

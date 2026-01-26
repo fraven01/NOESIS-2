@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import ValidationError
 
 from ai_core.infra.object_store import read_json, sanitize_identifier, write_json
+from ai_core.infra.observability import observe_span
 from ai_core.graph.state import (
     PersistedGraphState,
     extract_plan_envelope,
@@ -109,6 +110,7 @@ class FileCheckpointer(Checkpointer):
             f"{safe_tenant}/workflow-executions/{safe_workflow}/{safe_run}/state.json"
         )
 
+    @observe_span(name="graph.checkpoint.load")
     def load(self, ctx: GraphContext) -> dict:
         """Load a previously stored state or return an empty mapping."""
 
@@ -149,6 +151,7 @@ class FileCheckpointer(Checkpointer):
             return {}
         return persisted.state
 
+    @observe_span(name="graph.checkpoint.save")
     def save(self, ctx: GraphContext, state: dict) -> None:
         """Persist the provided state for later retrieval."""
 
