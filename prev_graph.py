@@ -743,7 +743,6 @@ class CrawlerIngestionGraph:
             scope,
             meta=chunk_info.meta,
             chunks_path=chunk_info.chunks_path,
-            embedding_state=embedding_state,
             dispatcher=_dispatch_ingestion,
         )
         artifacts = self._artifacts(state)

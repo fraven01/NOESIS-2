@@ -55,7 +55,6 @@ result = run_crawler_runner(
     meta=meta,
     request_model=request_model,
     lifecycle_store=views._resolve_lifecycle_store(),
-    graph_factory=None,
 )
 
 # ZU:

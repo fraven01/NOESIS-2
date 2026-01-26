@@ -14,11 +14,6 @@ from common.logging import get_log_context, get_logger
 from ai_core.infra.observability import observe_span, report_generation_usage
 from ai_core.infra.usage import Usage
 
-try:  # pragma: no cover - optional dependency for tests
-    from litellm import embedding as litellm_embedding  # type: ignore
-except Exception:  # pragma: no cover - handled at runtime
-    litellm_embedding = None
-
 try:  # pragma: no cover - optional dependency for OpenAI SDK
     from openai import OpenAI
 except Exception:  # pragma: no cover - handled at runtime

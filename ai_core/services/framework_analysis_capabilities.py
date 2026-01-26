@@ -14,7 +14,7 @@ from ai_core.llm.client import LlmTimeoutError, LlmUpstreamError, RateLimitError
 from ai_core.tools.framework_contracts import ComponentLocation
 
 
-def normalize_gremium_identifier(suggestion: str, raw_name: str) -> str:
+def normalize_gremium_identifier(suggestion: str, _raw_name: str) -> str:
     """Normalize gremium identifier for storage."""
     normalized = suggestion.upper()
     # Replace umlauts
