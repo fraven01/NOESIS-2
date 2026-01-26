@@ -17,6 +17,7 @@ from uuid import UUID, uuid5
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db import close_old_connections
 
 from ai_core.infra.observability import update_observation
 from ai_core.nodes import retrieve
@@ -124,6 +125,13 @@ _URL_SPLIT_PATTERN = re.compile(r"https?://")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 _WORD_PATTERN = re.compile(r"[\w\u00C0-\u024F]+", re.UNICODE)
 _CUSTOM_FACET_KEYS = {"custom_facets", "facet_scores", "facets"}
+
+
+def _close_old_connections_safe() -> None:
+    try:
+        close_old_connections()
+    except Exception:
+        logger.debug("hybrid.db_connection_cleanup_failed", exc_info=True)
 
 
 def _ensure_mutable(mapping: Mapping[str, Any] | None) -> MutableMapping[str, Any]:
@@ -592,10 +600,8 @@ class HybridSearchAndScoreGraph:
         flags["debug"] = debug_info
         self._last_debug = debug_info
         result_payload = {
-            "result": hybrid_result.model_dump(mode="json"),
-            "rag_summaries": [
-                summary.model_dump(mode="json") for summary in rag_summaries
-            ],
+            "result": hybrid_result,
+            "rag_summaries": list(rag_summaries),
             "flags": flags,
         }
 
@@ -623,29 +629,27 @@ class HybridSearchAndScoreGraph:
         normalise_debug: list[dict[str, Any]] = []
 
         for index, entry in enumerate(raw_candidates):
-            if isinstance(entry, SearchCandidate):
-                candidate_data = entry.model_dump(mode="json")
-            elif isinstance(entry, Mapping):
-                candidate_data = dict(entry)
-            else:
+            if not isinstance(entry, SearchCandidate):
+                logger.debug(
+                    "hybrid.candidate_invalid",
+                    extra={"candidate_index": index, "type": type(entry).__name__},
+                )
                 continue
 
-            url = candidate_data.get("url") or candidate_data.get("link")
+            url = entry.url
             canonical_url = _canonicalise_url(url)
             host, domain_type, trust_hint = _infer_domain_traits(canonical_url)
-            candidate_id = str(candidate_data.get("id") or "").strip()
+            candidate_id = str(entry.id or "").strip()
             if not candidate_id:
                 candidate_id = _hash_values(canonical_url or "candidate", str(index))[
                     :16
                 ]
-            title = str(candidate_data.get("title") or "").strip()
-            snippet = str(candidate_data.get("snippet") or "").strip()
-            detected_date = ensure_aware_utc(candidate_data.get("detected_date"))
-            version_hint = candidate_data.get("version_hint")
-            is_pdf = bool(
-                candidate_data.get("is_pdf") or (canonical_url or "").endswith(".pdf")
-            )
-            base_score = float(candidate_data.get("score") or (100 - index))
+            title = str(entry.title or "").strip()
+            snippet = str(entry.snippet or "").strip()
+            detected_date = ensure_aware_utc(entry.detected_date)
+            version_hint = entry.version_hint
+            is_pdf = bool(entry.is_pdf or (canonical_url or "").endswith(".pdf"))
+            base_score = float(100 - index)
             duplicate_of = None
             is_duplicate = False
             if canonical_url:
@@ -1085,26 +1089,35 @@ class HybridSearchAndScoreGraph:
             criteria=self._build_criteria(scoring_context),
         )
 
-        control_meta = {
-            "prompt_version": meta.get("prompt_version") or "hybrid-score.v1",
-            "model_preset": meta.get("model_preset") or "fast",
-            "max_tokens": meta.get("max_tokens") or 2000,
-        }
-
-        llm_meta: dict[str, Any] = dict(meta)
+        score_config: dict[str, Any] = dict(meta)
+        score_config["prompt_version"] = meta.get("prompt_version") or "hybrid-score.v1"
+        score_config["model_preset"] = meta.get("model_preset") or "fast"
+        score_config["max_tokens"] = meta.get("max_tokens") or 2000
+        if getattr(settings, "DEBUG", False):
+            score_config["max_tokens"] = max(score_config["max_tokens"], 12000)
+            timeout_value = meta.get("timeout_s")
+            if timeout_value is not None:
+                try:
+                    timeout_value = float(timeout_value)
+                except (TypeError, ValueError):
+                    timeout_value = None
+            if timeout_value is not None:
+                if timeout_value < 0:
+                    timeout_value = 0.0
+                score_config["timeout_s"] = min(timeout_value, 90.0)
         if scoring_context:
-            llm_meta["scoring_context_payload"] = scoring_context.model_dump(
+            score_config["scoring_context_payload"] = scoring_context.model_dump(
                 mode="json"
             )
         if rag_facets:
-            llm_meta["rag_facets"] = {
+            score_config["rag_facets"] = {
                 dimension.value: float(score) for dimension, score in rag_facets.items()
             }
         if rag_gap_dimensions:
-            llm_meta["rag_gap_dimensions"] = rag_gap_dimensions
+            score_config["rag_gap_dimensions"] = rag_gap_dimensions
         if rag_summaries:
-            llm_meta["rag_key_points"] = _collect_rag_key_points(rag_summaries)
-            llm_meta["rag_documents"] = [
+            score_config["rag_key_points"] = _collect_rag_key_points(rag_summaries)
+            score_config["rag_documents"] = [
                 {
                     "title": summary.title,
                     "url": summary.url,
@@ -1112,8 +1125,9 @@ class HybridSearchAndScoreGraph:
                 for summary in rag_summaries[:3]
             ]
 
+        _close_old_connections_safe()
         try:
-            response = run_score_results(control_meta, payload, meta=llm_meta)
+            response = run_score_results(payload, config=score_config)
         except TimeoutError:
             logger.warning("hybrid.llm_timeout")
             fallback = self._fallback_scores(search_candidates, rag_facets)
@@ -1163,6 +1177,8 @@ class HybridSearchAndScoreGraph:
                     "llm_items": len(fallback),
                 },
             )
+        finally:
+            _close_old_connections_safe()
 
         ranked_payload = response.get("evaluations") or response.get("ranked") or []
         ranked_items = self._build_llm_items(

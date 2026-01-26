@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Mapping as MappingABC
+import contextvars
+import re
+import uuid
 from typing import Any, Dict, Mapping, Optional
 
 from celery import shared_task
@@ -13,8 +16,11 @@ from ai_core.ingestion_orchestration import (
     ObservabilityWrapper,
 )
 from ai_core.infra import observability as observability_helpers
+from ai_core.infra.observability import observe_span
 from documents.contracts import NormalizedDocument
 from common.celery import RetryableTask
+from common.logging import get_log_context
+from structlog.contextvars import get_contextvars
 
 from .helpers.task_utils import (
     _jsonify_for_task,
@@ -23,6 +29,42 @@ from .helpers.task_utils import (
 )
 from ai_core.graph import registry
 from ai_core.tool_contracts import tool_context_from_meta
+
+try:  # pragma: no cover - optional OTEL dependency
+    from opentelemetry import context as otel_context
+    from opentelemetry.trace import (
+        NonRecordingSpan,
+        SpanContext,
+        TraceFlags,
+        set_span_in_context,
+    )
+
+    _OTEL_AVAILABLE = True
+except Exception:  # pragma: no cover - optional
+    otel_context = None  # type: ignore[assignment]
+    NonRecordingSpan = None  # type: ignore[assignment]
+    SpanContext = None  # type: ignore[assignment]
+    TraceFlags = None  # type: ignore[assignment]
+    set_span_in_context = None  # type: ignore[assignment]
+    _OTEL_AVAILABLE = False
+
+
+def _normalize_trace_id_for_otel(trace_id: object) -> str | None:
+    if trace_id is None:
+        return None
+    text = str(trace_id).strip()
+    if not text:
+        return None
+    try:
+        return uuid.UUID(text).hex
+    except (TypeError, ValueError):
+        pass
+    cleaned = re.sub(r"[^0-9a-fA-F]", "", text).lower()
+    if len(cleaned) == 32:
+        return cleaned
+    if len(cleaned) > 32:
+        return cleaned[:32]
+    return None
 
 
 def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
@@ -65,6 +107,7 @@ def _build_ingestion_graph(event_emitter: Optional[Any]):
     name="ai_core.tasks.run_ingestion_graph",
     soft_time_limit=1740,  # 29 minutes
 )
+@observe_span(name="task.ingestion_graph")
 def run_ingestion_graph(
     state: Mapping[str, Any],
     meta: Optional[Mapping[str, Any]] = None,
@@ -80,6 +123,11 @@ def run_ingestion_graph(
     event_emitter = _resolve_event_emitter(meta)
     graph = _build_ingestion_graph(event_emitter)
     trace_context = _resolve_trace_context(state, meta)
+    log_trace_id = get_log_context().get("trace_id") or get_contextvars().get(
+        "trace_id"
+    )
+    if log_trace_id:
+        trace_context["trace_id"] = str(log_trace_id)
 
     # 2. Extract ingestion context (defensive metadata extraction)
     context_builder = IngestionContextBuilder()
@@ -172,7 +220,51 @@ def run_ingestion_graph(
             },
         }
 
-        result = graph.invoke({"input": input_payload, "context": run_context})
+        tool_context = None
+        if isinstance(meta, MappingABC):
+            try:
+                tool_context = tool_context_from_meta(meta)
+            except Exception:
+                tool_context = None
+        if tool_context is None:
+            tool_context = scope.to_tool_context(
+                business=business, metadata=run_context["metadata"]
+            )
+
+        graph_state = {"input": input_payload, "context": run_context}
+        invoke_config = {"configurable": {"trace_id": tool_context.scope.trace_id}}
+        token = None
+        if _OTEL_AVAILABLE:
+            normalized_trace_id = _normalize_trace_id_for_otel(
+                tool_context.scope.trace_id
+            )
+            if normalized_trace_id:
+                try:
+                    trace_flags = (
+                        TraceFlags.SAMPLED
+                        if isinstance(TraceFlags.SAMPLED, TraceFlags)
+                        else TraceFlags(TraceFlags.SAMPLED)
+                    )
+                    span_context = SpanContext(
+                        trace_id=int(normalized_trace_id, 16),
+                        span_id=uuid.uuid4().int & ((1 << 64) - 1),
+                        is_remote=True,
+                        trace_flags=trace_flags,
+                    )
+                    ctx = set_span_in_context(NonRecordingSpan(span_context))
+                    token = otel_context.attach(ctx)
+                except Exception:
+                    token = None
+        try:
+            result = contextvars.copy_context().run(
+                graph.invoke, graph_state, config=invoke_config
+            )
+        finally:
+            if token is not None and otel_context is not None:
+                try:
+                    otel_context.detach(token)
+                except Exception:
+                    pass
 
         # Output is in result["output"] usually, or result IS output?
         # Universal Graph returns UniversalIngestionOutput in 'output' key?
@@ -280,6 +372,7 @@ def _prepare_working_state(
     time_limit=300,  # 5 minutes hard limit
     soft_time_limit=240,  # 4 minutes soft limit
 )
+@observe_span(name="task.business_graph")
 def run_business_graph(
     graph_name: str,
     state: Mapping[str, Any],

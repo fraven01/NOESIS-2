@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any, Mapping, Sequence
 
 # -----------------------------------------------------------------------------
@@ -87,6 +88,15 @@ def cs_module():
 class TestCollectionSearchGraph:
     """Tests for CollectionSearch using isolated module."""
 
+    def _plan_slot_value(self, plan: Mapping[str, Any], key: str) -> Any:
+        for slot in plan.get("slots", []):
+            if slot.get("key") == key:
+                return slot.get("value")
+        return None
+
+    def _plan_metadata(self, plan: Mapping[str, Any]) -> Mapping[str, Any]:
+        return plan.get("metadata") or {}
+
     def _initial_state(self) -> dict[str, Any]:
         """Build GraphIOSpec-compliant boundary request."""
         from ai_core.contracts import BusinessContext, ScopeContext
@@ -114,6 +124,112 @@ class TestCollectionSearchGraph:
             },
             "tool_context": tool_context,
         }
+
+    def test_strategy_node_closes_db_connections(self, cs_module, monkeypatch) -> None:
+        close_calls: list[str] = []
+        monkeypatch.setattr(
+            cs_module,
+            "close_old_connections",
+            lambda: close_calls.append("closed"),
+        )
+
+        def _fake_generator(request):
+            return cs_module.SearchStrategy(
+                queries=["q1", "q2", "q3"],
+                policies_applied=(),
+                preferred_sources=(),
+                disallowed_sources=(),
+            )
+
+        from ai_core.contracts import BusinessContext, ScopeContext
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(
+            workflow_id="wf-1",
+            case_id="case-1",
+        )
+        tool_context = scope.to_tool_context(business=business)
+
+        state = {
+            "input": cs_module.GraphInput(
+                question="Test query",
+                collection_scope="collection-1",
+                purpose="test",
+            ),
+            "tool_context": tool_context,
+            "runtime": {"runtime_strategy_generator": _fake_generator},
+            "transitions": [],
+            "telemetry": {},
+        }
+
+        cs_module.strategy_node(state)
+        assert len(close_calls) >= 2
+
+    def test_hybrid_score_node_closes_db_connections(
+        self, cs_module, monkeypatch
+    ) -> None:
+        close_calls: list[str] = []
+        monkeypatch.setattr(
+            cs_module,
+            "close_old_connections",
+            lambda: close_calls.append("closed"),
+        )
+
+        from ai_core.contracts import BusinessContext, ScopeContext
+        from llm_worker.schemas import HybridResult
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(
+            workflow_id="wf-1",
+            case_id="case-1",
+        )
+        tool_context = scope.to_tool_context(business=business)
+
+        class _FakeExecutor:
+            def run(self, *, scoring_context, candidates, tenant_context):
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="ok",
+                    recommended_ingest=[],
+                )
+
+        state = {
+            "input": cs_module.GraphInput(
+                question="Test query",
+                collection_scope="collection-1",
+                purpose="test",
+            ),
+            "tool_context": tool_context,
+            "runtime": {"runtime_hybrid_executor": _FakeExecutor()},
+            "search": {
+                "results": [
+                    cs_module.SearchResultPayload(
+                        url="https://example.com",
+                        title="Title",
+                        snippet="Snippet",
+                        source="web",
+                        query="Test query",
+                        query_index=0,
+                        position=0,
+                    )
+                ]
+            },
+            "embedding_rank": {},
+        }
+
+        cs_module.hybrid_score_node(state)
+        assert len(close_calls) >= 2
 
     def _tool_context_meta(self) -> dict[str, Any]:
         from ai_core.contracts import BusinessContext, ScopeContext
@@ -197,20 +313,15 @@ class TestCollectionSearchGraph:
                 self.calls: list[tuple[Any, Sequence[Any], Mapping[str, Any]]] = []
 
             def run(self, *, scoring_context, candidates, tenant_context) -> Any:
-                self.calls.append((scoring_context, candidates, tenant_context))
-                result = MagicMock()
-                # Mock result structure that translates to expected dict
-                result.candidates = {}
-                result.result = MagicMock()
-                result.result.ranked = []
+                from llm_worker.schemas import HybridResult
 
-                # Mock model_dump behavior expected by hybrid_score_node
-                result.model_dump.return_value = {
-                    "ranked": [],
-                    "candidates": {},
-                    "coverage_delta": {"TECHNICAL": 0.0},
-                }
-                return result
+                self.calls.append((scoring_context, candidates, tenant_context))
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
         class LocalStubHitlGateway:
             def __init__(self, decision: Any | None) -> None:
@@ -262,8 +373,11 @@ class TestCollectionSearchGraph:
         assert request.purpose == "docs-gap-analysis"
 
         assert result.get("plan") is not None
-        assert result["plan"]["hitl_required"] is True
-        assert result.get("ingestion", {}).get("status") == "planned_only"
+        plan_metadata = self._plan_metadata(result["plan"])
+        # With auto_ingest=True (default), HITL is not required
+        assert plan_metadata.get("hitl", {}).get("required") is False
+        # auto_ingest enabled but no URLs meet threshold → skipped_no_selection
+        assert result.get("ingestion", {}).get("status") == "skipped_no_selection"
 
     def test_search_failure_aborts_flow(self, cs_module) -> None:
         from ai_core.tools.web_search import (
@@ -297,7 +411,14 @@ class TestCollectionSearchGraph:
                 return None
 
             def run(self, **k):
-                return MagicMock()
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
             def verify(self, **k):
                 return {}
@@ -363,7 +484,14 @@ class TestCollectionSearchGraph:
                 return None
 
             def run(self, **k):
-                return MagicMock()
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
             def verify(self, **k):
                 return {}
@@ -389,7 +517,323 @@ class TestCollectionSearchGraph:
         assert result["search"]["results"] == []
         assert len(search_worker.calls) == 3
 
-    def test_auto_ingest_disabled_by_default(self, cs_module) -> None:
+    def test_parallel_search_timeout_returns_partial_results(self, cs_module) -> None:
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+            SearchResult,
+        )
+        import time
+        import sys
+
+        cs_module.cosine_similarity.return_value = 0.8
+        cs_module.calculate_generic_heuristics.return_value = 0.5
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request: Any) -> Any:
+                return cs_module.SearchStrategy(
+                    queries=["fast query", "slow query"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class SlowSearchWorker:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def run(
+                self, *, query: str, context: Mapping[str, Any]
+            ) -> WebSearchResponse:
+                self.calls.append(query)
+                if "slow" in query:
+                    time.sleep(0.4)
+                else:
+                    time.sleep(0.01)
+                results = [
+                    SearchResult(
+                        url="https://docs.acme.test/fast",
+                        title="Fast Result",
+                        snippet="Quick response",
+                        source="acme",
+                        score=0.9,
+                        is_pdf=False,
+                    )
+                ]
+                outcome = ToolOutcome(
+                    decision="ok",
+                    rationale="search_completed",
+                    meta={"provider": "stub", "latency_ms": 10},
+                )
+                return WebSearchResponse(results=results, outcome=outcome)
+
+        class MockObj:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
+
+            def verify(self, **k):
+                return {}
+
+        sys.modules["django.conf"].settings.SEARCH_WORKER_TIMEOUT_SECONDS = 0.15
+
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": SlowSearchWorker(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
+        initial_state = self._initial_state()
+        meta = self._tool_context_meta()
+        _, result = graph.run(initial_state, meta=meta)
+
+        assert result["search"]["results"]
+        assert any(
+            error.get("error") == "TimeoutError" for error in result["search"]["errors"]
+        )
+
+    def test_embedding_weight_profile_is_recorded(self, cs_module) -> None:
+        from ai_core.contracts import BusinessContext, ScopeContext
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(workflow_id="wf-1", case_id="case-1")
+        tool_context = scope.to_tool_context(business=business)
+
+        graph_input = cs_module.GraphInput(
+            question="Telemetry setup",
+            collection_scope="docs",
+            quality_mode="software_docs_strict",
+            purpose="docs-gap-analysis",
+        )
+        results = [
+            cs_module.SearchResultPayload(
+                url="https://docs.acme.test/telemetry",
+                title="Telemetry",
+                snippet="Telemetry configuration guide",
+                source="acme",
+                score=0.9,
+                is_pdf=False,
+                query="Telemetry setup",
+                query_index=0,
+                position=0,
+            ),
+            cs_module.SearchResultPayload(
+                url="https://docs.acme.test/admin",
+                title="Admin Guide",
+                snippet="Admin telemetry settings",
+                source="acme",
+                score=0.8,
+                is_pdf=False,
+                query="Telemetry setup",
+                query_index=0,
+                position=1,
+            ),
+        ]
+
+        cs_module._embed_with_retry = AsyncMock(
+            return_value=([[1.0], [1.0], [1.0]], True)
+        )
+        cs_module.cosine_similarity.return_value = 1.0
+        cs_module.calculate_generic_heuristics.return_value = 50.0
+
+        state: dict[str, Any] = {
+            "input": graph_input,
+            "tool_context": tool_context,
+            "runtime": {},
+            "strategy": None,
+            "search": {"results": results},
+            "embedding_rank": {},
+            "hybrid": None,
+            "hitl": {},
+            "ingestion": {},
+            "meta": {},
+            "telemetry": {},
+            "transitions": [],
+            "plan": None,
+        }
+
+        result = asyncio.run(cs_module.embedding_rank_node(state))
+
+        assert result["embedding_rank"]["embedding_weight"] == pytest.approx(0.7)
+        assert (
+            result["embedding_rank"]["embedding_weight_source"]
+            == "profile:software_docs_strict"
+        )
+        telemetry = state["telemetry"]["nodes"]["embedding_rank_node"]
+        assert telemetry["embedding_weight"] == pytest.approx(0.7)
+        assert telemetry["embedding_weight_source"] == "profile:software_docs_strict"
+
+    def test_embedding_weight_falls_back_to_input(self, cs_module) -> None:
+        from ai_core.contracts import BusinessContext, ScopeContext
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(workflow_id="wf-1", case_id="case-1")
+        tool_context = scope.to_tool_context(business=business)
+
+        graph_input = cs_module.GraphInput(
+            question="Telemetry setup",
+            collection_scope="docs",
+            quality_mode="custom_quality",
+            purpose="docs-gap-analysis",
+            embedding_weight=0.42,
+        )
+        results = [
+            cs_module.SearchResultPayload(
+                url="https://docs.acme.test/telemetry",
+                title="Telemetry",
+                snippet="Telemetry configuration guide",
+                source="acme",
+                score=0.9,
+                is_pdf=False,
+                query="Telemetry setup",
+                query_index=0,
+                position=0,
+            ),
+        ]
+
+        cs_module._embed_with_retry = AsyncMock(return_value=([[1.0], [1.0]], True))
+        cs_module.cosine_similarity.return_value = 1.0
+        cs_module.calculate_generic_heuristics.return_value = 50.0
+
+        state: dict[str, Any] = {
+            "input": graph_input,
+            "tool_context": tool_context,
+            "runtime": {},
+            "strategy": None,
+            "search": {"results": results},
+            "embedding_rank": {},
+            "hybrid": None,
+            "hitl": {},
+            "ingestion": {},
+            "meta": {},
+            "telemetry": {},
+            "transitions": [],
+            "plan": None,
+        }
+
+        result = asyncio.run(cs_module.embedding_rank_node(state))
+
+        assert result["embedding_rank"]["embedding_weight"] == pytest.approx(0.42)
+        assert result["embedding_rank"]["embedding_weight_source"] == "input"
+        assert result["embedding_rank"]["embedding_query_only"] is True
+
+    def test_embedding_texts_keep_query_separate(self, cs_module) -> None:
+        results = [
+            cs_module.SearchResultPayload(
+                url="https://docs.acme.test/telemetry",
+                title="Telemetry",
+                snippet="Telemetry configuration guide",
+                source="acme",
+                score=0.9,
+                is_pdf=False,
+                query="Telemetry setup",
+                query_index=0,
+                position=0,
+            )
+        ]
+        texts = cs_module._build_embedding_texts(
+            "Telemetry setup", "very long purpose text", results
+        )
+
+        assert texts[0] == "Telemetry setup"
+        assert texts[1] == "very long purpose text"
+
+    def test_embedding_client_injected_via_runtime(self, cs_module) -> None:
+        from ai_core.contracts import BusinessContext, ScopeContext
+
+        class StubEmbeddingResult:
+            def __init__(self, vectors: list[list[float]]):
+                self.vectors = vectors
+
+        class StubEmbeddingClient:
+            def embed(self, _texts: list[str]) -> StubEmbeddingResult:
+                return StubEmbeddingResult([[1.0], [1.0]])
+
+        scope = ScopeContext(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="invoke-1",
+            run_id="run-1",
+        )
+        business = BusinessContext(workflow_id="wf-1", case_id="case-1")
+        tool_context = scope.to_tool_context(business=business)
+
+        graph_input = cs_module.GraphInput(
+            question="Telemetry setup",
+            collection_scope="docs",
+            quality_mode="standard",
+            purpose="docs-gap-analysis",
+        )
+        results = [
+            cs_module.SearchResultPayload(
+                url="https://docs.acme.test/telemetry",
+                title="Telemetry",
+                snippet="Telemetry configuration guide",
+                source="acme",
+                score=0.9,
+                is_pdf=False,
+                query="Telemetry setup",
+                query_index=0,
+                position=0,
+            ),
+        ]
+
+        cs_module.cosine_similarity.return_value = 1.0
+        cs_module.calculate_generic_heuristics.return_value = 50.0
+
+        state: dict[str, Any] = {
+            "input": graph_input,
+            "tool_context": tool_context,
+            "runtime": {"runtime_embedding_client": StubEmbeddingClient()},
+            "strategy": None,
+            "search": {"results": results},
+            "embedding_rank": {},
+            "hybrid": None,
+            "hitl": {},
+            "ingestion": {},
+            "meta": {},
+            "telemetry": {},
+            "transitions": [],
+            "plan": None,
+        }
+
+        with patch.object(
+            cs_module.EmbeddingClient,
+            "from_settings",
+            side_effect=RuntimeError("from_settings should not be called"),
+        ):
+            result = asyncio.run(cs_module.embedding_rank_node(state))
+
+        assert result["embedding_rank"]["scored_count"] == 1
+
+    def test_auto_ingest_skips_when_no_results(self, cs_module) -> None:
+        """Test that auto_ingest (enabled by default) skips when no results meet threshold."""
         from ai_core.tools.web_search import (
             WebSearchResponse,
             ToolOutcome,
@@ -419,11 +863,14 @@ class TestCollectionSearchGraph:
                 return None
 
             def run(self, **k):
-                m = MagicMock()
-                m.model_dump.return_value = {}
-                m.ranked = []
-                m.candidates = {}
-                return m
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
             def verify(self, **k):
                 return {}
@@ -443,7 +890,9 @@ class TestCollectionSearchGraph:
         meta = self._tool_context_meta()
         state, result = graph.run(initial_state, meta=meta)
 
-        assert result.get("ingestion", {}).get("status") == "planned_only"
+        # With auto_ingest=True (default), but no results meeting threshold,
+        # the status should be "skipped_no_selection" instead of "planned_only"
+        assert result.get("ingestion", {}).get("status") == "skipped_no_selection"
 
     def test_trigger_ingestion_flow(self, cs_module) -> None:
         """Test that approved plan triggers ingestion via CrawlerManager."""
@@ -496,22 +945,14 @@ class TestCollectionSearchGraph:
 
         class ValidCandidatesHybridExecutor:
             def run(self, *, scoring_context, candidates, tenant_context) -> Any:
-                result = MagicMock()
-                c1 = {
-                    "url": "https://docs.acme.test/admin",
-                    "title": "Admin",
-                    "score": 0.9,
-                }
+                from llm_worker.schemas import HybridResult
 
-                result.ranked = []
-                result.candidates = {"cand1": c1}
-                result.coverage_delta = "TECHNICAL"
-
-                def model_dump(**kwargs):
-                    return {"candidates": {"cand1": c1}, "result": {"ranked": []}}
-
-                result.model_dump = model_dump
-                return result
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
         mock_crawler_manager = MagicMock()
         mock_crawler_manager.dispatch_crawl_request.return_value = {
@@ -546,11 +987,16 @@ class TestCollectionSearchGraph:
         assert (
             result["hitl"].get("decision") is not None
         ), f"HITL decision missing: {result['hitl']}"
-        assert result["plan"]["collection_id"] == "550e8400-e29b-41d4-a716-446655440000"
-        assert result["plan"]["execution_mode"] == "acquire_and_ingest"
-        assert result["plan"]["hitl_required"] is False
-        assert "https://added.com" in result["plan"]["selected_urls"]
-        assert "https://docs.acme.test/admin" in result["plan"]["selected_urls"]
+        plan_metadata = self._plan_metadata(result["plan"])
+        assert (
+            self._plan_slot_value(result["plan"], "collection_id")
+            == "550e8400-e29b-41d4-a716-446655440000"
+        )
+        assert plan_metadata.get("execution_mode") == "acquire_and_ingest"
+        assert plan_metadata.get("hitl", {}).get("required") is False
+        selected_urls = self._plan_slot_value(result["plan"], "selected_urls") or []
+        assert "https://added.com" in selected_urls
+        assert "https://docs.acme.test/admin" in selected_urls
 
         assert result["ingestion"]["status"] == "triggered"
         assert result["ingestion"]["task_info"]["run_id"] == "test-crawl-run"
@@ -603,13 +1049,14 @@ class TestCollectionSearchGraph:
 
         class AutoIngestHybridExecutor:
             def run(self, *, scoring_context, candidates, tenant_context):
-                result = MagicMock()
-                ranked = [
-                    {"url": "https://docs.acme.test/admin", "score": 95.0},
-                    {"url": "https://docs.acme.test/ignore", "score": 40.0},
-                ]
-                result.model_dump.return_value = {"ranked": ranked}
-                return result
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
 
         class LocalStubHitlGateway:
             def present(self, payload):
@@ -699,7 +1146,7 @@ class TestCollectionSearchGraph:
         graph_adapter = CollectionSearchAdapter(dependencies)
 
         invalid_state = self._initial_state()
-        invalid_state["schema_version"] = "99.99.99"  # Wrong version
+        invalid_state["schema_version"] = "2.0.0"  # Wrong major
 
         meta = self._tool_context_meta()
 
@@ -708,55 +1155,29 @@ class TestCollectionSearchGraph:
 
         assert "schema_version" in str(exc_info.value).lower()
 
-    def test_boundary_validation_with_tool_context_in_meta(self, cs_module) -> None:
-        """Test that tool_context can be provided via meta fallback."""
-        from ai_core.tools.web_search import (
-            WebSearchResponse,
-            ToolOutcome,
-        )
+    def test_boundary_validation_accepts_minor_schema_version(self, cs_module) -> None:
+        """Test that minor/patch schema_version updates are accepted."""
+        state = self._initial_state()
+        state["schema_version"] = "1.2.3"
+        cs_module.CollectionSearchGraphRequest.model_validate(state)
 
-        class LocalStubStrategyGenerator:
-            def __call__(self, request):
-                return cs_module.SearchStrategy(
-                    queries=["q"],
-                    policies_applied=(),
-                    preferred_sources=(),
-                    disallowed_sources=(),
-                )
-
-        class StubWebSearchWorker:
-            def run(self, *, query, context):
-                return WebSearchResponse(
-                    results=[],
-                    outcome=ToolOutcome(decision="ok", rationale="none", meta={}),
-                )
-
-        class MockObj:
-            def present(self, p):
-                return None
-
-            def run(self, **k):
-                m = MagicMock()
-                m.model_dump.return_value = {}
-                m.ranked = []
-                m.candidates = {}
-                return m
-
-            def verify(self, **k):
-                return {}
+    def test_boundary_validation_requires_tool_context_in_state(
+        self, cs_module
+    ) -> None:
+        """Tool context must be provided in the boundary state."""
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        InvalidGraphInput = cs_module.InvalidGraphInput
 
         dependencies = {
-            "runtime_strategy_generator": LocalStubStrategyGenerator(),
-            "runtime_search_worker": StubWebSearchWorker(),
-            "runtime_hybrid_executor": MockObj(),
-            "runtime_hitl_gateway": MockObj(),
-            "runtime_coverage_verifier": MockObj(),
+            "runtime_strategy_generator": MagicMock(),
+            "runtime_search_worker": MagicMock(),
+            "runtime_hybrid_executor": MagicMock(),
+            "runtime_hitl_gateway": MagicMock(),
+            "runtime_coverage_verifier": MagicMock(),
         }
 
-        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
         graph_adapter = CollectionSearchAdapter(dependencies)
 
-        # State without tool_context (should fallback to meta)
         state = {
             "schema_id": "noesis.graphs.collection_search",
             "schema_version": "1.0.0",
@@ -765,10 +1186,132 @@ class TestCollectionSearchGraph:
                 "collection_scope": "docs",
                 "purpose": "test",
             },
-            # tool_context is missing here
         }
 
         meta = self._tool_context_meta()
-        _, result = graph_adapter.run(state, meta=meta)
+        with pytest.raises(InvalidGraphInput):
+            graph_adapter.run(state, meta=meta)
+
+    def test_search_worker_receives_tool_context_not_dict(self, cs_module) -> None:
+        """Regression test: search worker must receive ToolContext, not a dict.
+
+        This test ensures that _execute_single_search passes a proper ToolContext
+        object to the worker, not a plain dict. Previously, a dict was passed which
+        caused 'AttributeError: dict has no attribute metadata' in production.
+        """
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+            SearchResult,
+        )
+        from ai_core.tool_contracts import ToolContext
+
+        received_contexts: list[Any] = []
+
+        class ContextCapturingWorker:
+            """Worker that captures the context type for verification."""
+
+            def run(self, *, query: str, context: Any) -> WebSearchResponse:
+                received_contexts.append(context)
+                results = [
+                    SearchResult(
+                        url="https://test.example/doc",
+                        title="Test Doc",
+                        snippet="Test snippet",
+                        source="test",
+                        score=0.9,
+                        is_pdf=False,
+                    ),
+                ]
+                outcome = ToolOutcome(
+                    decision="ok",
+                    rationale="search_completed",
+                    meta={"provider": "stub", "latency_ms": 10},
+                )
+                return WebSearchResponse(results=results, outcome=outcome)
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request: Any) -> Any:
+                cs_module.cosine_similarity.return_value = 0.8
+                cs_module.calculate_generic_heuristics.return_value = 0.5
+                return cs_module.SearchStrategy(
+                    queries=["query1", "query2"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class MockObj:
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                from llm_worker.schemas import HybridResult
+
+                return HybridResult(
+                    ranked=[],
+                    top_k=[],
+                    coverage_delta="TECHNICAL",
+                    recommended_ingest=[],
+                )
+
+            def verify(self, **k):
+                return {}
+
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": ContextCapturingWorker(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
+
+        initial_state = self._initial_state()
+        meta = self._tool_context_meta()
+        _, result = graph.run(initial_state, meta=meta)
 
         assert result["outcome"] == "completed"
+        assert len(received_contexts) == 2, "Expected 2 search calls (one per query)"
+
+        for i, ctx in enumerate(received_contexts):
+            assert isinstance(
+                ctx, ToolContext
+            ), f"Search call {i}: Expected ToolContext, got {type(ctx).__name__}"
+            assert hasattr(
+                ctx, "metadata"
+            ), f"Search call {i}: ToolContext missing metadata attribute"
+            assert (
+                "worker_call_id" in ctx.metadata
+            ), f"Search call {i}: worker_call_id not set in metadata"
+
+    def test_graph_timeout_returns_error_payload(self, cs_module) -> None:
+
+        class SlowRunnable:
+            async def ainvoke(self, _state):
+                await asyncio.sleep(0.05)
+                return {}
+
+        dependencies = {
+            "runtime_strategy_generator": MagicMock(),
+            "runtime_search_worker": MagicMock(),
+            "runtime_hybrid_executor": MagicMock(),
+            "runtime_hitl_gateway": MagicMock(),
+            "runtime_coverage_verifier": MagicMock(),
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
+        graph.runnable = SlowRunnable()
+
+        state = self._initial_state()
+        state["runtime"] = {"graph_timeout_s": 0.01}
+        meta = self._tool_context_meta()
+
+        _, result = graph.run(state, meta=meta)
+
+        assert result["outcome"] == "error"
+        assert result["error"] == "graph_timeout"
+        assert result["telemetry"]["graph_timeout_s"] == 0.01

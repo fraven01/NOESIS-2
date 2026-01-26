@@ -417,7 +417,7 @@ def _run_rerank_workflow(
         meta["message"] = "Rerank workflow wurde gestartet und läuft im Hintergrund."
         return meta, None
 
-    result_payload = rerank_response.get("result") or {}
+    result_payload = rerank_response.get("data") or {}
     ranked_entries = result_payload.get("ranked") or []
     merged_results = _apply_rerank_results(results, ranked_entries)
 
@@ -535,6 +535,7 @@ from theme.views_documents import (  # noqa: E402,F401
 from theme.views_web_search import (  # noqa: E402,F401
     web_search,
     web_search_ingest_selected,
+    web_search_status,
 )
 from theme.views_ingestion import (  # noqa: E402,F401
     crawler_submit,

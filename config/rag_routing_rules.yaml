@@ -23,7 +23,8 @@ rules:
   # Dev tenant: standard profile, late chunking (default)
   - tenant: dev
     profile: standard
-    chunker_mode: late
+    chunker_mode: agentic
+    # contextual_enrichment: true
 
   # Demo tenant: demo profile, late chunking (default)
   - tenant: demo

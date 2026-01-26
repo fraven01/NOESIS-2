@@ -8,6 +8,7 @@ from ai_core.graphs.technical.retrieval_augmented_generation import (
     run as run_retrieval_augmented_generation,
 )
 from ai_core.tool_contracts import ToolContext
+from ai_core.rag.filter_spec import FilterSpec, build_filter_spec
 
 
 class RagQueryService:
@@ -36,6 +37,21 @@ class RagQueryService:
         }
         if graph_state:
             state.update(graph_state)
+
+        raw_filters = state.get("filters")
+        if raw_filters is not None:
+            if isinstance(raw_filters, FilterSpec):
+                state["filters"] = raw_filters
+            else:
+                filter_mapping = raw_filters if isinstance(raw_filters, Mapping) else {}
+                state["filters"] = build_filter_spec(
+                    tenant_id=tool_context.scope.tenant_id,
+                    case_id=tool_context.business.case_id,
+                    collection_id=tool_context.business.collection_id,
+                    document_id=tool_context.business.document_id,
+                    document_version_id=tool_context.business.document_version_id,
+                    raw_filters=filter_mapping,
+                )
 
         meta: MutableMapping[str, Any] = {
             "scope_context": tool_context.scope.model_dump(

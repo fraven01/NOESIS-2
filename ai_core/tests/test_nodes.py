@@ -117,6 +117,7 @@ def test_retrieve_hybrid_search(monkeypatch):
         "filters": {"category": "demo"},
         "process": "review",
         "doc_class": "invoice",
+        "tenant_id": "tenant-1",
         "hybrid": {
             "alpha": 0.6,
             "min_sim": 0.2,
@@ -319,6 +320,43 @@ def test_retrieve_deduplicates_matches(monkeypatch):
     }
 
 
+def test_retrieve_diversification_allows_same_document_chunks():
+    matches = [
+        {
+            "id": "doc-1",
+            "text": "alpha beta",
+            "score": 0.9,
+            "source": "a",
+            "meta": {"chunk_id": "chunk-1", "document_id": "doc-1"},
+        },
+        {
+            "id": "doc-1",
+            "text": "alpha beta gamma",
+            "score": 0.85,
+            "source": "a",
+            "meta": {"chunk_id": "chunk-2", "document_id": "doc-1"},
+        },
+        {
+            "id": "doc-2",
+            "text": "alpha beta",
+            "score": 0.84,
+            "source": "b",
+            "meta": {"chunk_id": "chunk-3", "document_id": "doc-2"},
+        },
+    ]
+
+    diversified = retrieve._apply_diversification(
+        list(matches),
+        top_k=2,
+        strength=1.0,
+    )
+
+    assert [match["meta"]["chunk_id"] for match in diversified[:2]] == [
+        "chunk-1",
+        "chunk-2",
+    ]
+
+
 def test_retrieve_raises_on_chunks_without_ids(monkeypatch):
     _patch_routing(monkeypatch)
 
@@ -388,7 +426,22 @@ def _mock_call(called):
 
 def test_compose_masks_and_sets_version(monkeypatch):
     called = {}
-    monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
+
+    def _mock_compose_call(label, prompt, metadata, **kwargs):
+        called["label"] = label
+        called["prompt"] = prompt
+        called["meta"] = metadata
+        called["response_format"] = kwargs.get("response_format")
+        return {
+            "text": (
+                '{"reasoning":{"analysis":"A","gaps":[]},"answer_markdown":"resp",'
+                '"used_sources":[],"suggested_followups":[]}'
+            ),
+            "usage": {},
+            "model": "m",
+        }
+
+    monkeypatch.setattr("ai_core.llm.client.call", _mock_compose_call)
     state = {
         "question": "Number 1234?",
         "snippets": [{"text": "Answer", "source": "s"}],
@@ -406,7 +459,8 @@ def test_compose_masks_and_sets_version(monkeypatch):
     result = compose.run(context, params)
     assert called["label"] == "synthesize"
     assert called["prompt"] == expected_prompt
-    assert called["meta"]["prompt_version"] == "v1"
+    assert called["meta"]["prompt_version"] == "v2"
+    assert called["response_format"] is None
     assert result.answer == "resp"
 
 
@@ -661,7 +715,9 @@ def test_tracing_called(monkeypatch):
             return False
 
     class FakeTracer:
-        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+        def start_as_current_span(
+            self, name: str, attributes=None, **kwargs
+        ):  # noqa: D401
             spans.append(name)
             return FakeContext(name)
 
@@ -671,7 +727,21 @@ def test_tracing_called(monkeypatch):
         "ai_core.infra.observability.update_observation", lambda **_: None
     )
     called = {}
-    monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
+
+    def _mock_compose_call(label, prompt, metadata, **kwargs):
+        called["label"] = label
+        called["prompt"] = prompt
+        called["meta"] = metadata
+        return {
+            "text": (
+                '{"reasoning":{"analysis":"A","gaps":[]},"answer_markdown":"resp",'
+                '"used_sources":[],"suggested_followups":[]}'
+            ),
+            "usage": {},
+            "model": "m",
+        }
+
+    monkeypatch.setattr("ai_core.llm.client.call", _mock_compose_call)
     context = _tool_context(tenant_id="t1", case_id="c1", run_id="run-1")
     params = compose.ComposeInput(question="Q?", snippets=[])
     compose.run(context, params)

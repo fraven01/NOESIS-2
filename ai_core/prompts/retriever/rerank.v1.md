@@ -6,6 +6,9 @@ Return a JSON object with the following schema:
   ]
 }
 
+Candidates include optional metadata (e.g., section_path, doc_type, chunk_index, confidence).
+Use metadata only to break ties or resolve ambiguity; prioritize semantic match to the question.
+
 Rules:
 - Only use ids that appear in the candidates list.
 - Score must be between 0.0 and 1.0 (higher = more relevant).

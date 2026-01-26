@@ -355,18 +355,51 @@ class DbDocumentsRepository(DocumentsRepository):
                             is_latest=False,
                             deleted_at=now,
                         )
-                        DocumentVersion.objects.create(
-                            id=resolved_version_id,
-                            document=document,
-                            version_label=version_label,
-                            sequence=max_seq + 1,
-                            label_sequence=max_label_seq + 1,
-                            is_latest=True,
-                            deleted_at=None,
-                            normalized_document=doc_snapshot,
-                            created_by=created_by_user,
-                            created_by_service_id=last_hop_service_id,
-                        )
+                        try:
+                            DocumentVersion.objects.create(
+                                id=resolved_version_id,
+                                document=document,
+                                version_label=version_label,
+                                sequence=max_seq + 1,
+                                label_sequence=max_label_seq + 1,
+                                is_latest=True,
+                                deleted_at=None,
+                                normalized_document=doc_snapshot,
+                                created_by=created_by_user,
+                                created_by_service_id=last_hop_service_id,
+                            )
+                        except IntegrityError:
+                            existing_version = DocumentVersion.objects.filter(
+                                id=resolved_version_id
+                            ).first()
+                            if (
+                                existing_version
+                                and existing_version.document_id == document.id
+                            ):
+                                update_fields = ["normalized_document"]
+                                existing_version.normalized_document = doc_snapshot
+                                if not existing_version.is_latest:
+                                    DocumentVersion.objects.filter(
+                                        document=document,
+                                        is_latest=True,
+                                    ).exclude(id=existing_version.id).update(
+                                        is_latest=False,
+                                        deleted_at=now,
+                                    )
+                                    existing_version.is_latest = True
+                                    existing_version.deleted_at = None
+                                    update_fields.extend(["is_latest", "deleted_at"])
+                                existing_version.save(update_fields=update_fields)
+                            else:
+                                logger.error(
+                                    "document_version_id_collision",
+                                    extra={
+                                        "document_version_id": str(resolved_version_id),
+                                        "document_id": str(document.id),
+                                    },
+                                    exc_info=True,
+                                )
+                                raise
 
             # 3. Memberships (Side Effects)
             if coll:

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from asgiref.sync import sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from django.conf import settings
 from pydantic import ValidationError
 from structlog.stdlib import get_logger
 
@@ -13,8 +14,12 @@ from ai_core.tool_contracts import ContextError
 from ai_core.services.rag_query import RagQueryService
 from theme.chat_utils import (
     build_hybrid_config_from_payload,
+    build_passage_items_for_workbench,
     build_snippet_items,
+    build_used_source_items,
     load_history,
+    link_citations_markdown,
+    render_markdown_answer,
 )
 from theme.websocket_payloads import RagChatPayload
 from theme.helpers.context import prepare_workbench_context
@@ -113,13 +118,52 @@ class RagChatConsumer(AsyncJsonWebsocketConsumer):
 
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
-        snippet_items = build_snippet_items(snippets)
+        retrieval_meta = result_payload.get("retrieval") or {}
+        passages = build_passage_items_for_workbench(snippets)
+        if passages:
+            retrieval_meta = dict(retrieval_meta)
+            retrieval_meta["passages"] = passages
+            result_payload["retrieval"] = retrieval_meta
+        snippet_limit = len(snippets) or None
+        snippet_items = build_snippet_items(snippets, limit=snippet_limit)
+        answer_markdown = link_citations_markdown(answer, snippet_items)
+        answer = render_markdown_answer(answer_markdown)
+        reasoning = result_payload.get("reasoning")
+        if not isinstance(reasoning, dict):
+            reasoning = None
+        used_sources = build_used_source_items(
+            result_payload.get("used_sources"),
+            snippet_items=snippet_items,
+            limit=snippet_limit,
+        )
+        suggested_followups = result_payload.get("suggested_followups")
+        if not isinstance(suggested_followups, list):
+            suggested_followups = []
+        debug_meta = result_payload.get("debug_meta")
+        user = self.scope.get("user")
+        show_debug = bool(settings.DEBUG) or bool(getattr(user, "is_staff", False))
+        if not show_debug:
+            debug_meta = None
+        else:
+            if isinstance(passages, list) and passages:
+                debug_meta = dict(debug_meta or {})
+                debug_meta["passages"] = passages
+            if isinstance(retrieval_meta, dict):
+                reference_expansion = retrieval_meta.get("reference_expansion")
+                if isinstance(reference_expansion, dict):
+                    debug_meta = dict(debug_meta or {})
+                    debug_meta["reference_expansion"] = reference_expansion
 
         await self.send_json(
             {
                 "event": "final",
                 "answer": answer,
                 "snippets": snippet_items,
+                "reasoning": reasoning,
+                "used_sources": used_sources,
+                "suggested_followups": suggested_followups,
+                "debug_meta": debug_meta,
+                "show_debug": show_debug,
                 "thread_id": thread_id,
                 "case_id": case_id,
                 "collection_id": collection_id,

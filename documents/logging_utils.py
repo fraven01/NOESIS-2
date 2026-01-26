@@ -16,7 +16,7 @@ from uuid import UUID
 
 from common.logging import get_logger
 from opentelemetry import trace
-from opentelemetry.trace import Span, Status, StatusCode
+from opentelemetry.trace import Span, SpanKind, Status, StatusCode
 
 from . import metrics
 
@@ -116,7 +116,9 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                     entry_fields.update(_coerce_fields(extra_entry))
                 workflow_label = entry_fields.get("workflow_id")
                 tracer = trace.get_tracer(func.__module__ or __name__)
-                with tracer.start_as_current_span(event) as span:
+                with tracer.start_as_current_span(
+                    event, kind=SpanKind.INTERNAL
+                ) as span:
                     _set_span_attributes(span, entry_fields)
                     logger.info(event, phase="start", **entry_fields)
                     try:

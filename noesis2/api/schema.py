@@ -8,7 +8,9 @@ multi-tenant platform contracts.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Dict, List, MutableMapping, Sequence, Type, TypeVar
+from typing import Dict, List, MutableMapping, Sequence, Type, TypeVar, TypedDict
+
+from typing_extensions import Unpack
 
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
@@ -82,6 +84,16 @@ TRACE_ID_RESPONSE_HEADER_REF = (
 TRACE_HEADER_EXTENSION_FLAG = "x-noesis-trace-response-header"
 
 ADMIN_BEARER_AUTH_SCHEME = "bearerAuth"
+
+
+class OpenApiSchemaConfig(TypedDict, total=False):
+    include_tenant_headers: bool
+    include_trace_header: bool
+    include_error_responses: bool
+    error_statuses: Sequence[int] | None
+    parameters: Sequence[OpenApiParameter]
+    responses: object
+    extensions: Dict[str, object]
 
 
 def curl_code_sample(
@@ -186,7 +198,7 @@ def _prepare_responses(responses: object) -> Dict[int, object]:
     return {200: responses}
 
 
-def default_extend_schema(**kwargs):
+def default_extend_schema(**kwargs: Unpack[OpenApiSchemaConfig]):
     """Wrapper around :func:`drf_spectacular.utils.extend_schema`.
 
     All API views should use this helper instead of the raw decorator so

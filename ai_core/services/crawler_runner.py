@@ -286,12 +286,6 @@ def run_crawler_runner(
         if not getattr(scope_meta, field, None):
             raise ValueError(error_msg)
 
-    # Extract validated IDs
-    tenant_id = scope_meta.tenant_id
-    # BREAKING CHANGE (Option A): case_id from business_context
-    case_id = business_meta.case_id  # Optional at HTTP level
-    trace_id = scope_meta.trace_id
-
     # Identity IDs (Pre-MVP ID Contract)
     # HTTP requests have user_id (if authenticated), service_id is None
     # S2S hops (Celery tasks) have service_id, user_id may be present for audit trail
@@ -304,31 +298,35 @@ def run_crawler_runner(
     graph_app = build_universal_ingestion_graph()
 
     for build in state_builds:
-        # Construct Input for Universal Graph
+        # Construct Input for Universal Graph (strict contract: normalized_document only)
         normalized = build.state.normalized_document_input
         input_payload: UniversalIngestionInput = {
-            "source": "crawler",
-            "mode": "ingest_only",
-            "collection_id": request_model.collection_id,
-            "upload_blob": None,
-            "metadata_obj": None,
             "normalized_document": normalized,
         }
 
         # Generate canonical ingestion_run_id for this build
         canonical_ingestion_run_id = str(uuid4())
 
-        # Determine strict context
-        # Note: Universal Graph expects tenant_id, trace_id, case_id in context
-        run_context = {
-            "tenant_id": str(tenant_id),
-            "case_id": str(case_id),
-            "trace_id": str(trace_id),
-            "workflow_id": str(workflow_resolved),
-            "ingestion_run_id": canonical_ingestion_run_id,
-            "dry_run": request_model.dry_run,
-            "idempotency_key": idempotency_key,
-        }
+        # Determine strict context (ToolContext payload)
+        tool_context_for_run = tool_context
+        if canonical_ingestion_run_id:
+            updated_scope = tool_context_for_run.scope.model_copy(
+                update={"ingestion_run_id": canonical_ingestion_run_id}
+            )
+            tool_context_for_run = tool_context_for_run.model_copy(
+                update={"scope": updated_scope}
+            )
+        effective_collection_id = build.collection_id or request_model.collection_id
+        if effective_collection_id and (
+            effective_collection_id != tool_context_for_run.business.collection_id
+        ):
+            updated_business = tool_context_for_run.business.model_copy(
+                update={"collection_id": str(effective_collection_id)}
+            )
+            tool_context_for_run = tool_context_for_run.model_copy(
+                update={"business": updated_business}
+            )
+        run_context = tool_context_for_run.model_dump(mode="json", exclude_none=True)
 
         try:
             result = graph_app.invoke({"input": input_payload, "context": run_context})
@@ -339,10 +337,10 @@ def run_crawler_runner(
                 "universal_graph_invoked",
                 extra={
                     "origin": build.origin,
-                    "tenant_id": run_context["tenant_id"],
-                    "trace_id": run_context["trace_id"],
-                    "case_id": run_context["case_id"],
-                    "workflow_id": run_context["workflow_id"],
+                    "tenant_id": tool_context_for_run.scope.tenant_id,
+                    "trace_id": tool_context_for_run.scope.trace_id,
+                    "case_id": tool_context_for_run.business.case_id,
+                    "workflow_id": tool_context_for_run.business.workflow_id,
                     "ingestion_run_id": canonical_ingestion_run_id,
                     "decision": output.get("decision"),
                     "reason": output.get("reason"),
@@ -355,10 +353,10 @@ def run_crawler_runner(
                 "universal_crawler_ingestion_failed",
                 extra={
                     "origin": build.origin,
-                    "tenant_id": run_context["tenant_id"],
-                    "trace_id": run_context["trace_id"],
-                    "case_id": run_context["case_id"],
-                    "workflow_id": run_context["workflow_id"],
+                    "tenant_id": tool_context_for_run.scope.tenant_id,
+                    "trace_id": tool_context_for_run.scope.trace_id,
+                    "case_id": tool_context_for_run.business.case_id,
+                    "workflow_id": tool_context_for_run.business.workflow_id,
                     "ingestion_run_id": canonical_ingestion_run_id,
                 },
             )

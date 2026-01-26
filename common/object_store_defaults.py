@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -73,28 +74,90 @@ class FilesystemObjectStore(ObjectStore):
         return sanitized
 
     def put_bytes(self, path: str, data: bytes) -> Path:
+        start = time.perf_counter()
         target = self._full_path(path)
         target.write_bytes(data)
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        LOGGER.info(
+            "object_store.put_bytes",
+            extra={
+                "path": path,
+                "size_bytes": len(data),
+                "duration_ms": duration_ms,
+            },
+        )
         return target
 
     def write_bytes(self, path: str, data: bytes) -> None:
+        start = time.perf_counter()
         target = self.BASE_PATH / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        LOGGER.info(
+            "object_store.write_bytes",
+            extra={
+                "path": path,
+                "size_bytes": len(data),
+                "duration_ms": duration_ms,
+            },
+        )
 
     def read_bytes(self, path: str) -> bytes:
+        start = time.perf_counter()
         target = self.BASE_PATH / path
-        return target.read_bytes()
+        data = target.read_bytes()
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        LOGGER.info(
+            "object_store.read_bytes",
+            extra={
+                "path": path,
+                "size_bytes": len(data),
+                "duration_ms": duration_ms,
+            },
+        )
+        return data
 
     def read_json(self, path: str) -> Any:
+        start = time.perf_counter()
         target = self.BASE_PATH / path
+        size_bytes = None
+        try:
+            size_bytes = target.stat().st_size
+        except OSError:
+            size_bytes = None
         with target.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
+            payload = json.load(fh)
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        LOGGER.info(
+            "object_store.read_json",
+            extra={
+                "path": path,
+                "size_bytes": size_bytes,
+                "duration_ms": duration_ms,
+            },
+        )
+        return payload
 
     def write_json(self, path: str, obj: Any) -> Path:
+        start = time.perf_counter()
         target = self._full_path(path)
         with target.open("w", encoding="utf-8") as fh:
             json.dump(obj, fh)
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        size_bytes = None
+        try:
+            size_bytes = target.stat().st_size
+        except OSError:
+            size_bytes = None
+        LOGGER.info(
+            "object_store.write_json",
+            extra={
+                "path": path,
+                "size_bytes": size_bytes,
+                "duration_ms": duration_ms,
+            },
+        )
         return target
 
 

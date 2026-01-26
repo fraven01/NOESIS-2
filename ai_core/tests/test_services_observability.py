@@ -56,7 +56,7 @@ def test_execute_graph_emits_cost_summary_and_updates_observation(monkeypatch):
         timestamp=datetime.now(timezone.utc),
         service_id="test-worker",
     )
-    business = BusinessContext(case_id="case-456")
+    business = BusinessContext(case_id="case-456", workflow_id="custom.graph")
     tool_context = ToolContext(scope=scope, business=business)
     normalized_meta = {
         "graph_name": "custom.graph",

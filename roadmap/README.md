@@ -4,7 +4,8 @@ This directory contains planning documents. It is not a source of runtime truth;
 
 ## Index
 
-- Architecture consolidation: `roadmap/architecture-consolidation-2025.md`
+
+- Agentic AI-first strategy: `roadmap/agentic-ai-first-strategy.md`
 - Backlog (open items): `roadmap/backlog.md`
 
 ## Suggested conventions (optional)

@@ -109,17 +109,43 @@
                     </div>
                 </div>
 
-                <div class="border-t border-slate-100 pt-4 space-y-3">
-                    <div class="flex items-center justify-between" x-show="searchType === 'collection_search'"
-                        x-transition>
+                <!-- Auto-Ingest Settings (Collection Search only) -->
+                <div class="border-t border-slate-100 pt-4 space-y-3" x-show="searchType === 'collection_search'" x-transition
+                    x-data="{ autoIngest: true, minScore: 60 }">
+                    <div class="flex items-center justify-between">
                         <label class="text-sm text-slate-700 font-medium">Auto-Ingest Results</label>
                         <div
                             class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
-                            <input type="checkbox" name="auto_ingest" id="toggle-ingest"
+                            <input type="checkbox" name="auto_ingest" id="toggle-ingest" checked
+                                x-model="autoIngest"
                                 class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer" />
                             <label for="toggle-ingest"
                                 class="toggle-label block overflow-hidden h-5 rounded-full bg-slate-300 cursor-pointer"></label>
                         </div>
+                    </div>
+
+                    <!-- Threshold Slider (only visible when auto_ingest is enabled) -->
+                    <div x-show="autoIngest" x-transition class="space-y-2">
+                        <div class="flex items-center justify-between">
+                            <label class="text-xs text-slate-600">Min Score Threshold</label>
+                            <span class="text-xs font-medium text-indigo-600" x-text="minScore + '%'"></span>
+                        </div>
+                        <input type="range" name="auto_ingest_min_score" min="0" max="100" step="5"
+                            x-model="minScore"
+                            class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600">
+                        <p class="text-[10px] text-slate-400">Only ingest results scoring above this threshold.</p>
+                    </div>
+
+                    <!-- Top-K Input -->
+                    <div x-show="autoIngest" x-transition class="flex items-center justify-between">
+                        <label class="text-xs text-slate-600">Max URLs to Ingest</label>
+                        <select name="auto_ingest_top_k"
+                            class="w-20 rounded border-slate-300 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                            <option value="5">5</option>
+                            <option value="10" selected>10</option>
+                            <option value="15">15</option>
+                            <option value="20">20</option>
+                        </select>
                     </div>
                 </div>
 

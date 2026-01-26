@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping, Sequence
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -15,8 +16,125 @@ from ai_core.infra.observability import update_observation
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
 from common.validators import normalise_str_sequence, optional_str, require_trimmed_str
+from django.conf import settings
 
 LOGGER = logging.getLogger(__name__)
+
+_MAX_POLICIES = 4
+_MAX_SOURCES = 4
+_MAX_ITEM_CHARS = 160
+_MAX_NOTES_CHARS = 240
+
+
+def _limit_items(values: Sequence[str], *, limit: int) -> tuple[str, ...]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            continue
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        if len(candidate) > _MAX_ITEM_CHARS:
+            continue
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(candidate)
+        if len(cleaned) >= limit:
+            break
+    return tuple(cleaned)
+
+
+def _ensure_original_query(queries: list[str], original: str) -> list[str]:
+    original_clean = original.strip()
+    if not original_clean:
+        return queries
+    if not any(q.strip().casefold() == original_clean.casefold() for q in queries):
+        queries.insert(0, original_clean)
+    return queries[:5]
+
+
+def _query_domains(query: str) -> set[str]:
+    tokens = set()
+    for match in re.findall(r"[a-z0-9-]+(?:\\.[a-z0-9-]+)+", query.casefold()):
+        tokens.add(match)
+    return tokens
+
+
+def _filter_disallowed_sources(
+    sources: Sequence[str], *, query: str
+) -> tuple[str, ...]:
+    query_domains = _query_domains(query)
+    if not query_domains:
+        return tuple(sources)
+    filtered: list[str] = []
+    for item in sources:
+        item_key = item.casefold()
+        if any(domain in item_key for domain in query_domains):
+            continue
+        filtered.append(item)
+    return tuple(filtered)
+
+
+def _fallback_quality_suffixes(quality_mode: str) -> tuple[str, ...]:
+    mode = quality_mode.strip().lower()
+    if "law" in mode or "legal" in mode or "compliance" in mode:
+        return (
+            "official guidance",
+            "regulation",
+            "compliance requirements",
+        )
+    if "software" in mode or "docs" in mode or "api" in mode:
+        return (
+            "official documentation",
+            "api reference",
+            "configuration guide",
+        )
+    return (
+        "official documentation",
+        "implementation guide",
+        "overview",
+    )
+
+
+def _fallback_query_variants(request: SearchStrategyRequest) -> list[str]:
+    base_query = request.query.strip()
+    purpose_hint = request.purpose.replace("_", " ").replace("-", " ").strip()
+    quality_hint = request.quality_mode.replace("_", " ").replace("-", " ").strip()
+    domains = sorted(_query_domains(base_query))
+
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        cleaned = candidate.strip()
+        if not cleaned:
+            return
+        key = cleaned.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        queries.append(cleaned)
+
+    add(base_query)
+    if purpose_hint:
+        add(f"{base_query} {purpose_hint}")
+    if quality_hint and quality_hint.casefold() not in purpose_hint.casefold():
+        add(f"{base_query} {quality_hint}")
+    for suffix in _fallback_quality_suffixes(request.quality_mode):
+        add(f"{base_query} {suffix}")
+    add(f"{base_query} requirements")
+    add(f"{base_query} policy")
+    for domain in domains[:2]:
+        add(f"site:{domain} {base_query}")
+
+    if len(queries) < 3:
+        add(f"{base_query} guide")
+        add(f"{base_query} overview")
+
+    return queries[:5]
 
 
 class SearchStrategyRequest(BaseModel):
@@ -80,27 +198,7 @@ class SearchStrategy(BaseModel):
 
 def fallback_strategy(request: SearchStrategyRequest) -> SearchStrategy:
     """Return a deterministic baseline strategy when LLM generation fails."""
-    base_query = request.query
-    purpose_hint = request.purpose.replace("_", " ")
-    candidates = [
-        base_query,
-        f"{base_query} {purpose_hint}",
-        f"{base_query} overview",
-        f"{base_query} information",
-        f"{base_query} guide",
-    ]
-    seen: set[str] = set()
-    queries: list[str] = []
-    for item in candidates:
-        normalised = item.strip()
-        if not normalised:
-            continue
-        if normalised.lower() in seen:
-            continue
-        seen.add(normalised.lower())
-        queries.append(normalised)
-        if len(queries) == 3:
-            break
+    queries = _fallback_query_variants(request)
     return SearchStrategy(
         queries=queries,
         policies_applied=("default",),
@@ -173,14 +271,32 @@ def llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
         "designing focused web search strategies.\n"
         "Analyse the user's intent and produce between 3 and 5 focused web "
         "search queries that maximise authoritative and relevant sources.\n"
-        "Consider document types, versioning, source quality, and "
-        "content relevance to the task.\n"
-        "Respond with a JSON object containing the keys 'queries', "
-        "'policies_applied', 'preferred_sources', 'disallowed_sources', and "
-        "an optional 'notes'.\n"
-        "- 'queries' must be an array of 3-5 strings.\n"
-        "- Optional arrays may be empty if not applicable.\n"
-        "Do not include any additional text outside the JSON object.\n"
+        "Always include the original query as one of the queries.\n"
+        "Keep query expansions close to the original intent; avoid broad "
+        "definitions or unrelated context.\n"
+        "Only include preferred or disallowed sources when the user explicitly "
+        "mentions them; otherwise keep those arrays empty.\n"
+        "Return JSON only, matching this schema:\n"
+        "{"
+        '"queries":["string"],'
+        '"policies_applied":["string"],'
+        '"preferred_sources":["string"],'
+        '"disallowed_sources":["string"],'
+        '"notes": "string or null"'
+        "}\n"
+        "Example (valid JSON only):\n"
+        "{"
+        '"queries":['
+        '"Acme telemetry configuration",'
+        '"Acme telemetry official documentation",'
+        '"Acme telemetry requirements"'
+        "],"
+        '"policies_applied":["tenant-default"],'
+        '"preferred_sources":[],'
+        '"disallowed_sources":[],'
+        '"notes":"Focus on official docs and setup guides."'
+        "}\n"
+        "Do not include any text outside the JSON object.\n"
         "\n"
         "Context:\n"
         f"- Tenant: {request.tenant_id}\n"
@@ -193,11 +309,25 @@ def llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
         "tenant_id": request.tenant_id,
         "case_id": f"collection-search:{request.purpose}:{query_hash}",
         "trace_id": None,
-        "prompt_version": "collection_search_strategy_v1",
+        "prompt_version": "collection_search_strategy_v3",
     }
+    # Dev/testing override: allow larger outputs + longer timeouts for diagnostics.
+    dev_timeout_s: float | None = None
+    dev_extra_params: dict[str, Any] | None = None
+    if getattr(settings, "DEBUG", False):
+        dev_timeout_s = 90.0
+        dev_extra_params = {"max_tokens": 12000}
+
     try:
         llm_start = time.time()
-        response = llm_client.call("analyze", prompt, metadata)
+        response = llm_client.call(
+            "analyze",
+            prompt,
+            metadata,
+            response_format={"type": "json_object"},
+            extra_params=dev_extra_params,
+            timeout_s=dev_timeout_s,
+        )
         llm_latency = time.time() - llm_start
 
         # Track LLM metrics (simplified for brevity)
@@ -232,6 +362,7 @@ def llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
 
     try:
         queries = coerce_query_list(payload.get("queries"))
+        queries = _ensure_original_query(queries, request.query)
     except Exception as exc:
         return fallback_with_reason(
             request,
@@ -239,12 +370,21 @@ def llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
             exc,
         )
 
-    policies = payload.get("policies_applied") or ()
-    preferred_sources = payload.get("preferred_sources") or ()
-    disallowed_sources = payload.get("disallowed_sources") or ()
+    policies_raw = normalise_str_sequence(payload.get("policies_applied"))
+    preferred_raw = normalise_str_sequence(payload.get("preferred_sources"))
+    disallowed_raw = normalise_str_sequence(payload.get("disallowed_sources"))
     notes = payload.get("notes") if isinstance(payload.get("notes"), str) else None
     if isinstance(notes, str):
         notes = notes.strip() or None
+        if notes and len(notes) > _MAX_NOTES_CHARS:
+            notes = notes[:_MAX_NOTES_CHARS].rstrip()
+
+    policies = _limit_items(policies_raw, limit=_MAX_POLICIES)
+    preferred_sources = _limit_items(preferred_raw, limit=_MAX_SOURCES)
+    disallowed_sources = _limit_items(disallowed_raw, limit=_MAX_SOURCES)
+    disallowed_sources = _filter_disallowed_sources(
+        disallowed_sources, query=request.query
+    )
 
     try:
         return SearchStrategy(

@@ -72,7 +72,11 @@
       "Bash(if [ -f \"$file\" ])",
       "Bash(then)",
       "Bash(fi)",
-      "Bash(npm test:*)"
+      "Bash(npm test:*)",
+      "Bash(xargs ls:*)",
+      "Bash(for app in theme crawler cases documents ai_core llm_worker users profiles organizations common)",
+      "Bash(do if [ -d \"/f/NOESIS-2/NOESIS-2/$app\" ])",
+      "Bash(then echo \"$app: EXISTS\")"
     ],
     "deny": [],
     "ask": []

@@ -21,6 +21,7 @@ Proceed without asking only when the change stays within existing enforced contr
 - Stop-Conditions are binding: new IDs, new meta keys, contract changes, or boundary breaks must never happen silently and must be explicitly confirmed (this replaces ADRs for now).
 - There is exactly one planning anchor: `roadmap/backlog.md` is the only queue for "what's next" (no parallel decision locations).
 - Graph names have a single origin: `ai_core/graph/registry.py` is the source of truth; no versioning/lifecycle process until a real GraphExecutor exists.
+- Model routing: use labels defined in `MODEL_ROUTING.yaml` (or `MODEL_ROUTING.local.yaml`). Do not pass raw model IDs in settings/env vars; if you need a new model, add a label mapping instead.
 - Pre-MVP / no production data: breaking changes are allowed (including schema/contract changes). Prefer removing compatibility layers over carrying duplicates; if a reset is required for correctness, a reset is acceptable.
 - Traceability rule: if a confirmed change breaks an existing contract (schemas/IDs/meta/boundaries), always add a corresponding item to `roadmap/backlog.md` with concrete code pointers and acceptance criteria.
 - Agents-first workflow: keep roadmap/backlog items LLM-executable (code pointers + acceptance criteria) and treat docs as explanations, not alternative sources of runtime truth.

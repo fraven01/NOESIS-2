@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+import math
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 try:  # pragma: no cover - optional dependency
     from prometheus_client import Counter as _PromCounter  # type: ignore
@@ -210,4 +212,114 @@ __all__ = [
     "RAG_QUERY_LATENCY_MS",
     "RAG_QUERY_CANDIDATES",
     "RAG_QUERY_TOP1_SIM",
+    "EvalMetrics",
+    "calculate_coverage",
+    "evaluate_ranking",
 ]
+
+
+@dataclass(frozen=True)
+class EvalMetrics:
+    recall_at_k: float
+    mrr_at_k: float
+    ndcg_at_k: float
+    relevant_count: int
+    retrieved_count: int
+
+
+def _binary_relevance(
+    relevant_ids: Iterable[str], ranked_ids: Sequence[str], *, k: int
+) -> list[int]:
+    if k <= 0:
+        return []
+    relevant = {str(item) for item in relevant_ids if str(item).strip()}
+    if not relevant:
+        return []
+    hits: list[int] = []
+    for candidate in ranked_ids[:k]:
+        hits.append(1 if candidate in relevant else 0)
+    return hits
+
+
+def _dcg(hits: Sequence[int]) -> float:
+    score = 0.0
+    for idx, rel in enumerate(hits, start=1):
+        if rel <= 0:
+            continue
+        score += rel / math.log2(idx + 1)
+    return score
+
+
+def evaluate_ranking(
+    relevant_ids: Iterable[str],
+    ranked_ids: Sequence[str],
+    *,
+    k: int,
+) -> EvalMetrics:
+    """Compute Recall@k/MRR@k/NDCG@k for binary relevance."""
+
+    cleaned_relevant = [str(item) for item in relevant_ids if str(item).strip()]
+    total_relevant = len(set(cleaned_relevant))
+    hits = _binary_relevance(cleaned_relevant, ranked_ids, k=k)
+    retrieved = min(len(ranked_ids), max(0, k))
+
+    if total_relevant <= 0 or not hits:
+        return EvalMetrics(
+            recall_at_k=0.0,
+            mrr_at_k=0.0,
+            ndcg_at_k=0.0,
+            relevant_count=total_relevant,
+            retrieved_count=retrieved,
+        )
+
+    recall = sum(hits) / total_relevant
+
+    mrr = 0.0
+    for idx, rel in enumerate(hits, start=1):
+        if rel > 0:
+            mrr = 1.0 / idx
+            break
+
+    dcg = _dcg(hits)
+    ideal_hits = [1] * min(total_relevant, len(hits))
+    idcg = _dcg(ideal_hits)
+    ndcg = dcg / idcg if idcg > 0 else 0.0
+
+    return EvalMetrics(
+        recall_at_k=recall,
+        mrr_at_k=mrr,
+        ndcg_at_k=ndcg,
+        relevant_count=total_relevant,
+        retrieved_count=retrieved,
+    )
+
+
+def calculate_coverage(
+    retrieved: Sequence[Mapping[str, object]],
+    document_id: str,
+    total: int,
+) -> dict[str, object]:
+    if total <= 0:
+        return {"coverage_ratio": 0.0, "all_covered": False}
+    doc_id = str(document_id).strip()
+    if not doc_id:
+        return {"coverage_ratio": 0.0, "all_covered": False}
+
+    covered_ids: set[str] = set()
+    for snippet in retrieved:
+        if not isinstance(snippet, Mapping):
+            continue
+        meta = snippet.get("meta")
+        meta_payload = meta if isinstance(meta, Mapping) else {}
+        snippet_doc_id = str(meta_payload.get("document_id") or "").strip()
+        if snippet_doc_id != doc_id:
+            continue
+        chunk_id = (
+            meta_payload.get("chunk_id") or meta_payload.get("id") or snippet.get("id")
+        )
+        if chunk_id:
+            covered_ids.add(str(chunk_id))
+
+    covered = len(covered_ids)
+    ratio = min(1.0, covered / max(1, total))
+    return {"coverage_ratio": ratio, "all_covered": covered >= total}

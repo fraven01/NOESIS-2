@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Callable, Iterable, List, Sequence
 
 from psycopg2 import Error as PsycopgError, sql
@@ -22,6 +23,7 @@ def run_lexical_search(
     *,
     client: object,
     conn,
+    lexical_mode: str,
     query_db_norm: str,
     where_sql: str,
     where_params: Sequence[object],
@@ -30,6 +32,7 @@ def run_lexical_search(
     requested_trgm_limit: float | None,
     tenant: str,
     case_id: str | None,
+    trace_id: str | None,
     statement_timeout_ms: int,
     schema: str,
     lexical_score_sql: str,
@@ -40,6 +43,8 @@ def run_lexical_search(
     extract_score_from_row: Callable[[object], object | None],
     logger,
 ) -> LexicalSearchOutcome:
+    started_at = time.perf_counter()
+    lexical_mode_value = str(lexical_mode or "trgm").strip().lower()
     applied_trgm_limit_value: float | None = None
     fallback_limit_used_value: float | None = None
     fallback_tried_limits: List[float] = []
@@ -68,10 +73,44 @@ def run_lexical_search(
                 # If SET LOCAL is not available, rely on connection-level
                 # search_path set during _prepare_connection.
                 pass
+            if lexical_mode_value != "trgm":
+                lexical_rows_local: List[tuple] = []
+                if query_db_norm.strip():
+                    lexical_sql = build_lexical_primary_sql(
+                        where_sql,
+                        "c.id,\n"
+                        "                                c.text,\n"
+                        "                                c.metadata,\n"
+                        "                                d.hash,\n"
+                        "                                d.id,\n"
+                        "                                c.collection_id,\n"
+                        "                                " + lexical_score_sql,
+                        lexical_match_clause,
+                    )
+                    cur.execute(
+                        lexical_sql,
+                        (
+                            query_db_norm,
+                            *where_params,
+                            query_db_norm,
+                            lex_limit,
+                        ),
+                    )
+                    lexical_rows_local = cur.fetchall()
+                    lexical_query_variant = "bm25"
+                return LexicalSearchOutcome(
+                    rows=lexical_rows_local,
+                    applied_trgm_limit=None,
+                    fallback_limit_used=None,
+                    fallback_tried_limits=[],
+                    lexical_query_variant=lexical_query_variant,
+                    lexical_fallback_limit=None,
+                )
             logger.info(
                 "rag.pgtrgm.limit",
                 requested=requested_trgm_limit,
                 effective=trgm_limit_value,
+                trace_id=trace_id,
             )
 
             def _fetch_show_limit_value() -> float | None:
@@ -151,6 +190,7 @@ def run_lexical_search(
                             extra={
                                 "tenant_id": tenant,
                                 "case_id": case_id,
+                                "trace_id": trace_id,
                                 "exc_type": exc.__class__.__name__,
                                 "fallback_requires_rollback": True,
                             },
@@ -161,6 +201,7 @@ def run_lexical_search(
                         "rag.hybrid.lexical_primary_failed",
                         tenant_id=tenant,
                         case_id=case_id,
+                        trace_id=trace_id,
                         error=str(exc),
                     )
                     if isinstance(exc, PsycopgError) and vector_query_failed:
@@ -173,6 +214,7 @@ def run_lexical_search(
                             extra={
                                 "tenant_id": tenant,
                                 "case_id": case_id,
+                                "trace_id": trace_id,
                                 "probe_failed": probe_failed,
                             },
                         )
@@ -201,6 +243,7 @@ def run_lexical_search(
                                 extra={
                                     "tenant_id": tenant,
                                     "case_id": case_id,
+                                    "trace_id": trace_id,
                                     "exc_type": exc.__class__.__name__,
                                     "fallback_requires_rollback": True,
                                 },
@@ -211,6 +254,7 @@ def run_lexical_search(
                             "rag.hybrid.lexical_primary_failed",
                             tenant_id=tenant,
                             case_id=case_id,
+                            trace_id=trace_id,
                             error=str(exc),
                         )
                         if isinstance(exc, PsycopgError) and vector_query_failed:
@@ -245,6 +289,7 @@ def run_lexical_search(
                                 "rag.hybrid.lexical_primary_failed",
                                 tenant_id=tenant,
                                 case_id=case_id,
+                                trace_id=trace_id,
                                 error=str(exc),
                                 rows_count=rows_count,
                                 row_first_len=first_len,
@@ -256,6 +301,7 @@ def run_lexical_search(
                                     extra={
                                         "tenant_id": tenant,
                                         "case_id": case_id,
+                                        "trace_id": trace_id,
                                         "reason": "row_shape_error",
                                         "fallback_requires_rollback": False,
                                     },
@@ -268,6 +314,7 @@ def run_lexical_search(
                             extra={
                                 "tenant_id": tenant,
                                 "case_id": case_id,
+                                "trace_id": trace_id,
                                 "count": len(lexical_rows_local),
                                 "rows": summarise_rows(
                                     lexical_rows_local, kind="lexical"
@@ -286,6 +333,7 @@ def run_lexical_search(
                                     if lexical_rows_local
                                     else 0
                                 ),
+                                "trace_id": trace_id,
                             },
                         )
                     except Exception:
@@ -358,6 +406,7 @@ def run_lexical_search(
                                 "rag.hybrid.lexical_primary_failed",
                                 tenant_id=tenant,
                                 case_id=case_id,
+                                trace_id=trace_id,
                                 error=str(exc),
                                 applied_trgm_limit=applied_trgm_limit,
                                 rows_count=rows_count,
@@ -370,6 +419,7 @@ def run_lexical_search(
                                     extra={
                                         "tenant_id": tenant,
                                         "case_id": case_id,
+                                        "trace_id": trace_id,
                                         "reason": "score_validation_error",
                                         "fallback_requires_rollback": False,
                                     },
@@ -393,6 +443,7 @@ def run_lexical_search(
                                     extra={
                                         "tenant_id": tenant,
                                         "case_id": case_id,
+                                        "trace_id": trace_id,
                                         "reason": "db_error",
                                         "fallback_requires_rollback": True,
                                     },
@@ -403,6 +454,7 @@ def run_lexical_search(
                                 "rag.hybrid.lexical_primary_failed",
                                 tenant_id=tenant,
                                 case_id=case_id,
+                                trace_id=trace_id,
                                 error=str(exc),
                             )
                         if not handled:
@@ -421,6 +473,7 @@ def run_lexical_search(
                             extra={
                                 "tenant_id": tenant,
                                 "case_id": case_id,
+                                "trace_id": trace_id,
                                 "fallback_requires_rollback": bool(
                                     fallback_requires_rollback
                                 ),
@@ -435,6 +488,7 @@ def run_lexical_search(
                                 extra={
                                     "tenant_id": tenant,
                                     "case_id": case_id,
+                                    "trace_id": trace_id,
                                 },
                             )
                         except Exception:
@@ -450,6 +504,7 @@ def run_lexical_search(
                                     extra={
                                         "tenant_id": tenant,
                                         "case_id": case_id,
+                                        "trace_id": trace_id,
                                         "action": "restore_session",
                                     },
                                 )
@@ -461,6 +516,7 @@ def run_lexical_search(
                         extra={
                             "tenant_id": tenant,
                             "case_id": case_id,
+                            "trace_id": trace_id,
                             "trgm_limit": trgm_limit_value,
                             "applied_trgm_limit": applied_trgm_limit,
                             "fallback": True,
@@ -543,6 +599,7 @@ def run_lexical_search(
                                 extra={
                                     "tenant_id": tenant,
                                     "case_id": case_id,
+                                    "trace_id": trace_id,
                                     "count": len(attempt_rows),
                                     "limit": float(limit_value),
                                     "rows": summarise_rows(
@@ -560,6 +617,7 @@ def run_lexical_search(
                                     "first_len": (
                                         len(attempt_rows[0]) if attempt_rows else 0
                                     ),
+                                    "trace_id": trace_id,
                                 },
                             )
                         except Exception:
@@ -606,6 +664,7 @@ def run_lexical_search(
                         "rag.hybrid.trgm_fallback_applied",
                         tenant_id=tenant,
                         case_id=case_id,
+                        trace_id=trace_id,
                         tried_limits=list(fallback_tried_limits),
                         picked_limit=picked_limit,
                         count=len(lexical_rows_local),
@@ -617,6 +676,7 @@ def run_lexical_search(
                 "rag.pgtrgm.limit.applied",
                 requested=requested_trgm_limit,
                 applied=applied_trgm_limit,
+                trace_id=trace_id,
             )
             applied_trgm_limit_value = applied_trgm_limit
     except Exception as exc:
@@ -639,6 +699,7 @@ def run_lexical_search(
             tenant_id=tenant,
             tenant=tenant,
             case_id=case_id,
+            trace_id=trace_id,
             error=str(exc),
         )
         if not vector_rows:
@@ -654,6 +715,22 @@ def run_lexical_search(
             "rag.debug.rows.lexical.final",
             count=len(lexical_rows),
             first_len=(len(lexical_rows[0]) if lexical_rows else 0),
+            trace_id=trace_id,
+        )
+    except Exception:
+        pass
+    try:
+        duration_ms = int(round((time.perf_counter() - started_at) * 1000))
+        logger.info(
+            "rag.hybrid.lexical_summary",
+            tenant_id=tenant,
+            case_id=case_id,
+            trace_id=trace_id,
+            count=len(lexical_rows),
+            duration_ms=duration_ms,
+            requested_trgm_limit=requested_trgm_limit,
+            applied_trgm_limit=applied_trgm_limit_value,
+            lexical_query_variant=lexical_query_variant,
         )
     except Exception:
         pass

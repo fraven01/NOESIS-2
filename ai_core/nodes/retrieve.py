@@ -10,7 +10,9 @@ from typing import Any, Callable, Dict, Iterable, Mapping
 from common.logging import get_logger
 
 from ai_core.nodes._hybrid_params import parse_hybrid_parameters
+from ai_core.infra.observability import observe_span
 from ai_core.rag.profile_resolver import resolve_embedding_profile
+from ai_core.rag.filter_spec import FilterSpec, build_filter_spec
 from ai_core.rag.vector_space_resolver import resolve_vector_space_full
 from ai_core.rag.vector_client import get_client_for_schema, get_default_schema
 from ai_core.rag.schemas import Chunk
@@ -24,7 +26,7 @@ from ai_core.tool_contracts import (
     NotFoundError,
     ToolContext,
 )
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RetrieveInput(BaseModel):
@@ -42,7 +44,7 @@ class RetrieveInput(BaseModel):
     """
 
     query: str = ""
-    filters: Mapping[str, Any] | None = None
+    filters: FilterSpec | None = None
     process: str | None = None
     doc_class: str | None = None
     visibility: str | None = None
@@ -69,6 +71,16 @@ class RetrieveInput(BaseModel):
             "visibility": state.get("visibility"),
             "hybrid": state.get("hybrid"),
         }
+        raw_filters = state.get("filters")
+        tenant_id = state.get("tenant_id")
+        if raw_filters is not None:
+            if isinstance(raw_filters, FilterSpec):
+                data["filters"] = raw_filters
+            else:
+                data["filters"] = build_filter_spec(
+                    tenant_id=str(tenant_id) if tenant_id else None,
+                    raw_filters=raw_filters if isinstance(raw_filters, Mapping) else {},
+                )
         state_top_k: Any | None = None
         if top_k is not None:
             state_top_k = top_k
@@ -100,18 +112,31 @@ class RetrieveRouting(BaseModel):
 class RetrieveMeta(BaseModel):
     """Metadata emitted by the retrieval tool."""
 
-    routing: RetrieveRouting
-    took_ms: int
-    alpha: float
-    min_sim: float
-    top_k_effective: int
-    matches_returned: int
-    max_candidates_effective: int
-    vector_candidates: int
-    lexical_candidates: int
-    deleted_matches_blocked: int
-    visibility_effective: str
-    diversify_strength: float
+    routing: RetrieveRouting = Field(
+        description="Resolved routing metadata for the retrieval run."
+    )
+    took_ms: int = Field(description="End-to-end retrieval latency in milliseconds.")
+    alpha: float = Field(description="Hybrid weight between vector and lexical scores.")
+    min_sim: float = Field(description="Minimum similarity threshold for candidates.")
+    top_k_effective: int = Field(description="Final top-k value used after overrides.")
+    matches_returned: int = Field(description="Number of matches returned.")
+    max_candidates_effective: int = Field(
+        description="Max candidate pool used in hybrid retrieval."
+    )
+    vector_candidates: int = Field(description="Vector candidates evaluated.")
+    lexical_candidates: int = Field(description="Lexical candidates evaluated.")
+    deleted_matches_blocked: int = Field(
+        description="Matches filtered due to deleted-document checks."
+    )
+    visibility_effective: str = Field(
+        description="Resolved visibility filter applied in retrieval."
+    )
+    diversify_strength: float = Field(
+        description="Diversification strength applied to the ranking."
+    )
+    lexical_index_used: str | None = Field(
+        default=None, description="Lexical index identifier used for retrieval."
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -248,6 +273,27 @@ def _coerce_str(value: object) -> str | None:
     return text or None
 
 
+def _resolve_url_hint(metadata: Mapping[str, object]) -> str | None:
+    for key in ("origin_uri", "source_url", "url", "external_url", "origin_url"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _resolve_source_label(metadata: Mapping[str, object]) -> str | None:
+    source = _coerce_str(metadata.get("source"))
+    if source and source.lower() not in {"crawler", "web"}:
+        return source
+    title = _coerce_str(metadata.get("title"))
+    if title:
+        return title
+    url_hint = _resolve_url_hint(metadata)
+    if url_hint:
+        return url_hint
+    return source
+
+
 def _format_range(start: int | None, end: int | None, prefix: str) -> str | None:
     if start is None:
         return None
@@ -257,7 +303,7 @@ def _format_range(start: int | None, end: int | None, prefix: str) -> str | None
 
 
 def _build_citation(metadata: Mapping[str, object]) -> str | None:
-    source = _coerce_str(metadata.get("source"))
+    source = _resolve_source_label(metadata)
     if not source:
         return None
 
@@ -318,20 +364,24 @@ def _build_citation(metadata: Mapping[str, object]) -> str | None:
             location_parts.append(section_value)
 
     if not location_parts:
-        chunk_id = _coerce_str(metadata.get("chunk_id"))
-        doc_id = _coerce_str(metadata.get("document_id"))
-        external_id = _coerce_str(metadata.get("external_id"))
-        hash_id = _coerce_str(metadata.get("hash"))
-        if chunk_id:
-            short = chunk_id[:8] if len(chunk_id) > 12 else chunk_id
-            location_parts.append(f"Chunk {short}")
-        elif doc_id:
-            location_parts.append(f"Dok-ID {doc_id}")
-        elif external_id:
-            location_parts.append(f"Dok {external_id}")
-        elif hash_id:
-            short = hash_id[:8] if len(hash_id) > 12 else hash_id
-            location_parts.append(f"Hash {short}")
+        url_hint = _resolve_url_hint(metadata)
+        if url_hint:
+            location_parts.append(url_hint)
+        else:
+            chunk_id = _coerce_str(metadata.get("chunk_id"))
+            doc_id = _coerce_str(metadata.get("document_id"))
+            external_id = _coerce_str(metadata.get("external_id"))
+            hash_id = _coerce_str(metadata.get("hash"))
+            if chunk_id:
+                short = chunk_id[:8] if len(chunk_id) > 12 else chunk_id
+                location_parts.append(f"Chunk {short}")
+            elif doc_id:
+                location_parts.append(f"Dok-ID {doc_id}")
+            elif external_id:
+                location_parts.append(f"Dok {external_id}")
+            elif hash_id:
+                short = hash_id[:8] if len(hash_id) > 12 else hash_id
+                location_parts.append(f"Hash {short}")
 
     if location_parts:
         return " · ".join([source, *location_parts])
@@ -341,11 +391,12 @@ def _build_citation(metadata: Mapping[str, object]) -> str | None:
 
 def _chunk_to_match(chunk: Chunk) -> Dict[str, Any]:
     metadata = dict(chunk.meta or {})
+    source_label = _resolve_source_label(metadata) or ""
     match: Dict[str, Any] = {
         "id": _extract_id(metadata),
         "text": chunk.content or "",
         "score": _extract_score(metadata),
-        "source": metadata.get("source", ""),
+        "source": source_label,
         "hash": metadata.get("hash"),
     }
     citation = _build_citation(metadata)
@@ -381,6 +432,76 @@ def _normalise_identifier(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _extract_match_chunk_id(match: Mapping[str, Any]) -> str | None:
+    meta = match.get("meta")
+    if isinstance(meta, Mapping):
+        chunk_id = _normalise_identifier(meta.get("chunk_id"))
+        if chunk_id:
+            return chunk_id
+        meta_id = _normalise_identifier(meta.get("id"))
+        if meta_id:
+            return meta_id
+    return None
+
+
+def _extend_matches_unique(
+    base: list[Dict[str, Any]], extra: list[Dict[str, Any]]
+) -> list[Dict[str, Any]]:
+    seen = {_match_key(match, idx) for idx, match in enumerate(base)}
+    for match in extra:
+        key = _match_key(match, len(seen))
+        if key in seen:
+            continue
+        base.append(match)
+        seen.add(key)
+    return base
+
+
+def _fetch_neighbor_chunks(
+    tenant_client: Any,
+    *,
+    tenant_id: str,
+    matches: list[Dict[str, Any]],
+) -> list[Chunk]:
+    fetcher = getattr(tenant_client, "fetch_adjacent_chunks", None)
+    if not callable(fetcher):
+        return []
+    chunk_ids = []
+    for match in matches:
+        chunk_id = _extract_match_chunk_id(match)
+        if chunk_id:
+            chunk_ids.append(chunk_id)
+    if not chunk_ids:
+        return []
+    try:
+        try:
+            neighbor_map = fetcher(chunk_ids=chunk_ids, window=1)
+        except TypeError:
+            neighbor_map = fetcher(tenant_id=tenant_id, chunk_ids=chunk_ids, window=1)
+    except Exception as exc:
+        logger.warning(
+            "rag.retrieve.neighbor_fetch_failed",
+            extra={"tenant_id": tenant_id, "error": str(exc)},
+        )
+        return []
+    if not isinstance(neighbor_map, Mapping):
+        return []
+    neighbors: list[Chunk] = []
+    for anchor_id in chunk_ids:
+        entries = neighbor_map.get(anchor_id)
+        if not isinstance(entries, Iterable):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            text = entry.get("text") or ""
+            meta = entry.get("metadata") or {}
+            if not isinstance(meta, Mapping):
+                meta = {}
+            neighbors.append(Chunk(content=str(text), meta=dict(meta), embedding=None))
+    return neighbors
 
 
 def _match_key(match: Mapping[str, Any], index: int) -> tuple[str, ...]:
@@ -421,6 +542,46 @@ def _deduplicate_matches(matches: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
         key=lambda item: (-float(item.get("score", 0.0)), str(item.get("id") or ""))
     )
     return ordered_matches
+
+
+def _summarise_source_mix(matches: list[Dict[str, Any]]) -> dict[str, int]:
+    vector_only = 0
+    lexical_only = 0
+    both = 0
+    neither = 0
+
+    for match in matches:
+        meta = match.get("meta")
+        if not isinstance(meta, Mapping):
+            meta = {}
+        vscore = meta.get("vscore", 0.0)
+        lscore = meta.get("lscore", 0.0)
+        try:
+            vscore_val = float(vscore)
+        except (TypeError, ValueError):
+            vscore_val = 0.0
+        try:
+            lscore_val = float(lscore)
+        except (TypeError, ValueError):
+            lscore_val = 0.0
+
+        has_vector = vscore_val > 0.0
+        has_lexical = lscore_val > 0.0
+        if has_vector and has_lexical:
+            both += 1
+        elif has_vector:
+            vector_only += 1
+        elif has_lexical:
+            lexical_only += 1
+        else:
+            neither += 1
+
+    return {
+        "vector_only": vector_only,
+        "lexical_only": lexical_only,
+        "both": both,
+        "neither": neither,
+    }
 
 
 def _extract_document_id(match: Mapping[str, Any]) -> str | None:
@@ -517,6 +678,11 @@ def _similarity(tokens_a: set[str], tokens_b: set[str]) -> float:
 def _apply_diversification(
     matches: list[Dict[str, Any]], *, top_k: int, strength: float
 ) -> list[Dict[str, Any]]:
+    """Apply MMR-style diversification to reduce near-duplicate chunks.
+
+    NOTE: The retrieval flow currently bypasses this step for pre-MVP accuracy
+    testing. Keep the implementation so it can be re-enabled without rework.
+    """
     if len(matches) <= 1:
         return matches
 
@@ -531,8 +697,18 @@ def _apply_diversification(
     lambda_param = 1.0 - normalised_strength
 
     relevance_scores = [float(match.get("score", 0.0)) for match in matches]
-    token_sets = [
+    chunk_tokens = [
         _tokenise(match.get("text") or match.get("content") or "") for match in matches
+    ]
+    doc_ids = [_extract_document_id(match) for match in matches]
+    doc_token_sets: dict[str, set[str]] = {}
+    for doc_id, tokens in zip(doc_ids, chunk_tokens, strict=False):
+        if not doc_id:
+            continue
+        doc_token_sets.setdefault(doc_id, set()).update(tokens)
+    token_sets = [
+        doc_token_sets.get(doc_id, chunk_tokens[idx])
+        for idx, doc_id in enumerate(doc_ids)
     ]
 
     ordered_indices = list(range(len(matches)))
@@ -548,13 +724,27 @@ def _apply_diversification(
 
         best_index: int | None = None
         best_score = float("-inf")
+        selected_doc_ids = {doc_ids[chosen] for chosen in selected if doc_ids[chosen]}
         for idx in candidate_pool:
+            candidate_doc_id = doc_ids[idx]
+            if candidate_doc_id and candidate_doc_id in selected_doc_ids:
+                diversity_penalty = 0.0
+                mmr_score = lambda_param * relevance_scores[idx]
+                if mmr_score > best_score or (
+                    math.isclose(mmr_score, best_score) and idx < (best_index or idx)
+                ):
+                    best_score = mmr_score
+                    best_index = idx
+                continue
             diversity_penalty = 0.0
             if selected:
-                diversity_penalty = max(
+                penalties = [
                     _similarity(token_sets[idx], token_sets[chosen])
                     for chosen in selected
-                )
+                    if doc_ids[chosen] != candidate_doc_id
+                ]
+                if penalties:
+                    diversity_penalty = max(penalties)
             mmr_score = lambda_param * relevance_scores[idx] - (
                 (1.0 - lambda_param) * diversity_penalty
             )
@@ -640,6 +830,7 @@ def _resolve_routing_metadata(
     }
 
 
+@observe_span(name="rag.retrieve")
 def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     """Execute the retrieval tool based on the provided context and parameters."""
 
@@ -660,7 +851,20 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         else None
     )
 
-    filters = _ensure_mapping(params.filters, field="filters")
+    filter_spec = params.filters
+    if filter_spec is None:
+        filter_spec = build_filter_spec(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            collection_id=context.business.collection_id,
+            document_id=context.business.document_id,
+            document_version_id=context.business.document_version_id,
+        )
+    elif filter_spec.tenant_id is None:
+        filter_spec = filter_spec.model_copy(update={"tenant_id": tenant_id})
+    elif filter_spec.tenant_id != tenant_id:
+        raise InputError("filters.tenant_id must match context", field="filters")
+    filters = filter_spec.as_mapping()
     process = params.process
     doc_class = params.doc_class
     collection_id = context.business.collection_id
@@ -818,16 +1022,24 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
 
     matches = [_chunk_to_match(chunk) for chunk in chunks]
     deduplicated = _deduplicate_matches(matches)
-    diversified = _apply_diversification(
-        deduplicated,
-        top_k=hybrid_config.top_k,
-        strength=hybrid_config.diversify_strength,
-    )
-    final_matches = diversified[: hybrid_config.top_k]
+    # Pre-MVP: prioritize accuracy over diversity by bypassing MMR ordering.
+    diversified = deduplicated
     final_matches = _filter_matches_by_permissions(
-        final_matches,
+        diversified,
         context=context,
         permission_type="VIEW",
+    )
+    source_mix = _summarise_source_mix(final_matches)
+    logger.debug(
+        "rag.retrieve.source_mix",
+        extra={
+            "tenant_id": tenant_id,
+            "case_id": case_id,
+            "vector_only": source_mix["vector_only"],
+            "lexical_only": source_mix["lexical_only"],
+            "both": source_mix["both"],
+            "neither": source_mix["neither"],
+        },
     )
 
     if parent_context:
@@ -869,6 +1081,26 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
                 meta_section["parents"] = parents_payload
                 meta_section["parent_ids"] = ordered_ids
 
+    neighbor_chunks = _fetch_neighbor_chunks(
+        tenant_client,
+        tenant_id=tenant_id,
+        matches=final_matches,
+    )
+    if neighbor_chunks:
+        neighbor_matches = [_chunk_to_match(chunk) for chunk in neighbor_chunks]
+        for match in neighbor_matches:
+            meta_section = match.get("meta")
+            if not isinstance(meta_section, dict):
+                meta_section = {}
+                match["meta"] = meta_section
+            meta_section["neighbor"] = True
+        neighbor_matches = _filter_matches_by_permissions(
+            neighbor_matches,
+            context=context,
+            permission_type="VIEW",
+        )
+        final_matches = _extend_matches_unique(final_matches, neighbor_matches)
+
     alpha_value = _coerce_float_value(
         getattr(hybrid_result, "alpha", hybrid_config.alpha), hybrid_config.alpha
     )
@@ -900,6 +1132,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         "visibility_effective": visibility_effective,
         "took_ms": took_ms,
         "diversify_strength": hybrid_config.diversify_strength,
+        "lexical_index_used": getattr(hybrid_result, "lexical_index_used", None),
     }
 
     return RetrieveOutput(matches=final_matches, meta=RetrieveMeta(**meta_payload))

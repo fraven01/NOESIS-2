@@ -150,7 +150,7 @@ def generate_query_variants(
             "rag.query_transform.failed",
             extra={
                 "error": type(exc).__name__,
-                "message": str(exc),
+                "error_message": str(exc),
             },
         )
         return QueryVariantResult(
@@ -164,7 +164,7 @@ def generate_query_variants(
             "rag.query_transform.failed",
             extra={
                 "error": type(exc).__name__,
-                "message": str(exc),
+                "error_message": str(exc),
             },
         )
         return QueryVariantResult(

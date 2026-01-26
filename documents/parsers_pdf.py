@@ -61,6 +61,23 @@ _PDF_MAX_TOTAL_ASSET_SIZE = 200 * 1024 * 1024
 _HEADING_FONT_THRESHOLD = (
     18.0  # chosen to catch large headings while ignoring body text fonts
 )
+_HEADING_MAX_WORDS = 14
+_HEADING_MAX_CHARS = 120
+_HEADING_UPPER_RATIO = 0.7
+_HEADING_NUMBER_PATTERN = re.compile(r"^(?:[0-9]+(?:\.[0-9]+){0,4}|[IVXLC]+)\b")
+_HEADING_KEYWORDS = (
+    "section",
+    "chapter",
+    "appendix",
+    "annex",
+    "schedule",
+    "part",
+    "article",
+    "anlage",
+    "abschnitt",
+    "kapitel",
+    "teil",
+)
 _TABLE_SAMPLE_LIMIT = 5
 
 
@@ -516,11 +533,42 @@ def _normalise_bbox(
 
 def _classify_block_kind(text: str, max_font: float) -> str:
     stripped = text.lstrip()
-    if _looks_like_list(stripped):
+    if _looks_like_list(stripped) and not _looks_like_heading(stripped, max_font):
         return "list"
-    if max_font >= _HEADING_FONT_THRESHOLD:
+    if max_font >= _HEADING_FONT_THRESHOLD or _looks_like_heading(stripped, max_font):
         return "heading"
     return "paragraph"
+
+
+def _looks_like_heading(text: str, max_font: float) -> bool:
+    if not text:
+        return False
+    first_line = text.splitlines()[0].strip()
+    if not first_line:
+        return False
+    if len(first_line) > _HEADING_MAX_CHARS:
+        return False
+    words = first_line.split()
+    if len(words) > _HEADING_MAX_WORDS:
+        return False
+    if _HEADING_NUMBER_PATTERN.match(first_line):
+        return True
+    lowered = first_line.lower()
+    for keyword in _HEADING_KEYWORDS:
+        if (
+            lowered == keyword
+            or lowered.startswith(f"{keyword} ")
+            or lowered.startswith(f"{keyword}:")
+        ):
+            return True
+    letters = [char for char in first_line if char.isalpha()]
+    if letters:
+        upper_ratio = sum(1 for char in letters if char.isupper()) / len(letters)
+        if upper_ratio >= _HEADING_UPPER_RATIO and len(first_line) >= 4:
+            return True
+    if max_font >= (_HEADING_FONT_THRESHOLD - 2.0):
+        return True
+    return False
 
 
 def _looks_like_list(text: str) -> bool:

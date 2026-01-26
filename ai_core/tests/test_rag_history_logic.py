@@ -40,7 +40,11 @@ def test_rag_run_loads_and_saves_history(mock_checkpointer, mock_graph_invoke):
             "invocation_id": "inv1",
             "run_id": "run1",
         },
-        "business_context": {"case_id": "c1", "thread_id": "th1"},
+        "business_context": {
+            "case_id": "c1",
+            "workflow_id": "rag.default",
+            "thread_id": "th1",
+        },
     }
 
     # Mock history in store
@@ -112,7 +116,7 @@ def test_rag_history_limit(mock_checkpointer, mock_graph_invoke):
                 "invocation_id": "i",
                 "run_id": "r",
             },
-            "business_context": {"thread_id": "th"},
+            "business_context": {"workflow_id": "rag.default", "thread_id": "th"},
         }
         graph.run({"question": "New Q"}, meta)
 

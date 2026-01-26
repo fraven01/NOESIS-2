@@ -17,6 +17,11 @@ from ai_core.rag.schemas import Chunk
 pytestmark = pytest.mark.usefixtures("rag_database")
 
 
+@pytest.fixture(autouse=True)
+def _force_trgm_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAG_LEXICAL_MODE", "trgm")
+
+
 class _FakeCursor:
     def __init__(
         self,
@@ -769,7 +774,7 @@ def test_bm25_lexical_query_uses_tsvector(monkeypatch):
 
     assert len(result.chunks) == 1
     executed_sql = "\n".join(sql for sql, _ in cursor.executed).lower()
-    assert "plainto_tsquery" in executed_sql
+    assert "websearch_to_tsquery" in executed_sql
     assert "text_tsv" in executed_sql
 
 

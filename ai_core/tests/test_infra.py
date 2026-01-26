@@ -158,7 +158,9 @@ def test_observe_span_uses_tracer(monkeypatch):
             return False
 
     class FakeTracer:
-        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+        def start_as_current_span(
+            self, name: str, attributes=None, **kwargs
+        ):  # noqa: D401
             calls.append(("start", name))
             return FakeContext(name)
 
@@ -234,7 +236,9 @@ def test_record_span_invokes_tracer(monkeypatch):
             return False
 
     class FakeTracer:
-        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+        def start_as_current_span(
+            self, name: str, attributes=None, **kwargs
+        ):  # noqa: D401
             return FakeContext(name, dict(attributes or {}))
 
     monkeypatch.setattr(observability, "tracing_enabled", lambda: True)

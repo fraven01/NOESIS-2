@@ -10,12 +10,21 @@ from ai_core.infra.prompts import load
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tool_contracts import ToolContext
+from ai_core.infra.observability import update_observation
+from ai_core.rag.rerank_features import (
+    extract_rerank_features,
+    resolve_weight_profile,
+    summarise_features,
+)
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_POOL_SIZE = 20
 POOL_SIZE_CAP = 50
+DEFAULT_RERANK_MODE = "llm"
+RERANK_LLM_LABEL = "rerank"
+RERANK_SNIPPET_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -94,17 +103,73 @@ def _heuristic_order(chunks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _summarize_meta(meta: Mapping[str, Any]) -> str:
+    def _coerce(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    fields: list[str] = []
+    chunk_id = _coerce(meta.get("chunk_id"))
+    if chunk_id:
+        fields.append(f"chunk_id={chunk_id}")
+    document_id = _coerce(meta.get("document_id"))
+    if document_id:
+        fields.append(f"document_id={document_id}")
+    chunk_index = meta.get("chunk_index")
+    if chunk_index is not None:
+        try:
+            fields.append(f"chunk_index={int(chunk_index)}")
+        except (TypeError, ValueError):
+            pass
+    doc_type = _coerce(meta.get("doc_type") or meta.get("document_type"))
+    if doc_type:
+        fields.append(f"doc_type={doc_type}")
+    section_path = meta.get("section_path")
+    if isinstance(section_path, Sequence) and not isinstance(
+        section_path, (str, bytes, bytearray)
+    ):
+        path_text = " > ".join(
+            str(part).strip() for part in section_path if str(part).strip()
+        ).strip()
+        if path_text:
+            fields.append(f"section_path={path_text}")
+    confidence = meta.get("confidence")
+    if confidence is not None:
+        try:
+            fields.append(f"confidence={float(confidence):.3f}")
+        except (TypeError, ValueError):
+            pass
+    return " ".join(fields)
+
+
+def _is_neighbor_chunk(chunk: Mapping[str, Any]) -> bool:
+    meta = chunk.get("meta")
+    if isinstance(meta, Mapping):
+        return bool(meta.get("neighbor"))
+    return False
+
+
 def _render_candidates(chunks: Sequence[dict[str, Any]]) -> str:
     lines: list[str] = []
     for index, chunk in enumerate(chunks, start=1):
         identifier = _chunk_identifier(chunk, index - 1)
         text = str(chunk.get("text") or "")
         source = str(chunk.get("source") or "")
-        snippet = _truncate(text.replace("\n", " ").strip(), 700)
+        snippet = _truncate(text.replace("\n", " ").strip(), RERANK_SNIPPET_CHARS)
+        meta = chunk.get("meta")
+        meta_line = ""
+        if isinstance(meta, Mapping):
+            meta_summary = _summarize_meta(meta)
+            if meta_summary:
+                meta_line = f"\nmeta={meta_summary}"
         if source:
-            lines.append(f"{index}. id={identifier} source={source}\ntext={snippet}")
+            lines.append(
+                f"{index}. id={identifier} source={source}\ntext={snippet}{meta_line}"
+            )
         else:
-            lines.append(f"{index}. id={identifier}\ntext={snippet}")
+            lines.append(f"{index}. id={identifier}\ntext={snippet}{meta_line}")
     return "\n".join(lines)
 
 
@@ -149,6 +214,103 @@ def _apply_ranked_order(
     return ordered, scores
 
 
+def _chunk_score_key(chunk: Mapping[str, Any]) -> str | None:
+    raw = chunk.get("id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    meta = chunk.get("meta")
+    if isinstance(meta, Mapping):
+        meta_id = meta.get("chunk_id")
+        if isinstance(meta_id, str) and meta_id.strip():
+            return meta_id.strip()
+    return None
+
+
+def _primary_document_id(chunk: Mapping[str, Any]) -> str | None:
+    meta = chunk.get("meta")
+    if isinstance(meta, Mapping):
+        doc_id = meta.get("document_id")
+        if isinstance(doc_id, str) and doc_id.strip():
+            return doc_id.strip()
+    return None
+
+
+def _apply_primary_document_scores(
+    chunks: Sequence[dict[str, Any]],
+    *,
+    primary_document_id: str,
+    retrieval_scores: Mapping[str, float] | None,
+) -> list[dict[str, Any]]:
+    if not retrieval_scores:
+        return list(chunks)
+    updated: list[dict[str, Any]] = []
+    for chunk in chunks:
+        if _primary_document_id(chunk) != primary_document_id:
+            updated.append(chunk)
+            continue
+        chunk_id = _chunk_score_key(chunk)
+        if not chunk_id:
+            updated.append(chunk)
+            continue
+        retrieval_score = retrieval_scores.get(chunk_id)
+        if retrieval_score is None:
+            updated.append(chunk)
+            continue
+        current = _coerce_score(chunk.get("score"))
+        if retrieval_score > current:
+            replaced = dict(chunk)
+            replaced["score"] = retrieval_score
+            updated.append(replaced)
+        else:
+            updated.append(chunk)
+    return updated
+
+
+def _build_primary_chunks(
+    chunks: Sequence[dict[str, Any]],
+    *,
+    primary_document_id: str,
+    retrieval_scores: Mapping[str, float] | None,
+) -> list[dict[str, Any]]:
+    primary = [
+        dict(chunk)
+        for chunk in chunks
+        if _primary_document_id(chunk) == primary_document_id
+    ]
+    if retrieval_scores:
+        primary = _apply_primary_document_scores(
+            primary,
+            primary_document_id=primary_document_id,
+            retrieval_scores=retrieval_scores,
+        )
+    primary.sort(
+        key=lambda item: (
+            int((item.get("meta") or {}).get("chunk_index") or 0),
+            str(item.get("id") or ""),
+        )
+    )
+    return primary
+
+
+def _merge_primary_chunks(
+    base: Sequence[dict[str, Any]],
+    *,
+    primary_chunks: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not primary_chunks:
+        return list(base)
+    primary_ids = {
+        _chunk_score_key(chunk) for chunk in primary_chunks if _chunk_score_key(chunk)
+    }
+    merged = list(primary_chunks)
+    for chunk in base:
+        chunk_id = _chunk_score_key(chunk)
+        if chunk_id and chunk_id in primary_ids:
+            continue
+        merged.append(chunk)
+    return merged
+
+
 def rerank_chunks(
     chunks: Sequence[Mapping[str, Any]],
     query: str,
@@ -157,26 +319,118 @@ def rerank_chunks(
     top_k: int | None = None,
     candidate_pool: int | None = None,
     mode: str | None = None,
+    intent: str | None = None,
+    primary_document_id: str | None = None,
+    retrieval_scores: Mapping[str, float] | None = None,
 ) -> RerankResult:
     materialized = [dict(chunk) for chunk in chunks if isinstance(chunk, Mapping)]
     if not materialized:
         return RerankResult(chunks=[], mode="off")
 
+    question_density_by_id: dict[str, float] = {}
+    try:
+        quality_mode = os.getenv("RAG_RERANK_QUALITY_MODE")
+        if intent == "extract_questions":
+            quality_mode = "extract"
+        features = extract_rerank_features(
+            materialized,
+            context=context,
+            quality_mode=quality_mode,
+        )
+        question_density_by_id = {
+            feature.chunk_id: feature.question_density for feature in features
+        }
+        feature_summary = summarise_features(features)
+        if feature_summary:
+            weights = resolve_weight_profile(quality_mode, context=context)
+            update_observation(
+                metadata={
+                    "rag.rerank_features.weights": weights,
+                    "rag.rerank_features.summary": feature_summary,
+                }
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(
+            "rag.rerank_features.failed",
+            extra={"error": type(exc).__name__, "error_message": str(exc)},
+        )
+
     resolved_mode = (
         str(mode).strip().lower()
         if mode is not None
-        else str(os.getenv("RAG_RERANK_MODE", "heuristic")).strip().lower()
+        else str(os.getenv("RAG_RERANK_MODE", DEFAULT_RERANK_MODE)).strip().lower()
     )
     if resolved_mode in {"off", "disabled", "false"}:
         return RerankResult(chunks=materialized, mode="disabled")
 
     ordered = _heuristic_order(materialized)
+    if intent == "extract_questions" and question_density_by_id:
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for index, item in enumerate(ordered):
+            base = _coerce_score(item.get("score"))
+            chunk_id = _chunk_identifier(item, index)
+            boosted = base + 0.15 * question_density_by_id.get(chunk_id, 0.0)
+            scored.append((boosted, item))
+        scored.sort(key=lambda entry: (-entry[0], str(entry[1].get("id") or "")))
+        ordered = [entry[1] for entry in scored]
     limit = top_k if top_k is not None else len(ordered)
+    primary_chunks: list[dict[str, Any]] = []
+    if primary_document_id:
+        primary_chunks = _build_primary_chunks(
+            materialized,
+            primary_document_id=primary_document_id,
+            retrieval_scores=retrieval_scores,
+        )
+        if primary_chunks:
+            limit = max(limit, len(primary_chunks))
     pool_limit = _resolve_pool_size(candidate_pool or os.getenv("RAG_RERANK_POOL"))
     pool = ordered[:pool_limit]
+    if pool_limit < len(ordered):
+        pool_ids = {
+            _chunk_identifier(chunk, idx)
+            for idx, chunk in enumerate(ordered[:pool_limit])
+        }
+        for idx, chunk in enumerate(ordered[pool_limit:], start=pool_limit):
+            if not _is_neighbor_chunk(chunk):
+                continue
+            chunk_id = _chunk_identifier(chunk, idx)
+            if chunk_id in pool_ids:
+                continue
+            pool.append(chunk)
+            pool_ids.add(chunk_id)
+    try:
+        preview = []
+        for idx, chunk in enumerate(pool[:15]):
+            meta = chunk.get("meta")
+            meta_payload: Mapping[str, Any] = meta if isinstance(meta, Mapping) else {}
+            preview.append(
+                {
+                    "id": chunk.get("id"),
+                    "score": chunk.get("score"),
+                    "document_id": meta_payload.get("document_id"),
+                    "neighbor": meta_payload.get("neighbor"),
+                    "chunk_index": meta_payload.get("chunk_index"),
+                }
+            )
+        logger.debug(
+            "rag.rerank.pool_preview",
+            tenant_id=context.scope.tenant_id,
+            case_id=context.business.case_id,
+            trace_id=context.scope.trace_id,
+            count=len(pool),
+            items=preview,
+        )
+    except Exception:  # pragma: no cover - defensive logging
+        pass
 
     if resolved_mode != "llm":
-        return RerankResult(chunks=ordered[:limit], mode="heuristic")
+        final_chunks = ordered[:limit]
+        if primary_document_id and primary_chunks:
+            final_chunks = _merge_primary_chunks(
+                final_chunks,
+                primary_chunks=primary_chunks,
+            )
+        return RerankResult(chunks=final_chunks, mode="heuristic")
 
     prompt = load("retriever/rerank")
     prompt_text = f"{prompt['text']}\n\nQuestion: {query}\n\nCandidates:\n{_render_candidates(pool)}"
@@ -188,7 +442,12 @@ def rerank_chunks(
         "prompt_version": prompt["version"],
     }
     try:
-        response = llm_client.call("analyze", prompt_text, metadata)
+        response = llm_client.call(
+            RERANK_LLM_LABEL,
+            prompt_text,
+            metadata,
+            response_format={"type": "json_object"},
+        )
         payload = _extract_json_object(str(response.get("text") or ""))
         ranked = payload.get("ranked") or payload.get("results")
         if not isinstance(ranked, Sequence) or isinstance(
@@ -204,8 +463,14 @@ def rerank_chunks(
                 if _chunk_identifier(chunk, idx) not in pool_ids
             ]
             reranked.extend(remainder)
+        final_chunks = reranked[:limit]
+        if primary_document_id and primary_chunks:
+            final_chunks = _merge_primary_chunks(
+                final_chunks,
+                primary_chunks=primary_chunks,
+            )
         return RerankResult(
-            chunks=reranked[:limit],
+            chunks=final_chunks,
             mode="llm",
             prompt_version=prompt.get("version"),
             scores=scores,
@@ -215,11 +480,18 @@ def rerank_chunks(
             "rag.rerank.failed",
             extra={
                 "error": type(exc).__name__,
-                "message": str(exc),
+                "error_message": str(exc),
+                "trace_id": context.scope.trace_id,
             },
         )
+        final_chunks = ordered[:limit]
+        if primary_document_id and primary_chunks:
+            final_chunks = _merge_primary_chunks(
+                final_chunks,
+                primary_chunks=primary_chunks,
+            )
         return RerankResult(
-            chunks=ordered[:limit],
+            chunks=final_chunks,
             mode="fallback",
             prompt_version=prompt.get("version"),
             error=str(exc),
@@ -229,11 +501,18 @@ def rerank_chunks(
             "rag.rerank.failed",
             extra={
                 "error": type(exc).__name__,
-                "message": str(exc),
+                "error_message": str(exc),
+                "trace_id": context.scope.trace_id,
             },
         )
+        final_chunks = ordered[:limit]
+        if primary_document_id and primary_chunks:
+            final_chunks = _merge_primary_chunks(
+                final_chunks,
+                primary_chunks=primary_chunks,
+            )
         return RerankResult(
-            chunks=ordered[:limit],
+            chunks=final_chunks,
             mode="fallback",
             prompt_version=prompt.get("version"),
             error=str(exc),

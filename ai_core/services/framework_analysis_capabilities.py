@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Mapping
 from typing import Any
 
 from ai_core.infra.prompts import load as load_prompt
 from ai_core.llm import client as llm_client
+from ai_core.llm.client import LlmTimeoutError, LlmUpstreamError, RateLimitError
 from ai_core.tools.framework_contracts import ComponentLocation
 
 
@@ -82,10 +84,21 @@ def call_llm_json_prompt(
 
     meta_payload = dict(meta)
     meta_payload["prompt_version"] = prompt["version"]
+    retry_delays = [1.0, 2.0, 4.0]
 
-    result = llm_client.call("analyze", full_prompt, meta_payload)
-    text = str(result.get("text") or "")
-    return parse_llm_json_response(text)
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            result = llm_client.call("analyze", full_prompt, meta_payload)
+            text = str(result.get("text") or "")
+            return parse_llm_json_response(text)
+        except (RateLimitError, LlmTimeoutError, LlmUpstreamError):
+            if attempt >= len(retry_delays):
+                break
+            time.sleep(retry_delays[attempt])
+        except ValueError:
+            return {}
+
+    return {}
 
 
 def validate_component_locations(

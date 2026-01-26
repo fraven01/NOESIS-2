@@ -14,12 +14,14 @@ Date: 2025-12-30
 """
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 
+from ai_core.llm.client import LlmClientError
 from ai_core.rag.chunking.agentic_chunker import (
     AgenticChunker,
     BoundaryDetection,
@@ -182,8 +184,8 @@ class TestAgenticChunker:
 
         # Should extract 6 sentences (3 from each block)
         assert len(sentences) == 6
-        assert sentences[0] == "This is the first sentence"
-        assert sentences[5] == "This is the sixth sentence"
+        assert sentences[0] == "This is the first sentence."
+        assert sentences[5] == "This is the sixth sentence."
 
     def test_fallback_on_rate_limit_exceeded(
         self, sample_parsed_result, sample_processing_context
@@ -206,7 +208,7 @@ class TestAgenticChunker:
 
             # Should use fallback
             assert mock_fallback.called
-            assert chunks == [{"chunk_id": "fallback"}]
+            assert chunks[0]["chunk_id"] == "fallback"
 
     def test_fallback_on_token_budget_exceeded(
         self, sample_parsed_result, sample_processing_context
@@ -226,34 +228,38 @@ class TestAgenticChunker:
 
             # Should use fallback
             assert mock_fallback.called
-            assert chunks == [{"chunk_id": "fallback"}]
+            assert chunks[0]["chunk_id"] == "fallback"
 
-    def test_fallback_on_llm_not_implemented(
+    def test_fallback_on_llm_error(
         self, sample_parsed_result, sample_processing_context
     ):
-        """Test fallback to LateChunker when LLM not implemented (MVP)."""
+        """Test fallback to LateChunker when LLM call fails."""
         chunker = AgenticChunker()
 
-        # Mock fallback chunker
-        with patch.object(
-            chunker.fallback_chunker, "chunk", return_value=[{"chunk_id": "fallback"}]
-        ) as mock_fallback:
-            chunks = chunker.chunk(sample_parsed_result, sample_processing_context)
+        with patch(
+            "ai_core.rag.chunking.agentic_chunker.llm_client.call",
+            side_effect=LlmClientError("llm failure"),
+        ):
+            with patch.object(
+                chunker.fallback_chunker,
+                "chunk",
+                return_value=[{"chunk_id": "fallback"}],
+            ) as mock_fallback:
+                chunks = chunker.chunk(sample_parsed_result, sample_processing_context)
 
-            # Should use fallback (LLM raises NotImplementedError)
-            assert mock_fallback.called
-            assert chunks == [{"chunk_id": "fallback"}]
+        assert mock_fallback.called
+        assert chunks[0]["chunk_id"] == "fallback"
 
     def test_build_chunks_from_boundaries(self, sample_processing_context):
         """Test chunk construction from boundaries."""
         chunker = AgenticChunker(use_content_based_ids=True)
 
         sentences = [
-            "First sentence",
-            "Second sentence",
-            "Third sentence",
-            "Fourth sentence",
-            "Fifth sentence",
+            "First sentence.",
+            "Second sentence.",
+            "Third sentence.",
+            "Fourth sentence.",
+            "Fifth sentence.",
         ]
 
         # Boundaries at indices 2 and 4 (splits into 3 chunks)
@@ -463,21 +469,33 @@ class TestPydanticModels:
 class TestAgenticChunkerIntegration:
     """Integration tests for AgenticChunker."""
 
-    def test_end_to_end_with_fallback(
-        self, sample_parsed_result, sample_processing_context
-    ):
-        """Test end-to-end chunking with fallback to LateChunker."""
+    def test_end_to_end_with_llm(self, sample_parsed_result, sample_processing_context):
+        """Test end-to-end chunking with LLM boundary detection."""
         chunker = AgenticChunker()
 
-        # Should fall back to LateChunker (LLM not implemented)
-        chunks = chunker.chunk(sample_parsed_result, sample_processing_context)
+        payload = {
+            "boundaries": [
+                {
+                    "sentence_idx": 2,
+                    "confidence": 0.9,
+                    "reason": "Topic shift from introduction to details",
+                }
+            ],
+            "metadata": {
+                "total_sentences": 6,
+                "suggested_chunk_count": 2,
+                "document_type": "general",
+            },
+        }
 
-        # Should have chunks (from fallback)
-        assert len(chunks) > 0
+        with patch(
+            "ai_core.rag.chunking.agentic_chunker.llm_client.call",
+            return_value={"text": json.dumps(payload)},
+        ):
+            chunks = chunker.chunk(sample_parsed_result, sample_processing_context)
 
-        # Verify fallback chunker was used
-        # (LateChunker adds different metadata)
-        # Note: This test assumes LateChunker is working
+        assert len(chunks) == 2
+        assert all(chunk["metadata"]["chunker"] == "agentic" for chunk in chunks)
 
     def test_multiple_calls_respect_rate_limit(
         self, sample_parsed_result, sample_processing_context
@@ -485,9 +503,22 @@ class TestAgenticChunkerIntegration:
         """Test multiple calls respect rate limit."""
         chunker = AgenticChunker(rate_limit_per_minute=2)
 
-        # First two calls should succeed (or fallback)
-        chunker.chunk(sample_parsed_result, sample_processing_context)
-        chunker.chunk(sample_parsed_result, sample_processing_context)
+        payload = {
+            "boundaries": [],
+            "metadata": {
+                "total_sentences": 6,
+                "suggested_chunk_count": 1,
+                "document_type": "general",
+            },
+        }
+
+        with patch(
+            "ai_core.rag.chunking.agentic_chunker.llm_client.call",
+            return_value={"text": json.dumps(payload)},
+        ):
+            # First two calls should succeed
+            chunker.chunk(sample_parsed_result, sample_processing_context)
+            chunker.chunk(sample_parsed_result, sample_processing_context)
 
         # Third call should trigger rate limit and use fallback
         with patch.object(
@@ -496,7 +527,5 @@ class TestAgenticChunkerIntegration:
             chunks3 = chunker.chunk(sample_parsed_result, sample_processing_context)
 
             # Should use fallback due to rate limit
-            # (Note: First two calls also used fallback due to NotImplementedError,
-            #  so rate limit might not be hit. This test documents expected behavior.)
             assert mock_fallback.called
-            assert chunks3 == [{"chunk_id": "fallback"}]
+            assert chunks3[0]["chunk_id"] == "fallback"

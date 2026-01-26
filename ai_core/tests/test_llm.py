@@ -8,7 +8,13 @@ import requests
 
 from ai_core.infra.mask_prompt import mask_prompt
 from ai_core.llm import routing
-from ai_core.llm.client import LlmClientError, RateLimitError, call, call_stream
+from ai_core.llm.client import (
+    LlmClientError,
+    LlmTimeoutError,
+    RateLimitError,
+    call,
+    call_stream,
+)
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
@@ -52,7 +58,13 @@ def test_llm_client_masks_and_records(monkeypatch):
             self.calls = 0
             self.idempotency_headers: list[str] = []
 
-        def __call__(self, url: str, headers: dict[str, str], json: dict[str, Any]):
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            **_kwargs: Any,
+        ):
             assert json["messages"][0]["content"] == sanitized_prompt
             assert headers["Authorization"] == "Bearer token"
             assert headers[X_TRACE_ID_HEADER] == "tr1"
@@ -107,6 +119,38 @@ def test_llm_client_masks_and_records(monkeypatch):
     assert capture.idempotency_headers == ["c1:simple-query:v1"]
 
 
+def test_llm_client_uses_timeout_config(monkeypatch):
+    metadata = {
+        "tenant_id": "t1",
+        "case_id": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+    captured: dict[str, object] = {}
+
+    class Resp:
+        status_code = 200
+        headers: dict[str, str] = {}
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+
+    def handler(url: str, headers: dict[str, str], json: dict[str, Any], **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return Resp()
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    monkeypatch.setenv("LITELLM_TIMEOUTS", json.dumps({"simple-query": 7}))
+    _prepare_env(monkeypatch)
+
+    call("simple-query", "prompt", metadata)
+
+    assert captured["timeout"] == (7.0, 7.0)
+
+
 def test_llm_client_flattens_structured_content(monkeypatch):
     metadata = {
         "tenant_id": "t1",
@@ -116,7 +160,13 @@ def test_llm_client_flattens_structured_content(monkeypatch):
     }
 
     class StructuredContent:
-        def __call__(self, url: str, headers: dict[str, str], json: dict[str, Any]):
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            **_kwargs: Any,
+        ):
             class Resp:
                 status_code = 200
 
@@ -157,7 +207,7 @@ def test_llm_client_falls_back_to_choice_text(monkeypatch):
     }
 
     class ChoiceText:
-        def __call__(self, url, headers, json):
+        def __call__(self, url, headers, json, **_kwargs):
             class Resp:
                 status_code = 200
 
@@ -192,7 +242,7 @@ def test_llm_client_raises_when_content_missing(monkeypatch):
     }
 
     class MissingContent:
-        def __call__(self, url, headers, json):
+        def __call__(self, url, headers, json, **_kwargs):
             class Resp:
                 status_code = 200
 
@@ -230,7 +280,13 @@ def test_llm_idempotency_key_changes_with_prompt_version(monkeypatch):
         def __init__(self):
             self.headers: list[str] = []
 
-        def __call__(self, url: str, headers: dict[str, str], json: dict[str, Any]):
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            **_kwargs: Any,
+        ):
             self.headers.append(headers[IDEMPOTENCY_KEY_HEADER])
 
             class Resp:
@@ -299,6 +355,7 @@ def test_llm_client_logs_masked_context_on_5xx(monkeypatch):
             url: str,
             headers: dict[str, str],
             json: dict[str, Any],
+            **_kwargs: Any,
         ):
             self.calls += 1
 
@@ -356,6 +413,7 @@ def test_llm_client_logs_masked_context_on_request_error(monkeypatch):
             url: str,
             headers: dict[str, str],
             json: dict[str, Any],
+            **_kwargs: Any,
         ):
             self.calls += 1
             raise requests.RequestException("boom")
@@ -379,6 +437,27 @@ def test_llm_client_logs_masked_context_on_request_error(monkeypatch):
     assert warnings
     assert warnings[0][0] == "llm request error"
     assert warnings[0][1].get("extra") == expected_extra
+
+
+def test_llm_client_raises_timeout_error(monkeypatch):
+    metadata = {
+        "tenant_id": "tenant-123",
+        "case_id": "case-456",
+        "trace_id": "trace-789",
+        "prompt_version": "v1",
+    }
+
+    def handler(url: str, headers: dict[str, str], json: dict[str, Any], **_kwargs):
+        raise requests.Timeout("slow")
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    _prepare_env(monkeypatch)
+
+    with pytest.raises(LlmTimeoutError) as excinfo:
+        call("simple-query", "secret", metadata)
+
+    assert isinstance(excinfo.value, TimeoutError)
+    assert "slow" in str(excinfo.value)
 
 
 def test_llm_client_raises_llmclienterror_with_json_error(monkeypatch):
@@ -406,6 +485,7 @@ def test_llm_client_raises_llmclienterror_with_json_error(monkeypatch):
             url: str,
             headers: dict[str, str],
             json: dict[str, Any],
+            **_kwargs: Any,
         ):
             self.calls += 1
 
@@ -464,6 +544,7 @@ def test_llm_client_raises_llmclienterror_with_text_error(monkeypatch):
             url: str,
             headers: dict[str, str],
             json: dict[str, Any],
+            **_kwargs: Any,
         ):
             self.calls += 1
 
@@ -518,6 +599,7 @@ def test_llm_client_raises_rate_limit_error_with_json_body(monkeypatch):
             url: str,
             headers: dict[str, str],
             json: dict[str, Any],
+            **_kwargs: Any,
         ):
             self.calls += 1
 
@@ -570,8 +652,9 @@ def test_llm_client_raises_rate_limit_error_with_text_body(monkeypatch):
         def __call__(
             self,
             url: str,
-            headers: dict[str, str],
-            json: dict[str, Any],
+            headers: dict[str, str] | None = None,
+            json: dict[str, Any] | None = None,
+            **kwargs: Any,
         ):
             self.calls += 1
 
@@ -725,7 +808,13 @@ def test_llm_client_streams_and_records_once(monkeypatch):
         def close(self):
             return None
 
-    def handler(url: str, headers: dict[str, str], json: dict[str, Any], stream=False):
+    def handler(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        stream=False,
+        **_kwargs: Any,
+    ):
         assert json["stream"] is True
         return StreamResp()
 
@@ -748,3 +837,47 @@ def test_llm_client_streams_and_records_once(monkeypatch):
     assert events[-1]["usage"]["completion_tokens"] == 3
     assert len(ledger_calls) == 1
     assert ledger_calls[0]["usage"]["prompt_tokens"] == 2
+
+
+def test_llm_client_stream_uses_timeout_config(monkeypatch):
+    metadata = {
+        "tenant_id": "t1",
+        "case_id": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+    captured: dict[str, object] = {}
+    stream_lines = [
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+        "data: [DONE]",
+    ]
+
+    class StreamResp:
+        status_code = 200
+        headers: dict[str, str] = {}
+
+        def iter_lines(self, decode_unicode=True):
+            for line in stream_lines:
+                yield line
+
+        def close(self):
+            return None
+
+    def handler(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        stream=False,
+        **kwargs: Any,
+    ):
+        assert stream is True
+        captured["timeout"] = kwargs.get("timeout")
+        return StreamResp()
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    monkeypatch.setenv("LITELLM_TIMEOUTS", json.dumps({"simple-query": 9}))
+    _prepare_env(monkeypatch)
+
+    list(call_stream("simple-query", "prompt", metadata))
+
+    assert captured["timeout"] == (9.0, 9.0)

@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from common.logging import get_logger, log_context
 from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from documents.contract_utils import (
     normalize_optional_string,
@@ -217,6 +217,36 @@ class DocumentPipelineConfig:
         renderer = self.ocr_renderer
         if renderer is not None and not callable(renderer):
             raise ValueError("ocr_renderer_invalid")
+
+    @classmethod
+    def from_args(
+        cls, args: object, *, base: "DocumentPipelineConfig | None" = None
+    ) -> "DocumentPipelineConfig":
+        base_config = base or cls()
+        mapping = dict(base_config.caption_min_confidence_by_collection)
+        kwargs = dict(
+            pdf_safe_mode=base_config.pdf_safe_mode,
+            caption_min_confidence_default=base_config.caption_min_confidence_default,
+            caption_min_confidence_by_collection=mapping,
+            enable_ocr=base_config.enable_ocr,
+            enable_notes_in_pptx=base_config.enable_notes_in_pptx,
+            emit_empty_slides=base_config.emit_empty_slides,
+            enable_asset_captions=base_config.enable_asset_captions,
+            ocr_fallback_confidence=base_config.ocr_fallback_confidence,
+            use_readability_html_extraction=base_config.use_readability_html_extraction,
+            ocr_renderer=base_config.ocr_renderer,
+        )
+        if getattr(args, "enable_ocr", None):
+            kwargs["enable_ocr"] = True
+        if getattr(args, "disable_notes", False):
+            kwargs["enable_notes_in_pptx"] = False
+        if getattr(args, "disable_empty_slides", False):
+            kwargs["emit_empty_slides"] = False
+        if getattr(args, "use_readability", False):
+            kwargs["use_readability_html_extraction"] = True
+        if getattr(args, "disable_captions", False):
+            kwargs["enable_asset_captions"] = False
+        return cls(**kwargs)
 
     def caption_min_confidence(self, collection_id: Optional[CollectionKey]) -> float:
         """Return the effective caption confidence threshold for a collection.
@@ -661,7 +691,7 @@ def _run_phase(
 ) -> Any:
     tracer = trace.get_tracer(__name__)
     start = perf_counter()
-    with tracer.start_as_current_span(span_name) as span:
+    with tracer.start_as_current_span(span_name, kind=SpanKind.INTERNAL) as span:
         if attributes:
             for key, value in attributes.items():
                 if value is None:

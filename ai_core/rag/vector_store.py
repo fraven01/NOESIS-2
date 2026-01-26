@@ -202,6 +202,16 @@ class NullVectorStore:
     ) -> Dict[str, Dict[str, object]]:
         return {}
 
+    def get_chunks_by_document(
+        self,
+        tenant_id: str,
+        document_id: str,
+        *,
+        case_id: str | None = None,
+        collection_id: str | None = None,
+    ) -> list[Chunk]:
+        return []
+
     def update_lifecycle_state(
         self,
         *,
@@ -1181,6 +1191,57 @@ class VectorStoreRouter:
             return {}
         return fetcher(tenant_id, requests)
 
+    def fetch_adjacent_chunks(
+        self,
+        *,
+        tenant_id: str,
+        chunk_ids: Sequence[object],
+        window: int = 1,
+        tenant_schema: str | None = None,
+        scope: str | None = None,
+    ) -> Dict[str, list[dict[str, object]]]:
+        """Fetch adjacent chunks when supported by the backend."""
+        if not chunk_ids:
+            return {}
+        resolved_scope = scope
+        if resolved_scope is None:
+            resolved_scope = self._resolve_scope(tenant_id, tenant_schema)
+        store = self._get_store(resolved_scope or self._default_scope)
+        fetcher = getattr(store, "fetch_adjacent_chunks", None)
+        if not callable(fetcher):
+            return {}
+        try:
+            return fetcher(tenant_id=tenant_id, chunk_ids=chunk_ids, window=window)
+        except TypeError:
+            return fetcher(tenant_id, chunk_ids, window)
+
+    def get_chunks_by_document(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        case_id: str | None = None,
+        collection_id: str | None = None,
+        tenant_schema: str | None = None,
+        scope: str | None = None,
+    ) -> list[Chunk]:
+        resolved_scope = scope
+        if resolved_scope is None:
+            resolved_scope = self._resolve_scope(tenant_id, tenant_schema)
+        store = self._get_store(resolved_scope or self._default_scope)
+        fetcher = getattr(store, "get_chunks_by_document", None)
+        if not callable(fetcher):
+            return []
+        try:
+            return fetcher(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                case_id=case_id,
+                collection_id=collection_id,
+            )
+        except TypeError:
+            return fetcher(tenant_id, document_id)
+
     def upsert_chunks(
         self,
         chunks: Iterable[Chunk],
@@ -1346,6 +1407,40 @@ class _TenantScopedClient:
         return fetcher(
             tenant_id=self._tenant_id,
             requests=requests,
+            scope=self._scope,
+        )
+
+    def fetch_adjacent_chunks(
+        self,
+        chunk_ids: Sequence[object],
+        *,
+        window: int = 1,
+    ) -> Dict[str, list[dict[str, object]]]:
+        fetcher = getattr(self._router, "fetch_adjacent_chunks", None)
+        if not callable(fetcher):
+            return {}
+        return fetcher(
+            tenant_id=self._tenant_id,
+            chunk_ids=chunk_ids,
+            window=window,
+            scope=self._scope,
+        )
+
+    def get_chunks_by_document(
+        self,
+        document_id: str,
+        *,
+        case_id: str | None = None,
+        collection_id: str | None = None,
+    ) -> list[Chunk]:
+        fetcher = getattr(self._router, "get_chunks_by_document", None)
+        if not callable(fetcher):
+            return []
+        return fetcher(
+            tenant_id=self._tenant_id,
+            document_id=document_id,
+            case_id=case_id,
+            collection_id=collection_id,
             scope=self._scope,
         )
 

@@ -11,6 +11,7 @@ urlpatterns = [
     path("ping/", views.ping_v1, name="ping"),
     path("intake/", views.intake_v1, name="intake"),
     path("rag/query/", views.rag_query_v1, name="rag_query"),
+    path("rag/feedback/", views.RagFeedbackView.as_view(), name="rag_feedback"),
     path(
         "frameworks/analyze/", FrameworkAnalysisView.as_view(), name="framework_analyze"
     ),

@@ -522,49 +522,7 @@ def _parse_fetcher_limits(value: Any, context: str) -> Optional[FetcherLimits]:
     if value is _UNSET or value is None:
         return None
     mapping = _ensure_mapping(value, context)
-    allowed_keys = {"max_bytes", "timeout_seconds", "mime_whitelist"}
-    _validate_keys(mapping, allowed_keys, context)
-
-    kwargs: Dict[str, Any] = {}
-    has_value = False
-    if "max_bytes" in mapping:
-        max_bytes = mapping["max_bytes"]
-        if not isinstance(max_bytes, int):
-            raise TypeError(f"{context}.max_bytes_must_be_int")
-        if max_bytes <= 0:
-            raise ValueError(f"{context}.max_bytes_positive")
-        kwargs["max_bytes"] = max_bytes
-        has_value = True
-
-    if "timeout_seconds" in mapping:
-        timeout_seconds = mapping["timeout_seconds"]
-        if not isinstance(timeout_seconds, (int, float)):
-            raise TypeError(f"{context}.timeout_seconds_must_be_number")
-        if timeout_seconds <= 0:
-            raise ValueError(f"{context}.timeout_seconds_positive")
-        kwargs["timeout"] = timedelta(seconds=float(timeout_seconds))
-        has_value = True
-
-    if "mime_whitelist" in mapping:
-        mime_value = mapping["mime_whitelist"]
-        if not isinstance(mime_value, Sequence) or isinstance(mime_value, str):
-            raise TypeError(f"{context}.mime_whitelist_sequence")
-        mime_items = []
-        for entry in mime_value:
-            if not isinstance(entry, str):
-                raise TypeError(f"{context}.mime_whitelist_string")
-            candidate = entry.strip().lower()
-            if not candidate:
-                raise ValueError(f"{context}.mime_whitelist_empty_entry")
-            mime_items.append(candidate)
-        if not mime_items:
-            raise ValueError(f"{context}.mime_whitelist_empty")
-        kwargs["mime_whitelist"] = tuple(mime_items)
-        has_value = True
-
-    if not has_value:
-        return None
-    return FetcherLimits(**kwargs)
+    return FetcherLimits.from_dict(mapping, context=context)
 
 
 def _parse_recrawl_frequency(value: Any, context: str) -> Optional[RecrawlFrequency]:

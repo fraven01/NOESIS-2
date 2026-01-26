@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, ConfigDict, ValidationError
+from structlog.contextvars import bind_contextvars
 
 from ai_core.graph.io import GraphIOSpec, GraphIOVersion
 from ai_core.infra.observability import observe_span
@@ -29,6 +30,7 @@ from ai_core.services.document_processing_factory import (
     build_document_processing_bundle,
 )
 from ai_core.tool_contracts import ToolContext
+from common.logging import bind_log_context
 
 # --------------------------------------------------------------------- I/O Contracts
 
@@ -137,6 +139,58 @@ class UniversalIngestionState(TypedDict):
     output: UniversalIngestionOutput | None
 
 
+class UniversalIngestionGraphStateInput(TypedDict, total=False):
+    """Boundary input keys for the universal ingestion graph."""
+
+    input: UniversalIngestionInput
+    context: dict[str, Any]
+    tool_context: ToolContext | dict[str, Any] | None
+
+
+class UniversalIngestionGraphStateOutput(TypedDict, total=False):
+    """Boundary output keys for the universal ingestion graph."""
+
+    output: dict[str, Any]
+
+
+class ValidateInputNodeOutput(TypedDict, total=False):
+    """Typed output for validate_input_node."""
+
+    error: str | None
+    tool_context: ToolContext | None
+    normalized_document: NormalizedDocument | None
+
+
+class DeduplicationNodeOutput(TypedDict, total=False):
+    """Typed output for dedup_node."""
+
+    dedup_status: Literal["new", "duplicate"]
+    existing_document_ref: Any | None
+    error: str | None
+
+
+class PersistNodeOutput(TypedDict, total=False):
+    """Typed output for persist_node."""
+
+    ingestion_result: dict[str, Any]
+    normalized_document: NormalizedDocument
+    error: str | None
+
+
+class ProcessNodeOutput(TypedDict, total=False):
+    """Typed output for process_node."""
+
+    processing_result: dict[str, Any]
+    error: str | None
+
+
+class FinalizeNodeOutput(TypedDict, total=False):
+    """Typed output for finalize_node."""
+
+    output: dict[str, Any]
+    error: str | None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,11 +200,48 @@ class UniversalIngestionError(Exception):
     pass
 
 
+# --------------------------------------------------------------------- Context binding
+
+
+def _extract_context_ids(context_dict: Any) -> tuple[str | None, str | None]:
+    if not isinstance(context_dict, dict):
+        return None, None
+    scope = context_dict.get("scope")
+    if isinstance(scope, dict):
+        return (
+            scope.get("trace_id"),
+            scope.get("tenant_id"),
+        )
+    tool_context = context_dict.get("tool_context")
+    if isinstance(tool_context, dict):
+        scope = tool_context.get("scope")
+        if isinstance(scope, dict):
+            return (
+                scope.get("trace_id"),
+                scope.get("tenant_id"),
+            )
+    return None, None
+
+
+def bind_context_node(state: UniversalIngestionState) -> UniversalIngestionState:
+    """Bind trace/tenant into the local graph thread before other nodes run."""
+    trace_id, tenant_id = _extract_context_ids(state.get("context"))
+    payload: dict[str, str] = {}
+    if trace_id:
+        payload["trace_id"] = str(trace_id)
+    if tenant_id:
+        payload["tenant_id"] = str(tenant_id)
+    if payload:
+        bind_contextvars(**payload)
+        bind_log_context(**payload)
+    return state
+
+
 # --------------------------------------------------------------------- Nodes
 
 
 @observe_span(name="node.validate_input")
-def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
+def validate_input_node(state: UniversalIngestionState) -> ValidateInputNodeOutput:
     """Validate input contract and context."""
     try:
         graph_input = UniversalIngestionGraphInput.model_validate(state)
@@ -169,6 +260,16 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
         msg = f"Invalid context structure: {exc.errors()}"
         logger.error(msg)
         return {"error": msg, "tool_context": None}
+
+    # Bind logging context inside the graph execution scope.
+    bind_contextvars(
+        trace_id=str(tool_context.scope.trace_id),
+        tenant_id=str(tool_context.scope.tenant_id),
+    )
+    bind_log_context(
+        trace_id=str(tool_context.scope.trace_id),
+        tenant_id=str(tool_context.scope.tenant_id),
+    )
 
     # 2. Validate Input (NormalizedDocument)
     raw_doc = inp.normalized_document
@@ -205,7 +306,7 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
 
 
 @observe_span(name="node.dedup")
-def dedup_node(state: UniversalIngestionState) -> dict[str, Any]:
+def dedup_node(state: UniversalIngestionState) -> DeduplicationNodeOutput:
     """Check deduplication status (Layer 1: Document Level)."""
     if state.get("error"):
         return {}
@@ -221,7 +322,7 @@ def dedup_node(state: UniversalIngestionState) -> dict[str, Any]:
 
 
 @observe_span(name="node.persist")
-def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
+def persist_node(state: UniversalIngestionState) -> PersistNodeOutput:
     """Persist document to repository (Upsert)."""
     if state.get("error"):
         return {}
@@ -294,7 +395,7 @@ def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
 @observe_span(name="node.process")
 def process_node(
     state: UniversalIngestionState, config: RunnableConfig
-) -> dict[str, Any]:
+) -> ProcessNodeOutput:
     """Run RAG processing (Chunking/Embedding)."""
     if state.get("error"):
         return {}
@@ -362,7 +463,7 @@ def process_node(
 
 
 @observe_span(name="node.finalize")
-def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
+def finalize_node(state: UniversalIngestionState) -> FinalizeNodeOutput:
     """Build final Unified Output."""
     error = state.get("error")
     tool_context = state.get("tool_context")
@@ -430,15 +531,21 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
 
 def build_universal_ingestion_graph() -> StateGraph:
     """Build the Universal Ingestion Graph (Pure Primitive)."""
-    workflow = StateGraph(UniversalIngestionState)
+    workflow = StateGraph(
+        UniversalIngestionState,
+        input_schema=UniversalIngestionGraphStateInput,
+        output_schema=UniversalIngestionGraphStateOutput,
+    )
 
+    workflow.add_node("bind_context", bind_context_node)
     workflow.add_node("validate_input", validate_input_node)
     workflow.add_node("dedup", dedup_node)
     workflow.add_node("persist", persist_node)
     workflow.add_node("process", process_node)
     workflow.add_node("finalize", finalize_node)
 
-    workflow.add_edge(START, "validate_input")
+    workflow.add_edge(START, "bind_context")
+    workflow.add_edge("bind_context", "validate_input")
 
     def check_valid(state: UniversalIngestionState) -> str:
         if state.get("error"):

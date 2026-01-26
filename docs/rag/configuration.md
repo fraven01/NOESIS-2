@@ -1,66 +1,168 @@
-# RAG Konfiguration
+# RAG Configuration (Code Index)
 
-Dieses Dokument beschreibt, wie die RAG-Komponenten (Retrieval-Augmented Generation) konfiguriert werden, insbesondere die Embedding-Modelle und die Vektor-Datenbank.
+## Source of Truth
 
-## Laufzeit-Konfiguration (Umgebungsvariablen)
+- ai_core/settings.py (RAG defaults)
+- ai_core/rag/* (env + settings usage)
+- ai_core/graphs/technical/retrieval_augmented_generation.py
+- ai_core/graphs/technical/rag_retrieval.py
+- documents/pipeline.py (ingestion pipeline config)
 
-Einige wichtige Parameter können zur Laufzeit über Umgebungsvariablen (z.B. in einer `.env`-Datei) gesteuert werden. Dies ermöglicht es dem Betrieb (Ops), die Konfiguration ohne Code-Änderungen anzupassen.
+## Environment Variables (os.getenv)
 
-### Embedding-Modell & Dimension
+retrieval_graph:
+- RAG_CHAT_HISTORY_MAX_MESSAGES
+- RAG_CHAT_HISTORY_MAX_CHARS
+- RAG_CONTEXT_TOKEN_BUDGET
+- RAG_CHUNK_TARGET_TOKENS
+- RAG_CONTEXT_OVERSAMPLE_FACTOR
+- RAG_CONFIDENCE_MAX_RETRIES
+- RAG_CONFIDENCE_TOP_SCORE
+- RAG_CONFIDENCE_SCORE_DELTA
 
-Das für die Erstellung von Vektor-Embeddings verwendete Modell sowie dessen Dimensionen werden über Umgebungsvariablen definiert.
+query_transform:
+- RAG_QUERY_MAX_VARIANTS
+- RAG_QUERY_TRANSFORM_MODE
 
-| Umgebungsvariable          | Beschreibung                                                                 | Standardwert                  |
-| -------------------------- | ----------------------------------------------------------------------------- | ----------------------------- |
-| `EMBEDDINGS_MODEL_PRIMARY` | Der Name/Alias des primären Embedding-Modells, das für das "standard" Profil verwendet wird. | `oai-embed-small`             |
-| `EMBEDDINGS_DIM`           | Die Anzahl der Dimensionen für das primäre Embedding-Modell.                  | `1536`                        |
-| `DEMO_EMBEDDINGS_MODEL`    | Der Modellname für das "demo" Profil.                                        | Wert von `EMBEDDINGS_MODEL_PRIMARY` |
-| `DEMO_EMBEDDINGS_DIM`      | Die Anzahl der Dimensionen für das Demo-Modell.                              | Wert von `EMBEDDINGS_DIM`     |
+query_planner:
+- RAG_QUERY_PLANNER_MODE
 
-### Vector-Schema Override
+semantic_cache:
+- RAG_SEMANTIC_CACHE_ENABLED
+- RAG_SEMANTIC_CACHE_TTL_S
+- RAG_SEMANTIC_CACHE_MAX_ITEMS
+- RAG_SEMANTIC_CACHE_SIM_THRESHOLD
 
-| Umgebungsvariable   | Beschreibung                                                                                 | Standardwert |
-| ------------------- | --------------------------------------------------------------------------------------------- | ------------ |
-| `RAG_VECTOR_SCHEMA` | Überschreibt das Schema des Standard-Vector-Spaces (`RAG_VECTOR_STORES['global']`).            | `rag` (oder Wert von `DEV_TENANT_SCHEMA`) |
+rerank:
+- RAG_RERANK_MODE
+- RAG_RERANK_POOL
+- RAG_RERANK_QUALITY_MODE
+- RAG_RERANK_WEIGHT_MODE
+- RAG_RERANK_CLICK_WEIGHT
+- RAG_RERANK_WEIGHT_ALPHA
+feedback:
+- RAG_FEEDBACK_ENABLED
 
-**Beispiel:**
-Um ein anderes Modell zu verwenden, kann die folgende Zeile in die `.env`-Datei eingetragen werden:
+answer_guardrails:
+- RAG_GUARDRAIL_MIN_SNIPPETS
+- RAG_GUARDRAIL_MIN_TOP_SCORE
 
-```
-EMBEDDINGS_MODEL_PRIMARY=another-model-name
-EMBEDDINGS_DIM=1024
-```
+candidate_policy:
+- RAG_CANDIDATE_POLICY
+- RAG_MAX_CANDIDATES
 
-## Statische Konfiguration (Code-Änderung erforderlich)
+vector_client:
+- RAG_HYBRID_ALPHA
+- RAG_MIN_SIM
+- RAG_TRGM_LIMIT
+- RAG_DISTANCE_SCORE_MODE
+- RAG_HYDE_ENABLED
+- RAG_HYDE_MODEL_LABEL
+- RAG_HYDE_MAX_CHARS
+- RAG_LEXICAL_MODE
+- RAG_LEXICAL_CONTEXTUAL_ENABLED
+- RAG_RRF_K
+- RAG_NEAR_DUPLICATE_STRATEGY
+- RAG_NEAR_DUPLICATE_THRESHOLD
+- RAG_NEAR_DUPLICATE_PROBE_LIMIT
+- RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM
+- RAG_INDEX_KIND
+- RAG_HNSW_EF_SEARCH
+- RAG_IVF_PROBES
+- RAG_STATEMENT_TIMEOUT_MS
+- RAG_RETRY_ATTEMPTS
+- RAG_RETRY_BASE_DELAY_MS
+- RAG_DATABASE_URL
+- RAG_VECTOR_SCHEMA
+- DEV_TENANT_SCHEMA
 
-Bestimmte grundlegende Konfigurationen sind derzeit direkt im Code festgelegt und erfordern für eine Änderung einen Eingriff durch einen Entwickler.
+rag_retrieval_graph:
+- RAG_REFERENCE_EXPANSION
+- RAG_REFERENCE_EXPANSION_LIMIT
+- RAG_REFERENCE_EXPANSION_TOP_K
 
-### Vektor-Datenbank-Backend
+## Django Settings (getattr(settings, ...))
 
-Das Backend für die Vektor-Speicherung ist statisch in der Django-Einstellungsdatei konfiguriert.
+embedding_client:
+- EMBEDDINGS_PROVIDER
+- EMBEDDINGS_MODEL_PRIMARY
+- EMBEDDINGS_MODEL_FALLBACK
+- EMBEDDINGS_BATCH_SIZE
+- EMBEDDINGS_TIMEOUT_SECONDS
 
-- **Datei**: `noesis2/settings/base.py`
-- **Einstellung**: `RAG_VECTOR_STORES`
+vector_spaces:
+- RAG_VECTOR_STORES
+- RAG_VECTOR_DEFAULT_SCOPE
+- RAG_EMBEDDING_PROFILES
+- RAG_DEFAULT_EMBEDDING_PROFILE
+- RAG_ROUTING_RULES_PATH
+- RAG_ROUTING_FLAGS
+- RAG_USE_COLLECTION_ROUTING
 
-In dieser Einstellung ist das `backend` für jeden Vektorraum fest auf `"pgvector"` gesetzt:
+chunking:
+- RAG_CHUNKER_MODE
+- RAG_LATE_CHUNK_MODEL
+- RAG_LATE_CHUNK_MAX_TOKENS
+- RAG_AGENTIC_CHUNK_MODEL
+- RAG_AGENTIC_CHUNK_MAX_RETRIES
+- RAG_AGENTIC_CHUNK_TIMEOUT
+- RAG_AGENTIC_CHUNK_RATE_LIMIT
+- RAG_AGENTIC_CHUNK_TOKEN_BUDGET
+- RAG_ENABLE_QUALITY_METRICS
+- RAG_QUALITY_EVAL_MODEL
+- RAG_QUALITY_MAX_WORKERS
+- RAG_QUALITY_SAMPLE_RATE
+- RAG_QUALITY_TIMEOUT
+- RAG_CHUNK_TARGET_TOKENS
+- RAG_CHUNK_OVERLAP_TOKENS
+- RAG_USE_EMBEDDING_SIMILARITY
+- RAG_ALLOW_JACCARD_FALLBACK
+- RAG_CHUNKING_WINDOW_SIZE
+- RAG_CHUNKING_BATCH_SIZE
+- RAG_USE_CONTENT_BASED_IDS
+- RAG_ADAPTIVE_CHUNKING_ENABLED
+- RAG_ASSET_CHUNKS_ENABLED
 
-```python
-# noesis2/settings/base.py
+contextual_enrichment:
+- RAG_CONTEXTUAL_ENRICHMENT
+- RAG_CONTEXTUAL_ENRICHMENT_MODEL
+- RAG_CONTEXTUAL_ENRICHMENT_MAX_DOC_CHARS
+- RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNK_CHARS
+- RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNKS
+- RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_CHARS
+- RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_WORDS
 
-RAG_VECTOR_STORES = {
-    "global": {
-        "backend": "pgvector",  # <-- Statisch konfiguriert
-        "schema": "rag",
-        "dimension": DEFAULT_EMBEDDING_DIMENSION,
-    },
-    "demo": {
-        "backend": "pgvector",  # <-- Statisch konfiguriert
-        "schema": "rag_demo",   # Legacy / Demo
-        "dimension": DEMO_EMBEDDING_DIMENSION,
-    },
-}
-```
+parents:
+- RAG_PARENT_MAX_BYTES
 
-> Hinweis: Über die Umgebungsvariable `RAG_VECTOR_SCHEMA` kann das Schema des `global`-Spaces ohne Code-Änderung überschrieben werden. Ohne Override wird – falls gesetzt – automatisch `DEV_TENANT_SCHEMA` verwendet, ansonsten bleibt der Standard `rag`.
+vector_store_guardrails:
+- RAG_INTERNAL_KEYS
 
-Ein Wechsel zu einem anderen Backend (z.B. Weaviate, Milvus) würde eine direkte Änderung dieses Python-Dictionarys erfordern.
+crawler:
+- CRAWLER_DEFAULT_WORKFLOW_ID
+- CRAWLER_MAX_DOCUMENT_BYTES
+- CRAWLER_IDEMPOTENCY_CACHE_PREFIX
+- CRAWLER_IDEMPOTENCY_CACHE_TTL_SECONDS
+
+documents_pipeline:
+- DOCUMENT_PIPELINE_PDF_SAFE_MODE
+- DOCUMENT_PIPELINE_CAPTION_MIN_CONFIDENCE_DEFAULT
+- DOCUMENT_PIPELINE_CAPTION_MIN_CONFIDENCE_BY_COLLECTION
+- DOCUMENT_PIPELINE_ENABLE_OCR
+- DOCUMENT_PIPELINE_ENABLE_NOTES_IN_PPTX
+- DOCUMENT_PIPELINE_EMIT_EMPTY_SLIDES
+- DOCUMENT_PIPELINE_ENABLE_ASSET_CAPTIONS
+- DOCUMENT_PIPELINE_OCR_FALLBACK_CONFIDENCE
+- DOCUMENT_PIPELINE_USE_READABILITY_HTML_EXTRACTION
+- DOCUMENT_PIPELINE_OCR_RENDERER
+- DOCUMENT_PIPELINE_CONFIG
+
+## Defaults
+
+from ai_core/settings.py:
+- TOPK_DEFAULT=5
+- TOPK_MAX=10
+- TOPK_MIN=1
+- HYBRID_ALPHA_DEFAULT=0.7
+- MIN_SIM_DEFAULT=0.15
+- DIVERSIFY_STRENGTH_DEFAULT=0.3

@@ -19,6 +19,7 @@ from common.constants import (
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
     X_TRACE_ID_HEADER,
+    X_WORKFLOW_ID_HEADER,
 )
 
 
@@ -37,6 +38,7 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
         {
             X_TENANT_ID_HEADER: tenant_id,
             X_CASE_ID_HEADER: "case-42",
+            X_WORKFLOW_ID_HEADER: "info_intake",
             X_TRACE_ID_HEADER: "trace-123",
             X_TENANT_SCHEMA_HEADER: "tenant_schema",
             X_KEY_ALIAS_HEADER: "alias-1",
@@ -108,6 +110,7 @@ def test_normalize_meta_defaults_graph_version(monkeypatch):
         {
             X_TENANT_ID_HEADER: tenant_id,
             X_CASE_ID_HEADER: "case-123",
+            X_WORKFLOW_ID_HEADER: "retrieval_augmented_generation",
             X_TRACE_ID_HEADER: "trace-999",
             IDEMPOTENCY_KEY_HEADER: "idem-1",
         },
@@ -132,6 +135,7 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
         {
             X_TENANT_ID_HEADER: tenant_id,
             X_CASE_ID_HEADER: "case-b",
+            X_WORKFLOW_ID_HEADER: "info_intake",
             X_TRACE_ID_HEADER: "trace-b",
             IDEMPOTENCY_KEY_HEADER: "idem-b",
         },
@@ -161,6 +165,7 @@ def test_normalize_meta_includes_collection_scope(monkeypatch):
         {
             X_TENANT_ID_HEADER: tenant_id,
             X_CASE_ID_HEADER: "case-c",
+            X_WORKFLOW_ID_HEADER: "info_intake",
             X_TRACE_ID_HEADER: "trace-c",
             X_COLLECTION_ID_HEADER: "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6",
         },
@@ -187,6 +192,7 @@ def test_normalize_meta_sets_initiated_by_user_id(monkeypatch):
         {
             X_TENANT_ID_HEADER: tenant_id,
             X_CASE_ID_HEADER: "case-init",
+            X_WORKFLOW_ID_HEADER: "info_intake",
             X_TRACE_ID_HEADER: "trace-init",
         },
         graph_name="info_intake",

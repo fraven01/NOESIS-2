@@ -49,13 +49,14 @@ def test_observability_wrapper_honors_task_and_metadata():
             self.ended = 0
             self.updated = []
 
-        def start_trace(self, name, user_id, session_id, metadata):
+        def start_trace(self, name, user_id, session_id, metadata, trace_id=None):
             self.started.append(
                 {
                     "name": name,
                     "user_id": user_id,
                     "session_id": session_id,
                     "metadata": metadata,
+                    "trace_id": trace_id,
                 }
             )
 

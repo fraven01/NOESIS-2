@@ -13,16 +13,17 @@ Model: quality-eval label (resolves via MODEL_ROUTING.yaml → gpt-5-nano defaul
 
 from __future__ import annotations
 
+import contextvars
 import json
-import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List, Mapping
 
-from ai_core.llm.routing import resolve as resolve_model_label
+from ai_core.llm.routing import load_map, resolve as resolve_model_label
+from common.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 CHUNK_QUALITY_PROMPT = """Evaluate this text chunk on the following criteria (0-100 scale):
@@ -106,6 +107,7 @@ class ChunkQualityEvaluator:
             sample_rate: Sample rate for evaluation (0.0-1.0, 1.0 = all chunks)
             max_workers: Maximum parallel workers for evaluation
         """
+        self.model_label = model
         # Resolve MODEL_ROUTING.yaml label to actual model name
         try:
             self.model = resolve_model_label(model)
@@ -114,12 +116,43 @@ class ChunkQualityEvaluator:
                 extra={"label": model, "resolved_model": self.model},
             )
         except ValueError:
-            # If not a label, assume it's already a model name (backward compat)
-            self.model = model
-            logger.debug(
-                "quality_eval_model_direct",
-                extra={"model": model},
-            )
+            mapping = load_map()
+            mapped_label = None
+            for label, model_id in mapping.items():
+                if str(model_id) == model:
+                    mapped_label = label
+                    break
+            if mapped_label:
+                self.model_label = mapped_label
+                self.model = mapping[mapped_label]
+                logger.warning(
+                    "quality_eval_model_mapped",
+                    extra={
+                        "model_id": model,
+                        "label": mapped_label,
+                        "resolved_model": self.model,
+                    },
+                )
+            else:
+                fallback_label = "quality-eval"
+                try:
+                    self.model_label = fallback_label
+                    self.model = resolve_model_label(fallback_label)
+                    logger.warning(
+                        "quality_eval_model_fallback",
+                        extra={
+                            "label": fallback_label,
+                            "resolved_model": self.model,
+                            "requested_model": model,
+                        },
+                    )
+                except ValueError:
+                    self.model = model
+                    self.model_label = model
+                    logger.error(
+                        "quality_eval_model_unresolved",
+                        extra={"requested_model": model},
+                    )
 
         self.timeout = timeout
         self.sample_rate = sample_rate
@@ -178,7 +211,12 @@ class ChunkQualityEvaluator:
             # Preserve input ordering while evaluating in parallel.
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {
-                    executor.submit(self._evaluate_chunk, chunks[index], context): index
+                    executor.submit(
+                        contextvars.copy_context().run,
+                        self._evaluate_chunk,
+                        chunks[index],
+                        context,
+                    ): index
                     for index in indices_to_eval
                 }
                 for future in as_completed(future_map):
@@ -207,15 +245,15 @@ class ChunkQualityEvaluator:
             for index, score in enumerate(scores)
         ]
 
+        scores_payload = [score.to_dict() for score in scores]
         logger.info(
             "quality_eval_completed",
-            extra={
-                "chunk_count": len(chunks),
-                "evaluated_count": len([s for s in scores if s.coherence > 0]),
-                "mean_overall": (
-                    sum(s.overall for s in scores) / len(scores) if scores else 0
-                ),
-            },
+            chunk_count=len(chunks),
+            evaluated_count=len([s for s in scores if s.coherence > 0]),
+            mean_overall=(
+                sum(s.overall for s in scores) / len(scores) if scores else 0
+            ),
+            scores=scores_payload,
         )
 
         return scores
@@ -226,15 +264,7 @@ class ChunkQualityEvaluator:
         context: Any = None,
     ) -> ChunkQualityScore:
         """Evaluate a single chunk."""
-        from ai_core.infra.config import get_config
-        from ai_core.infra.circuit_breaker import get_litellm_circuit_breaker
-        from ai_core.llm.client import LlmUpstreamError
-        from litellm import completion
-
-        cfg = get_config()
-        completion_kwargs = {"api_base": cfg.litellm_base_url}
-        if cfg.litellm_api_key:
-            completion_kwargs["api_key"] = cfg.litellm_api_key
+        from ai_core.llm.client import call
 
         # Build prompt
         prompt = CHUNK_QUALITY_PROMPT.format(
@@ -242,30 +272,26 @@ class ChunkQualityEvaluator:
             parent_ref=chunk.get("parent_ref", "unknown"),
         )
 
-        # Call LLM
-        breaker = get_litellm_circuit_breaker()
-        if not breaker.allow_request():
-            raise LlmUpstreamError(
-                "LiteLLM circuit breaker open",
-                status=503,
-                code="circuit_open",
-            )
-        try:
-            response = completion(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                timeout=self.timeout,
-                **completion_kwargs,
-            )
-        except Exception:
-            breaker.record_failure(reason="litellm_completion")
-            raise
-        else:
-            breaker.record_success()
+        # Build metadata for tracing (extract from context if available)
+        metadata: dict[str, Any] = {}
+        if context is not None:
+            metadata["trace_id"] = getattr(context, "trace_id", None)
+            ctx_meta = getattr(context, "metadata", None)
+            if ctx_meta is not None:
+                metadata["tenant_id"] = getattr(ctx_meta, "tenant_id", None)
+                metadata["case_id"] = getattr(ctx_meta, "case_id", None)
+
+        # Call LLM via central client (includes circuit breaker, observability)
+        response = call(
+            self.model_label,
+            prompt,
+            metadata,
+            response_format={"type": "json_object"},
+            extra_params={"timeout": self.timeout},
+        )
 
         # Parse JSON response
-        result = json.loads(response.choices[0].message.content)
+        result = json.loads(response["text"])
 
         # Extract scores
         coherence = float(result.get("coherence", 0))

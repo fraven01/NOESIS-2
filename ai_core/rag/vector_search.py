@@ -27,6 +27,7 @@ def run_vector_search(
     vec_limit: int,
     tenant: str,
     case_id: str | None,
+    trace_id: str | None,
     statement_timeout_ms: int,
     summarise_rows: Callable[[Iterable[object], str], list[dict[str, object | None]]],
     logger,
@@ -45,6 +46,7 @@ def run_vector_search(
             tenant_id=tenant,
             tenant=tenant,
             case_id=case_id,
+            trace_id=trace_id,
             error=str(vector_format_error),
         )
     elif query_vec is not None:
@@ -87,6 +89,7 @@ def run_vector_search(
                         extra={
                             "tenant_id": tenant,
                             "case_id": case_id,
+                            "trace_id": trace_id,
                             "count": len(vector_rows),
                             "rows": summarise_rows(vector_rows, kind="vector"),
                         },
@@ -99,6 +102,7 @@ def run_vector_search(
                         extra={
                             "count": len(vector_rows),
                             "first_len": (len(vector_rows[0]) if vector_rows else 0),
+                            "trace_id": trace_id,
                         },
                     )
                 except Exception:
@@ -115,6 +119,7 @@ def run_vector_search(
                 tenant_id=tenant,
                 tenant=tenant,
                 case_id=case_id,
+                trace_id=trace_id,
                 error=str(exc),
             )
     else:

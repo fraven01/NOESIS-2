@@ -91,8 +91,11 @@ RAG_IVF_LISTS = env.int("RAG_IVF_LISTS", default=2048)
 RAG_IVF_PROBES = env.int("RAG_IVF_PROBES", default=64)
 RAG_MIN_SIM = env.float("RAG_MIN_SIM", default=0.15)
 RAG_TRGM_LIMIT = env.float("RAG_TRGM_LIMIT", default=0.1)
-RAG_LEXICAL_MODE = env("RAG_LEXICAL_MODE", default="trgm")
-RAG_HYDE_ENABLED = env.bool("RAG_HYDE_ENABLED", default=False)
+RAG_LEXICAL_MODE = env("RAG_LEXICAL_MODE", default="bm25")
+RAG_LEXICAL_CONTEXTUAL_ENABLED = env.bool(
+    "RAG_LEXICAL_CONTEXTUAL_ENABLED", default=False
+)
+RAG_HYDE_ENABLED = env.bool("RAG_HYDE_ENABLED", default=True)
 RAG_HYDE_MODEL_LABEL = env("RAG_HYDE_MODEL_LABEL", default="simple-query")
 RAG_HYDE_MAX_CHARS = env.int("RAG_HYDE_MAX_CHARS", default=2000)
 RAG_HYBRID_ALPHA = env.float("RAG_HYBRID_ALPHA", default=0.7)
@@ -101,6 +104,8 @@ RAG_MAX_CANDIDATES = env.int("RAG_MAX_CANDIDATES", default=200)
 RAG_CANDIDATE_POLICY = env("RAG_CANDIDATE_POLICY", default="error")
 RAG_CHUNK_TARGET_TOKENS = env.int("RAG_CHUNK_TARGET_TOKENS", default=450)
 RAG_CHUNK_OVERLAP_TOKENS = env.int("RAG_CHUNK_OVERLAP_TOKENS", default=80)
+RAG_CONTEXT_TOKEN_BUDGET = env.int("RAG_CONTEXT_TOKEN_BUDGET", default=1800)
+RAG_CONTEXT_OVERSAMPLE_FACTOR = env.int("RAG_CONTEXT_OVERSAMPLE_FACTOR", default=4)
 RAG_HARD_DELETE_VACUUM = env.bool("RAG_HARD_DELETE_VACUUM", default=False)
 RAG_HARD_DELETE_REINDEX_THRESHOLD = env.int(
     "RAG_HARD_DELETE_REINDEX_THRESHOLD", default=0
@@ -127,6 +132,27 @@ RAG_CHUNKING_BATCH_SIZE = env.int("RAG_CHUNKING_BATCH_SIZE", default=16)
 RAG_USE_CONTENT_BASED_IDS = env.bool("RAG_USE_CONTENT_BASED_IDS", default=True)
 RAG_ADAPTIVE_CHUNKING_ENABLED = env.bool("RAG_ADAPTIVE_CHUNKING_ENABLED", default=True)
 RAG_ASSET_CHUNKS_ENABLED = env.bool("RAG_ASSET_CHUNKS_ENABLED", default=True)
+RAG_CONTEXT_HEADER_MODE = env("RAG_CONTEXT_HEADER_MODE", default="heuristic")
+RAG_CONTEXT_HEADER_MODEL = env("RAG_CONTEXT_HEADER_MODEL", default="fast")
+RAG_CONTEXT_HEADER_MAX_CHARS = env.int("RAG_CONTEXT_HEADER_MAX_CHARS", default=140)
+RAG_CONTEXT_HEADER_MAX_WORDS = env.int("RAG_CONTEXT_HEADER_MAX_WORDS", default=14)
+RAG_CONTEXTUAL_ENRICHMENT = env.bool("RAG_CONTEXTUAL_ENRICHMENT", default=False)
+RAG_CONTEXTUAL_ENRICHMENT_MODEL = env("RAG_CONTEXTUAL_ENRICHMENT_MODEL", default="fast")
+RAG_CONTEXTUAL_ENRICHMENT_MAX_DOC_CHARS = env.int(
+    "RAG_CONTEXTUAL_ENRICHMENT_MAX_DOC_CHARS", default=12000
+)
+RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNK_CHARS = env.int(
+    "RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNK_CHARS", default=2000
+)
+RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNKS = env.int(
+    "RAG_CONTEXTUAL_ENRICHMENT_MAX_CHUNKS", default=120
+)
+RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_CHARS = env.int(
+    "RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_CHARS", default=800
+)
+RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_WORDS = env.int(
+    "RAG_CONTEXTUAL_ENRICHMENT_MAX_PREFIX_WORDS", default=120
+)
 
 if "RAG_EMBEDDING_PROFILES" not in globals():
     RAG_EMBEDDING_PROFILES = {
@@ -428,6 +454,8 @@ CELERY_TENANT_RATE_LIMIT_ENABLED = env.bool(
     "CELERY_TENANT_RATE_LIMIT_ENABLED", default=True
 )
 CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+CELERYD_HIJACK_ROOT_LOGGER = False
 
 CELERY_TASK_QUEUES = (
     Queue(
@@ -488,6 +516,11 @@ CELERY_BEAT_SCHEDULE = {
     "document-version-cleanup": {
         "task": "documents.tasks.cleanup_document_versions",
         "schedule": crontab(hour=3, minute=0),
+        "options": {"queue": "default"},
+    },
+    "rag-rerank-weight-update": {
+        "task": "ai_core.tasks.rag_feedback.update_weights",
+        "schedule": timedelta(hours=6),
         "options": {"queue": "default"},
     },
 }

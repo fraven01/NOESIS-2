@@ -76,18 +76,18 @@ def test_middleware_binds_headers_and_sets_response_metadata():
     assert response["traceparent"] == traceparent
     assert response[IDEMPOTENCY_KEY_HEADER] == "idem-789"
 
-    assert captured["trace.id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
-    assert captured["span.id"] == "00f067aa0ba902b7"
-    assert captured["tenant.id"] == "tenant-789"
-    assert captured["case.id"] == "case-456"
-    assert captured["key.alias"] == "alias-001"
-    assert captured["idempotency.key"] == "idem-789"
+    assert captured["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert captured["span_id"] == "00f067aa0ba902b7"
+    assert captured["tenant_id"] == "tenant-789"
+    assert captured["case_id"] == "case-456"
+    assert captured["key_alias"] == "alias-001"
+    assert captured["idempotency_key"] == "idem-789"
     assert captured["http.method"] == "GET"
     assert captured["http.route"] == "api:ping"
-    assert captured["client.ip"] == "203.0.113.1"
+    assert captured["client_ip"] == "203.0.113.1"
 
     assert isinstance(scope, ScopeContext)
-    assert scope.trace_id == captured["trace.id"]
+    assert scope.trace_id == captured["trace_id"]
     assert re.fullmatch(r"[0-9a-f]{32}", scope.run_id)
     assert scope.run_id != scope.trace_id
     assert scope.ingestion_run_id is None
@@ -128,14 +128,14 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     assert "traceparent" not in response
     assert "X-Key-Alias" not in response
 
-    assert captured["trace.id"] == trace_id
-    assert re.fullmatch(r"[0-9a-f]{16}", captured["span.id"])
-    assert captured["tenant.id"] == "trace-tenant"
+    assert captured["trace_id"] == trace_id
+    assert re.fullmatch(r"[0-9a-f]{16}", captured["span_id"])
+    assert captured["tenant_id"] == "trace-tenant"
     assert captured["http.method"] == "POST"
     assert captured["http.route"] == "/v1/ai/intake/"
-    assert captured["client.ip"] == "127.0.0.1"
-    assert captured["case.id"] == "case-auto"
-    assert "key.alias" not in captured
+    assert captured["client_ip"] == "127.0.0.1"
+    assert captured["case_id"] == "case-auto"
+    assert "key_alias" not in captured
 
     assert isinstance(scope, ScopeContext)
     assert scope.trace_id == trace_id
@@ -232,7 +232,7 @@ def test_middleware_uses_resolved_tenant_over_header():
     response = middleware(request)
 
     assert response["X-Tenant-Id"] == "canonical-tenant"
-    assert captured["tenant.id"] == "canonical-tenant"
+    assert captured["tenant_id"] == "canonical-tenant"
 
 
 def test_middleware_builds_scope_context_from_ingestion_headers():

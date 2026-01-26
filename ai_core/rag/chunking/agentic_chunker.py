@@ -46,15 +46,29 @@ Date: 2025-12-30
 """
 
 import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping, Sequence
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ai_core.rag.chunking.late_chunker import LateChunker
+from ai_core.rag.chunking.utils import (
+    build_chunk_prefix,
+    extract_numbered_list_index,
+    find_numbered_list_runs,
+    is_numbered_list_item,
+    split_sentences,
+)
+from ai_core.rag.contextual_enrichment import (
+    generate_contextual_prefixes,
+    resolve_contextual_enrichment_config,
+)
+from ai_core.llm import client as llm_client
+from ai_core.llm.client import LlmClientError, LlmTimeoutError, RateLimitError
 from documents.pipeline import DocumentProcessingContext, ParsedResult
 
 logger = logging.getLogger(__name__)
@@ -232,6 +246,7 @@ class AgenticChunker:
         max_chunk_sentences: int = 50,
         confidence_threshold: float = 0.7,
         use_content_based_ids: bool = True,
+        enable_contextual_enrichment: bool = False,
     ):
         """
         Initialize Agentic Chunker.
@@ -254,6 +269,7 @@ class AgenticChunker:
         self.max_chunk_sentences = max_chunk_sentences
         self.confidence_threshold = confidence_threshold
         self.use_content_based_ids = use_content_based_ids
+        self.enable_contextual_enrichment = enable_contextual_enrichment
 
         # Rate limiting and budget controls
         self.rate_limiter = RateLimiter(
@@ -265,6 +281,7 @@ class AgenticChunker:
         self.fallback_chunker = LateChunker(
             model="embedding",  # MODEL_ROUTING.yaml label
             use_content_based_ids=use_content_based_ids,
+            enable_contextual_enrichment=enable_contextual_enrichment,
         )
 
         logger.info(
@@ -277,6 +294,7 @@ class AgenticChunker:
         self,
         parsed: ParsedResult,
         context: DocumentProcessingContext,
+        document: Any | None = None,
     ) -> list[dict[str, Any]]:
         """
         Chunk document using LLM-driven boundary detection.
@@ -305,15 +323,27 @@ class AgenticChunker:
         # Check rate limits and token budget
         if not self.rate_limiter.check_rate_limit():
             logger.warning("Rate limit exceeded, falling back to LateChunker")
-            return self.fallback_chunker.chunk(parsed, context)
+            return self._apply_chunk_counts(
+                self.fallback_chunker.chunk(parsed, context, document=document)
+            )
 
         if not self.rate_limiter.check_token_budget(int(estimated_tokens)):
             logger.warning("Token budget exceeded, falling back to LateChunker")
-            return self.fallback_chunker.chunk(parsed, context)
+            return self._apply_chunk_counts(
+                self.fallback_chunker.chunk(parsed, context, document=document)
+            )
 
         # Attempt LLM boundary detection
+        document_title = self._resolve_document_title(document)
+        document_ref = self._resolve_document_ref(document) or document_title
+        doc_type = self._resolve_doc_type(document)
+
         try:
-            boundaries = self._detect_boundaries_llm(sentences, document_text)
+            boundaries = self._detect_boundaries_llm(
+                sentences,
+                document_text,
+                context,
+            )
 
             # Record successful call
             self.rate_limiter.record_call(int(estimated_tokens))
@@ -323,16 +353,42 @@ class AgenticChunker:
                 sentences=sentences,
                 boundaries=boundaries,
                 context=context,
+                document_title=document_title,
+                document_ref=document_ref,
+                doc_type=doc_type,
             )
+            if self.enable_contextual_enrichment:
+                chunks = self._apply_contextual_enrichment(
+                    chunks,
+                    document_text,
+                    context,
+                )
 
             logger.info(
-                f"Agentic chunking successful: {len(chunks)} chunks from {len(sentences)} sentences"
+                "agentic_chunker_completed",
+                extra={
+                    "chunk_count": len(chunks),
+                    "sentence_count": len(sentences),
+                    "document_id": str(context.metadata.document_id),
+                    "document_ref": document_ref,
+                    "doc_type": doc_type,
+                },
             )
-            return chunks
+            return self._apply_chunk_counts(chunks)
 
         except Exception as e:
-            logger.warning(f"Agentic chunking failed: {e}, falling back to LateChunker")
-            return self.fallback_chunker.chunk(parsed, context)
+            logger.warning(
+                "agentic_chunker_failed",
+                extra={
+                    "error": str(e),
+                    "document_id": str(context.metadata.document_id),
+                    "document_ref": document_ref,
+                    "doc_type": doc_type,
+                },
+            )
+            return self._apply_chunk_counts(
+                self.fallback_chunker.chunk(parsed, context, document=document)
+            )
 
     def _extract_sentences(self, parsed: ParsedResult) -> list[str]:
         """Extract sentences from parsed result."""
@@ -344,16 +400,18 @@ class AgenticChunker:
                 continue
 
             # Split on sentence boundaries
-            for sent in text.replace("!", ".").replace("?", ".").split("."):
-                sent = sent.strip()
+            for sent in split_sentences(text):
                 if sent and len(sent) > 10:  # Minimum sentence length
                     sentences.append(sent)
 
         return sentences
 
     def _detect_boundaries_llm(
-        self, sentences: list[str], document_text: str
-    ) -> list[int]:
+        self,
+        sentences: list[str],
+        document_text: str,
+        context: DocumentProcessingContext,
+    ) -> tuple[list[int], dict[int, int]]:
         """
         Detect chunk boundaries using LLM.
 
@@ -362,34 +420,204 @@ class AgenticChunker:
             document_text: Full document text
 
         Returns:
-            List of sentence indices for boundaries
+            Tuple of (boundary indices, overlap map)
 
         Raises:
             Exception: On LLM failure (timeout, invalid response, etc.)
         """
-        # TODO: Implement actual LLM call with structured output
-        # For now, MVP implementation returns empty boundaries
-        # (will fallback to LateChunker)
+        if not sentences:
+            return []
 
-        # Mock LLM call for MVP
-        logger.warning(
-            "AgenticChunker LLM boundary detection not yet implemented (MVP), "
-            "falling back to LateChunker"
+        _ = document_text
+
+        indexed_text = "\n".join(
+            f"{idx}: {sentence}" for idx, sentence in enumerate(sentences)
         )
-        raise NotImplementedError("LLM boundary detection not yet implemented")
+        prompt = BOUNDARY_DETECTION_PROMPT.format(document_text=indexed_text)
+
+        metadata = {
+            "tenant_id": getattr(context.metadata, "tenant_id", None),
+            "case_id": getattr(context.metadata, "case_id", None),
+            "trace_id": context.trace_id or getattr(context.metadata, "trace_id", None),
+            "prompt_version": "agentic_chunk_boundaries_v1",
+        }
+
+        def _extract_payload(text: str) -> dict[str, Any]:
+            cleaned = (text or "").strip()
+            if cleaned.startswith("```") and cleaned.endswith("```"):
+                lines = cleaned.splitlines()
+                if len(lines) >= 3:
+                    cleaned = "\n".join(lines[1:-1]).strip()
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                raise ValueError("llm payload missing json object")
+            fragment = cleaned[start : end + 1]
+            data = json.loads(fragment)
+            if not isinstance(data, dict):
+                raise ValueError("llm payload must be a json object")
+            return data
+
+        def _normalize_boundaries(
+            response: BoundaryDetectionResponse,
+        ) -> tuple[list[int], dict[int, int]]:
+            total_sentences = len(sentences)
+            if response.metadata.total_sentences != total_sentences:
+                logger.warning(
+                    "agentic_chunker_sentence_count_mismatch",
+                    extra={
+                        "expected": total_sentences,
+                        "reported": response.metadata.total_sentences,
+                    },
+                )
+
+            candidates: list[int] = []
+            for boundary in response.boundaries:
+                if boundary.confidence < self.confidence_threshold:
+                    continue
+                idx = boundary.sentence_idx
+                if idx <= 0 or idx >= total_sentences:
+                    continue
+                candidates.append(idx)
+
+            candidates = sorted(set(candidates))
+
+            run_map, run_lengths = self._build_list_run_map(sentences)
+            overlap_by_boundary: dict[int, int] = {}
+
+            filtered: list[int] = []
+            last_idx = 0
+            for idx in candidates:
+                if idx - last_idx < self.min_chunk_sentences:
+                    continue
+                skip_candidate = False
+                run = run_map.get(idx - 1)
+                if run is not None and idx < run[1]:
+                    run_len = run_lengths.get(run, 0)
+                    if run_len <= self.max_chunk_sentences:
+                        logger.debug(
+                            "agentic_chunker_list_boundary_skipped",
+                            extra={
+                                "boundary_idx": idx,
+                                "run_start": run[0],
+                                "run_end": run[1],
+                                "run_len": run_len,
+                            },
+                        )
+                        continue
+                    overlap_by_boundary[idx] = 1
+                while idx - last_idx > self.max_chunk_sentences:
+                    insert_idx = last_idx + self.max_chunk_sentences
+                    run = run_map.get(insert_idx - 1)
+                    if run is not None and insert_idx < run[1]:
+                        run_len = run_lengths.get(run, 0)
+                        if run_len <= self.max_chunk_sentences:
+                            insert_idx = run[1]
+                        else:
+                            overlap_by_boundary[insert_idx] = 1
+                    if insert_idx <= last_idx:
+                        break
+                    filtered.append(insert_idx)
+                    last_idx = insert_idx
+                    if insert_idx >= idx:
+                        skip_candidate = True
+                        break
+                if skip_candidate:
+                    continue
+                filtered.append(idx)
+                last_idx = idx
+
+            while total_sentences - last_idx > self.max_chunk_sentences:
+                insert_idx = last_idx + self.max_chunk_sentences
+                run = run_map.get(insert_idx - 1)
+                if run is not None and insert_idx < run[1]:
+                    run_len = run_lengths.get(run, 0)
+                    if run_len <= self.max_chunk_sentences:
+                        insert_idx = run[1]
+                    else:
+                        overlap_by_boundary[insert_idx] = 1
+                if insert_idx <= last_idx:
+                    break
+                filtered.append(insert_idx)
+                last_idx = insert_idx
+
+            if filtered and total_sentences - filtered[-1] < self.min_chunk_sentences:
+                filtered.pop()
+
+            return sorted(set(filtered)), overlap_by_boundary
+
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = llm_client.call(
+                    self.model,
+                    prompt,
+                    metadata,
+                    response_format={"type": "json_object"},
+                    timeout_s=self.timeout,
+                )
+                payload = _extract_payload(str(response.get("text") or ""))
+                parsed = BoundaryDetectionResponse.model_validate(payload)
+                boundaries = _normalize_boundaries(parsed)
+                boundary_list, _overlap_by_boundary = boundaries
+                logger.info(
+                    "agentic_chunker_boundaries_detected",
+                    extra={
+                        "boundary_count": len(boundary_list),
+                        "sentence_count": len(sentences),
+                        "document_id": str(context.metadata.document_id),
+                    },
+                )
+                return boundaries
+            except RateLimitError as exc:
+                logger.warning(
+                    "agentic_chunker_llm_rate_limited",
+                    extra={
+                        "document_id": str(context.metadata.document_id),
+                        "error": str(exc),
+                    },
+                )
+                raise
+            except (
+                LlmClientError,
+                LlmTimeoutError,
+                ValueError,
+                ValidationError,
+            ) as exc:
+                last_error = exc
+                logger.warning(
+                    "agentic_chunker_llm_attempt_failed",
+                    extra={
+                        "attempt": attempt + 1,
+                        "max_retries": self.max_retries,
+                        "document_id": str(context.metadata.document_id),
+                        "error": str(exc),
+                    },
+                )
+                if attempt < self.max_retries:
+                    time.sleep(1)
+                    continue
+                break
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("agentic chunker failed without exception")
 
     def _build_chunks_from_boundaries(
         self,
         sentences: list[str],
-        boundaries: list[int],
+        boundaries: list[int] | tuple[list[int], dict[int, int]],
         context: DocumentProcessingContext,
+        document_title: str | None = None,
+        document_ref: str | None = None,
+        doc_type: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build chunks from detected boundaries.
 
         Args:
             sentences: List of sentences
-            boundaries: List of boundary indices
+            boundaries: (boundary indices, overlap map)
             context: Document processing context
 
         Returns:
@@ -400,15 +628,60 @@ class AgenticChunker:
         namespace_key = self._resolve_chunk_namespace_key(context)
 
         # Add start and end boundaries
-        all_boundaries = sorted([0] + boundaries + [len(sentences)])
+        if isinstance(boundaries, tuple):
+            boundary_list, overlap_by_boundary = boundaries
+        else:
+            boundary_list = boundaries
+            overlap_by_boundary = {}
+        all_boundaries = sorted([0] + boundary_list + [len(sentences)])
+        merged_boundaries = [all_boundaries[0]]
+        idx = 1
+        while idx < len(all_boundaries):
+            start_idx = merged_boundaries[-1]
+            end_idx = all_boundaries[idx]
+            if idx < len(all_boundaries) - 1:
+                chunk_text = " ".join(sentences[start_idx:end_idx]).strip()
+                if self._is_heading_only_chunk(chunk_text):
+                    idx += 1
+                    merged_boundaries.append(all_boundaries[idx])
+                    idx += 1
+                    continue
+            merged_boundaries.append(end_idx)
+            idx += 1
+        all_boundaries = merged_boundaries
+        run_map, _run_lengths = self._build_list_run_map(sentences)
 
-        for i in range(len(all_boundaries) - 1):
+        total_chunks = len(all_boundaries) - 1
+        for i in range(total_chunks):
             start_idx = all_boundaries[i]
             end_idx = all_boundaries[i + 1]
 
-            # Extract chunk sentences
+            # Extract chunk sentences with optional overlap for list splits
+            overlap = overlap_by_boundary.get(start_idx, 0)
+            if overlap:
+                start_idx = max(0, start_idx - overlap)
             chunk_sentences = sentences[start_idx:end_idx]
             chunk_text = " ".join(chunk_sentences)
+
+            list_header = self._resolve_list_header(sentences, run_map, start_idx)
+            chunk_position = self._format_chunk_position(i, total_chunks)
+            prefix = build_chunk_prefix(
+                document_ref=document_ref or document_title,
+                doc_type=doc_type,
+                section_path=None,
+                chunk_position=chunk_position,
+                list_header=list_header,
+            )
+            if i == 0 and prefix:
+                self._log_prefix_sample(
+                    document_id=str(context.metadata.document_id),
+                    document_ref=document_ref or document_title,
+                    doc_type=doc_type,
+                    prefix=prefix,
+                    section_path=(),
+                    chunk_position=chunk_position,
+                )
+            chunk_text = f"{prefix}{chunk_text}" if prefix else chunk_text
 
             # Generate chunk ID
             if self.use_content_based_ids:
@@ -431,6 +704,7 @@ class AgenticChunker:
                 )
 
             # Build chunk dictionary
+
             chunk = {
                 "chunk_id": chunk_id,
                 "text": chunk_text,
@@ -455,6 +729,209 @@ class AgenticChunker:
             return str(context.metadata.document_id)
         return str(version_id)
 
+    @staticmethod
+    def _resolve_document_title(document: Any | None) -> str | None:
+        if document is None:
+            return None
+        if isinstance(document, dict):
+            meta = document.get("meta") or {}
+            title = meta.get("title") or document.get("title")
+            return str(title).strip() if title else None
+        meta = getattr(document, "meta", None)
+        title = getattr(meta, "title", None) if meta is not None else None
+        if title:
+            return str(title).strip()
+        return None
+
+    @staticmethod
+    def _resolve_document_ref(document: Any | None) -> str | None:
+        if document is None:
+            return None
+        if isinstance(document, dict):
+            meta = document.get("meta") or {}
+            for key in ("document_ref", "doc_ref", "external_id", "ref", "title"):
+                value = meta.get(key) or document.get(key)
+                if value:
+                    return str(value).strip()
+            return None
+        meta = getattr(document, "meta", None)
+        for key in ("document_ref", "doc_ref", "external_id", "ref", "title"):
+            value = getattr(meta, key, None) if meta is not None else None
+            if value:
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _resolve_doc_type(document: Any | None) -> str | None:
+        if document is None:
+            return None
+        if isinstance(document, dict):
+            meta = document.get("meta") or {}
+            for key in ("doc_type", "doc_class", "document_type", "type"):
+                value = meta.get(key) or document.get(key)
+                if value:
+                    return str(value).strip()
+            return None
+        meta = getattr(document, "meta", None)
+        for key in ("doc_type", "doc_class", "document_type", "type"):
+            value = getattr(meta, key, None) if meta is not None else None
+            if value:
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _format_chunk_position(
+        index: int, total: int, *, label: str = "Chunk"
+    ) -> str | None:
+        if total <= 0:
+            return None
+        return f"{label} {index + 1} von {total}"
+
+    @staticmethod
+    def _log_prefix_sample(
+        *,
+        document_id: str,
+        document_ref: str | None,
+        doc_type: str | None,
+        prefix: str,
+        section_path: Sequence[str],
+        chunk_position: str | None,
+    ) -> None:
+        if not prefix.strip():
+            return
+        try:
+            logger.info(
+                "ingestion.chunk.prefix_sample",
+                extra={
+                    "document_id": document_id,
+                    "document_ref": document_ref,
+                    "doc_type": doc_type,
+                    "section_path": list(section_path),
+                    "chunk_position": chunk_position,
+                    "prefix": prefix.strip(),
+                },
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _apply_chunk_counts(
+        chunks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks):
+            meta = chunk.get("metadata")
+            if not isinstance(meta, dict):
+                meta = dict(meta) if isinstance(meta, Mapping) else {}
+                chunk["metadata"] = meta
+            meta["chunk_index"] = idx
+            meta["chunk_count"] = total
+        return chunks
+
+    def _apply_contextual_enrichment(
+        self,
+        chunks: list[dict[str, Any]],
+        document_text: str,
+        context: DocumentProcessingContext,
+    ) -> list[dict[str, Any]]:
+        if not chunks:
+            return chunks
+        if self._has_contextual_prefix(chunks):
+            return chunks
+        config = resolve_contextual_enrichment_config(True)
+        if not config.enabled:
+            return chunks
+        started_at = time.perf_counter()
+        entries = [
+            {"text": str(chunk.get("text") or ""), "metadata": chunk.get("metadata")}
+            for chunk in chunks
+        ]
+        prefixes = generate_contextual_prefixes(
+            document_text,
+            entries,
+            context,
+            config,
+        )
+        duration_ms = int(round((time.perf_counter() - started_at) * 1000))
+        logger.info(
+            "agentic_chunker_contextual_enrichment",
+            extra={
+                "document_id": str(context.metadata.document_id),
+                "chunk_count": len(chunks),
+                "duration_ms": duration_ms,
+            },
+        )
+        for chunk, prefix in zip(chunks, prefixes):
+            if not prefix:
+                continue
+            meta = chunk.get("metadata")
+            if not isinstance(meta, dict):
+                meta = dict(meta) if isinstance(meta, Mapping) else {}
+                chunk["metadata"] = meta
+            meta["contextual_prefix"] = prefix
+        return chunks
+
+    @staticmethod
+    def _has_contextual_prefix(chunks: Sequence[Mapping[str, Any]]) -> bool:
+        for chunk in chunks:
+            meta = chunk.get("metadata")
+            if not isinstance(meta, Mapping):
+                continue
+            value = meta.get("contextual_prefix")
+            if isinstance(value, str) and value.strip():
+                return True
+        return False
+
+    @staticmethod
+    def _build_list_run_map(
+        sentences: list[str],
+    ) -> tuple[dict[int, tuple[int, int]], dict[tuple[int, int], int]]:
+        runs = find_numbered_list_runs(sentences)
+        run_map: dict[int, tuple[int, int]] = {}
+        run_lengths: dict[tuple[int, int], int] = {}
+        for start, end in runs:
+            run_lengths[(start, end)] = end - start
+            for idx in range(start, end):
+                run_map[idx] = (start, end)
+        return run_map, run_lengths
+
+    @staticmethod
+    def _resolve_list_header(
+        sentences: list[str],
+        run_map: dict[int, tuple[int, int]],
+        start_idx: int,
+    ) -> str | None:
+        run = run_map.get(start_idx)
+        if not run:
+            return None
+        run_start, _run_end = run
+        if start_idx <= run_start:
+            return None
+        header_idx = run_start - 1
+        if header_idx < 0:
+            return None
+        candidate = sentences[header_idx].strip()
+        if candidate and not is_numbered_list_item(candidate):
+            return candidate
+        item_number = extract_numbered_list_index(sentences[start_idx])
+        if item_number is None:
+            return "Fortsetzung"
+        return f"Fortsetzung (Punkt {item_number})"
+
+    @staticmethod
+    def _is_heading_only_chunk(text: str) -> bool:
+        if not text:
+            return False
+        if len(text) > 140:
+            return False
+        if "\n" in text:
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
+            if len(lines) > 3:
+                return False
+        if any(punct in text for punct in ".!?"):
+            return False
+        return True
+
 
 # ==============================================================================
 # Factory Function
@@ -474,4 +951,7 @@ def get_default_agentic_chunker() -> AgenticChunker:
             settings, "RAG_AGENTIC_CHUNK_TOKEN_BUDGET", 100000
         ),
         use_content_based_ids=getattr(settings, "RAG_USE_CONTENT_BASED_IDS", True),
+        enable_contextual_enrichment=getattr(
+            settings, "RAG_CONTEXTUAL_ENRICHMENT", False
+        ),
     )

@@ -124,27 +124,29 @@ class TestHybridChunker:
         sample_processing_context,
         sample_pipeline_config,
     ):
-        """Test that AGENTIC mode with internal fallback to LATE (MVP)."""
+        """Test that AGENTIC mode falls back to LATE on LLM failure."""
         config = ChunkerConfig(
-            mode=ChunkerMode.AGENTIC,  # MVP: AgenticChunker internally falls back to Late
+            mode=ChunkerMode.AGENTIC,
             enable_quality_metrics=False,
         )
         chunker = HybridChunker(config)
 
         with patch("ai_core.rag.embeddings.get_embedding_client") as mock_get_client:
             mock_get_client.return_value = stub_embedding_client
+            with patch(
+                "ai_core.rag.chunking.agentic_chunker.llm_client.call",
+                side_effect=Exception("LLM failure"),
+            ):
+                chunks, stats = chunker.chunk(
+                    document=None,
+                    parsed=sample_parsed_result,
+                    context=sample_processing_context,
+                    config=sample_pipeline_config,
+                )
 
-            chunks, stats = chunker.chunk(
-                document=None,
-                parsed=sample_parsed_result,
-                context=sample_processing_context,
-                config=sample_pipeline_config,
-            )
-
-        # Should use agentic mode (with internal fallback to Late handled by AgenticChunker)
+        # Should use agentic mode with internal fallback to Late handled by AgenticChunker
         assert stats["chunker.mode"] == "agentic"
         assert len(chunks) > 0
-        # Note: AgenticChunker handles fallback internally (MVP implementation)
 
     def test_hybrid_chunker_implements_protocol(
         self,
@@ -225,6 +227,7 @@ class TestChunkerConfig:
         assert config.mode == ChunkerMode.LATE
         assert config.late_chunk_model == "embedding"  # MODEL_ROUTING.yaml label
         assert config.enable_quality_metrics is True
+        assert config.enable_contextual_enrichment is False
         assert config.max_chunk_tokens == 450
         assert config.adaptive_chunking_enabled is True
         assert config.asset_chunks_enabled is True
@@ -235,6 +238,7 @@ class TestChunkerConfig:
             mode=ChunkerMode.AGENTIC,
             late_chunk_model="custom-model",
             enable_quality_metrics=False,
+            enable_contextual_enrichment=True,
             max_chunk_tokens=600,
             adaptive_chunking_enabled=False,
             asset_chunks_enabled=False,
@@ -243,6 +247,7 @@ class TestChunkerConfig:
         assert config.mode == ChunkerMode.AGENTIC
         assert config.late_chunk_model == "custom-model"
         assert config.enable_quality_metrics is False
+        assert config.enable_contextual_enrichment is True
         assert config.max_chunk_tokens == 600
         assert config.adaptive_chunking_enabled is False
         assert config.asset_chunks_enabled is False

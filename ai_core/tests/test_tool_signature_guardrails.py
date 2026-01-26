@@ -25,9 +25,10 @@ def test_node_run_signatures_use_tool_context_and_params() -> None:
         run = getattr(module, "run", None)
         assert callable(run), f"{module.__name__}.run is missing"
 
-        signature = inspect.signature(run)
+        unwrapped = inspect.unwrap(run)
+        signature = inspect.signature(unwrapped)
         params = list(signature.parameters.values())
-        hints = typing.get_type_hints(run, globalns=run.__globals__)
+        hints = typing.get_type_hints(unwrapped, globalns=unwrapped.__globals__)
         assert len(params) == 2, f"{module.__name__}.run should take 2 args"
 
         context_param = params[0]

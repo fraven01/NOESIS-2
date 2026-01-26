@@ -28,30 +28,27 @@ def _base_state() -> dict[str, Any]:
     return {
         "query": "employee data residency controls",
         "candidates": [
-            {
-                "id": "doc-1",
-                "url": "https://example.com/policies/data-residency",
-                "title": "Residency policy",
-                "snippet": "Document describes residency law and audit duties.",
-                "detected_date": now,
-                "score": 95,
-            },
-            {
-                "id": "doc-2",
-                "url": "https://example.com/security/access-controls",
-                "title": "Access controls",
-                "snippet": "Explains access controls and integration APIs.",
-                "detected_date": now,
-                "score": 90,
-            },
-            {
-                "id": "doc-3",
-                "url": "https://external.gov/residency/overview",
-                "title": "Government residency guidance",
-                "snippet": "Official residency guidance with monitoring obligations.",
-                "detected_date": now,
-                "score": 88,
-            },
+            SearchCandidate(
+                id="doc-1",
+                url="https://example.com/policies/data-residency",
+                title="Residency policy",
+                snippet="Document describes residency law and audit duties.",
+                detected_date=now,
+            ),
+            SearchCandidate(
+                id="doc-2",
+                url="https://example.com/security/access-controls",
+                title="Access controls",
+                snippet="Explains access controls and integration APIs.",
+                detected_date=now,
+            ),
+            SearchCandidate(
+                id="doc-3",
+                url="https://external.gov/residency/overview",
+                title="Government residency guidance",
+                snippet="Official residency guidance with monitoring obligations.",
+                detected_date=now,
+            ),
         ],
     }
 
@@ -186,13 +183,13 @@ def test_hybrid_graph_produces_ranked_result(monkeypatch: pytest.MonkeyPatch) ->
     graph = _graph(monkeypatch)
     state, result = graph.run(_base_state(), _base_meta())
 
-    ranked = result["result"]["ranked"]
-    top_ids = [item["candidate_id"] for item in ranked[:2]]
+    ranked = result["result"].ranked
+    top_ids = [item.candidate_id for item in ranked[:2]]
 
     assert top_ids[0] == "doc-2"
     assert "doc-2" in top_ids
     assert "doc-3" in top_ids
-    assert "coverage_delta" in result["result"]
+    assert result["result"].coverage_delta
     assert state["flags"]["rag_unavailable"] is False
     fusion_debug = state["flags"]["debug"]["fusion"]
     assert fusion_debug["fused_scores"]["doc-2"] > fusion_debug["fused_scores"]["doc-1"]
@@ -247,7 +244,9 @@ def test_rag_failure_sets_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "result" in state["hybrid_result"]
 
 
-def test_llm_timeout_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_timeout_falls_back(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     graph = build_hybrid_graph()
     monkeypatch.setattr(graph, "_summarise_matches", lambda *_args: _fake_rag())
     monkeypatch.setattr(
@@ -263,12 +262,51 @@ def test_llm_timeout_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError()),
     )
 
-    state, result = graph.run(_base_state(), _base_meta())
+    with caplog.at_level("WARNING", logger="llm_worker.graphs.hybrid_search_and_score"):
+        state, result = graph.run(_base_state(), _base_meta())
 
     assert result["flags"]["llm_timeout"] is True
-    assert result["result"]["ranked"]
-    assert "doc-1" in {item["candidate_id"] for item in result["result"]["ranked"]}
+    assert result["result"].ranked
+    assert "doc-1" in {item.candidate_id for item in result["result"].ranked}
     assert state["flags"]["debug"]["llm"]["fallback"] == "timeout"
+    assert any("hybrid.llm_timeout" in record.getMessage() for record in caplog.records)
+
+
+def test_llm_rerank_closes_db_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph = build_hybrid_graph()
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "llm_worker.graphs.hybrid_search_and_score.close_old_connections",
+        lambda: calls.append("closed"),
+    )
+    monkeypatch.setattr(
+        "llm_worker.graphs.hybrid_search_and_score.run_score_results",
+        lambda *_args, **_kwargs: {
+            "evaluations": [
+                {
+                    "candidate_id": "doc-1",
+                    "score": 88,
+                    "reason": "ok",
+                    "gap_tags": [],
+                    "risk_flags": [],
+                    "facet_coverage": {},
+                }
+            ],
+            "top_k": [],
+        },
+    )
+
+    graph._run_llm_rerank(
+        query="policy",
+        candidates=[{"id": "doc-1", "snippet": "Policy overview"}],
+        meta=_base_meta(),
+        scoring_context=None,
+        rag_facets={},
+        rag_summaries=[],
+    )
+
+    assert len(calls) >= 2
 
 
 def test_llm_cache_avoids_second_call(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -286,10 +324,9 @@ def test_llm_cache_avoids_second_call(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     def _fake_score(
-        control: Mapping[str, Any],
         data: Mapping[str, Any],
         *,
-        meta: Mapping[str, Any] | None = None,
+        config: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         call_counter["count"] += 1
         return {
@@ -473,30 +510,13 @@ def test_invalid_candidate_logs_warning(
 ) -> None:
     graph = build_hybrid_graph()
     candidates = [
-        {
-            "id": "doc-invalid",
-            "url": "https://example.com/invalid",
-            "snippet": "Policy text",
-        },
+        {"url": "https://example.com/invalid"},
         {
             "id": "doc-valid",
             "url": "https://example.com/valid",
             "snippet": "Valid policy",
         },
     ]
-
-    original_validate = SearchCandidate.model_validate.__func__  # type: ignore[attr-defined]
-
-    def _raising_validate(cls, payload: Mapping[str, Any], *args: Any, **kwargs: Any):
-        if payload.get("id") == "doc-invalid":
-            raise ValueError("invalid candidate")
-        return original_validate(cls, payload, *args, **kwargs)
-
-    monkeypatch.setattr(
-        SearchCandidate,
-        "model_validate",
-        classmethod(_raising_validate),
-    )
 
     monkeypatch.setattr(
         "llm_worker.graphs.hybrid_search_and_score.run_score_results",

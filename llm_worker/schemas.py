@@ -292,13 +292,28 @@ class RagQueryTask(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class ScoreResultsConfig(BaseModel):
+    """Configuration payload for score_results execution."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    prompt_version: str | None = None
+    model_preset: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    tenant_id: str | None = None
+    case_id: str | None = None
+    trace_id: str | None = None
+    key_alias: str | None = None
+
+
 class ScoreResultsTask(BaseModel):
     """score_results task payload."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     task_type: Literal["score_results"] = "score_results"
-    control: dict[str, Any] = Field(default_factory=dict)
+    config: ScoreResultsConfig = Field(default_factory=ScoreResultsConfig)
     data: ScoreResultsData
 
 
@@ -428,6 +443,7 @@ __all__ = [
     "SearchCandidate",
     "ScoreResultInput",
     "ScoreResultsData",
+    "ScoreResultsConfig",
     "RagQueryTask",
     "ScoreResultsTask",
     "WorkerTask",

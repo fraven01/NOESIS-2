@@ -62,3 +62,8 @@ services:
 
 volumes:
   es-data:
+
+networks:
+  default:
+    name: noesis-2_default
+    external: true

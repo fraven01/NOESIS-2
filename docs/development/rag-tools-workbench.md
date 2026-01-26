@@ -253,6 +253,9 @@ Uses Tailwind CSS with Indigo color scheme:
 6. Review results in right panel
 7. (Optional) Click "Ingest Selected" to trigger crawler
 
+**Testing note (Django views)**:
+- For view functions with path params (e.g., `web_search_status`), tests should either call the URL via `client.get(reverse(...))` or pass the param explicitly when calling the view (`web_search_status(request, task_id=...)`).
+
 ### Debugging Upload Ingestion
 
 1. Upload document via `/ai/rag/documents/upload/`

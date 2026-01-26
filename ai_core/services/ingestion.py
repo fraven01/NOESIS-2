@@ -64,7 +64,7 @@ def _enqueue_ingestion_task(
     state: Mapping[str, object],
     meta: Mapping[str, object],
 ) -> None:
-    signature = task.s(state, meta)
+    signature = task.s(state=state, meta=meta)
     task_id = None
     try:
         context = tool_context_from_meta(meta)

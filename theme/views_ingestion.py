@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from uuid import uuid4
 
 from django.shortcuts import render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
+from django.core.cache import cache
 from pydantic import ValidationError
 from structlog.stdlib import get_logger
 
@@ -131,7 +133,10 @@ def crawler_submit(request):
 
         # We need to manually inject ingestion_run_id into scope if we want it to match payload
         if payload.get("ingestion_run_id"):
-            tool_context.scope.ingestion_run_id = payload["ingestion_run_id"]
+            scope = tool_context.scope.model_copy(
+                update={"ingestion_run_id": payload["ingestion_run_id"]}
+            )
+            tool_context = tool_context.model_copy(update={"scope": scope})
 
         meta = {
             "scope_context": tool_context.scope.model_dump(
@@ -183,6 +188,7 @@ def ingestion_submit(request):
     Returns a partial HTML response with the ingestion status.
     """
     views = _views()
+    tenant_id = None
     try:
         from ai_core.services import handle_document_upload
 
@@ -211,6 +217,19 @@ def ingestion_submit(request):
             tenant_id, None, ensure=True
         )
 
+        # Fail fast on duplicate uploads within a short window.
+        file_bytes = uploaded_file.read()
+        uploaded_file.seek(0)
+        checksum = hashlib.sha256(file_bytes).hexdigest()
+        cache_key = f"rag_tools:upload_lock:{tenant_id}:{checksum}"
+        if not cache.add(cache_key, "1", timeout=120):
+            return render(
+                request,
+                "theme/partials/_ingestion_status.html",
+                {"error": "Upload already in progress for this file."},
+                status=409,
+            )
+
         # Build Context using helper
         tool_context = prepare_workbench_context(
             request,
@@ -226,7 +245,10 @@ def ingestion_submit(request):
         # get_scope_context usually persists trace, but invocation_id is per-request.
         # Let's ensure a fresh invocation_id for this specific action if needed.
         if not tool_context.scope.invocation_id:
-            tool_context.scope.invocation_id = str(uuid4())
+            scope = tool_context.scope.model_copy(
+                update={"invocation_id": str(uuid4())}
+            )
+            tool_context = tool_context.model_copy(update={"scope": scope})
 
         meta = {
             "scope_context": tool_context.scope.model_dump(
@@ -259,12 +281,31 @@ def ingestion_submit(request):
         )
 
         if upload_response.status_code >= 400:
+            error_message = "Upload failed."
+            error_code = None
+            response_data = upload_response.data
+            if isinstance(response_data, dict):
+                error_block = response_data.get("error")
+                if isinstance(error_block, dict):
+                    error_message = error_block.get("message") or error_message
+                    error_code = error_block.get("code")
+            status_code = upload_response.status_code
+            if status_code == 409 or error_code == "duplicate_document":
+                error_message = "Document already exists. Skipping duplicate ingestion."
+                status_label = "duplicate"
+            else:
+                status_label = "error"
             return render(
                 request,
                 "theme/partials/_ingestion_status.html",
                 {
-                    "error": f"Upload failed: {upload_response.data.get('detail', 'Unknown error')}"
+                    "status": status_label,
+                    "url_count": 1,
+                    "result": {},
+                    "now": timezone.now(),
+                    "error": error_message,
                 },
+                status=status_code,
             )
 
         run_id = upload_response.data.get("ingestion_run_id")

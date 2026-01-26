@@ -11,7 +11,12 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import ValidationError
 
 from ai_core.infra.object_store import read_json, sanitize_identifier, write_json
-from ai_core.graph.state import PersistedGraphState
+from ai_core.infra.observability import observe_span
+from ai_core.graph.state import (
+    PersistedGraphState,
+    extract_plan_envelope,
+    plan_state_path,
+)
 
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only imports
@@ -45,6 +50,12 @@ class GraphContext:
     graph_name: str
     graph_version: str = "v0"
 
+    def __post_init__(self) -> None:
+        if not self.plan_key and (not self.workflow_id or not self.run_id):
+            raise ValueError(
+                "workflow_id and run_id are required for workflow execution checkpointing"
+            )
+
     @property
     def tenant_id(self) -> str:
         return self.tool_context.scope.tenant_id
@@ -59,9 +70,7 @@ class GraphContext:
 
     @property
     def workflow_id(self) -> str | None:
-        return (
-            self.tool_context.business.workflow_id or self.tool_context.business.case_id
-        )
+        return self.tool_context.business.workflow_id
 
     @property
     def thread_id(self) -> str | None:
@@ -73,15 +82,35 @@ class GraphContext:
             self.tool_context.scope.run_id or self.tool_context.scope.ingestion_run_id
         )
 
+    @property
+    def plan_key(self) -> str | None:
+        value = self.tool_context.metadata.get("plan_key")
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return str(value)
+
 
 class FileCheckpointer(Checkpointer):
     """Checkpoint implementation backed by the local object store."""
 
     def _path(self, ctx: GraphContext) -> str:
         safe_tenant = sanitize_identifier(ctx.tenant_id)
-        safe_case = sanitize_identifier(ctx.case_id)
-        return f"{safe_tenant}/{safe_case}/state.json"
+        plan_key = ctx.plan_key
+        if plan_key:
+            safe_plan_key = sanitize_identifier(plan_key)
+            return f"{safe_tenant}/workflow-executions/{safe_plan_key}/state.json"
 
+        workflow_id = ctx.workflow_id
+        run_id = ctx.run_id
+        safe_workflow = sanitize_identifier(workflow_id)
+        safe_run = sanitize_identifier(run_id)
+        return (
+            f"{safe_tenant}/workflow-executions/{safe_workflow}/{safe_run}/state.json"
+        )
+
+    @observe_span(name="graph.checkpoint.load")
     def load(self, ctx: GraphContext) -> dict:
         """Load a previously stored state or return an empty mapping."""
 
@@ -97,6 +126,9 @@ class FileCheckpointer(Checkpointer):
                     "graph": ctx.graph_name,
                     "tenant_id": ctx.tenant_id,
                     "case_id": ctx.case_id,
+                    "workflow_id": ctx.workflow_id,
+                    "run_id": ctx.run_id,
+                    "plan_key": ctx.plan_key,
                 },
             )
             write_json(path, {})
@@ -110,25 +142,50 @@ class FileCheckpointer(Checkpointer):
                     "graph": ctx.graph_name,
                     "tenant_id": ctx.tenant_id,
                     "case_id": ctx.case_id,
+                    "workflow_id": ctx.workflow_id,
+                    "run_id": ctx.run_id,
+                    "plan_key": ctx.plan_key,
                 },
             )
             write_json(path, {})
             return {}
         return persisted.state
 
+    @observe_span(name="graph.checkpoint.save")
     def save(self, ctx: GraphContext, state: dict) -> None:
         """Persist the provided state for later retrieval."""
 
         if not isinstance(state, dict):  # pragma: no cover - defensive branch
             raise TypeError("state must be a dictionary")
+        plan_payload, evidence_payload, derived_plan_key = extract_plan_envelope(state)
         persisted = PersistedGraphState(
             tool_context=ctx.tool_context,
             state=state,
+            plan=plan_payload,
+            evidence=evidence_payload,
             graph_name=ctx.graph_name,
             graph_version=ctx.graph_version,
             checkpoint_at=datetime.now(timezone.utc),
         )
-        write_json(self._path(ctx), persisted.model_dump(mode="json"))
+        payload = persisted.model_dump(mode="json")
+        primary_path = self._path(ctx)
+        write_json(primary_path, payload)
+        if derived_plan_key and derived_plan_key != ctx.plan_key:
+            alt_path = plan_state_path(ctx.tenant_id, derived_plan_key)
+            if alt_path != primary_path:
+                if ctx.plan_key:
+                    logger.warning(
+                        "graph.checkpoint.plan_key_mismatch",
+                        extra={
+                            "graph": ctx.graph_name,
+                            "tenant_id": ctx.tenant_id,
+                            "workflow_id": ctx.workflow_id,
+                            "run_id": ctx.run_id,
+                            "plan_key": ctx.plan_key,
+                            "derived_plan_key": derived_plan_key,
+                        },
+                    )
+                write_json(alt_path, payload)
 
 
 class ThreadAwareCheckpointer(FileCheckpointer):

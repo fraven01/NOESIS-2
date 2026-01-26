@@ -19,11 +19,13 @@ from documents.notification_dispatcher import (
 )
 from documents.notification_service import create_notification
 from documents.upload_worker import UploadWorker
+from ai_core.infra.observability import observe_span
 from ai_core.tool_contracts.base import tool_context_from_meta
 from common.celery import ScopedTask
 
 
 @shared_task(base=ScopedTask, queue="ingestion")
+@observe_span(name="documents.upload")
 def upload_document_task(
     file_bytes: bytes,
     filename: str,
@@ -101,6 +103,7 @@ def _apply_saved_search_filters(queryset, saved_search):
 
 
 @shared_task(base=ScopedTask)
+@observe_span(name="documents.saved_search_alerts")
 def run_saved_search_alerts() -> dict[str, int]:
     """Run saved search alerts on a conservative schedule."""
 
@@ -193,6 +196,7 @@ def run_saved_search_alerts() -> dict[str, int]:
 
 
 @shared_task(base=ScopedTask)
+@observe_span(name="documents.cleanup_versions")
 def cleanup_document_versions(retention_days: int = 30) -> dict[str, int]:
     """Purge document versions that were soft-deleted beyond retention."""
 
@@ -297,6 +301,7 @@ def _render_digest_email(events) -> tuple[str, str]:
 
 
 @shared_task(base=ScopedTask)
+@observe_span(name="documents.send_email_deliveries")
 def send_pending_email_deliveries() -> dict[str, int]:
     """Send queued external email deliveries with retry backoff."""
 

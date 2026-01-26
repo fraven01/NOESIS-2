@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from django.conf import settings
 from django.shortcuts import render
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
@@ -15,8 +16,13 @@ from common.constants import (
 )
 from theme.chat_utils import (
     build_hybrid_config,
+    build_passage_items_for_workbench,
     build_snippet_items,
+    build_used_source_items,
     coerce_optional_text,
+    link_citations,
+    link_citations_markdown,
+    render_markdown_answer,
 )
 
 logger = get_logger(__name__)
@@ -120,7 +126,55 @@ def chat_submit(request):
 
         answer = result_payload.get("answer", "No answer generated.")
         snippets = result_payload.get("snippets", [])
-        snippet_items = build_snippet_items(snippets)
+        retrieval_meta = result_payload.get("retrieval") or {}
+        if request.path.startswith("/rag-tools/"):
+            passages = build_passage_items_for_workbench(snippets)
+            if passages:
+                retrieval_meta = dict(retrieval_meta)
+                retrieval_meta["passages"] = passages
+                result_payload["retrieval"] = retrieval_meta
+        try:
+            top_k = int(retrieval_meta.get("top_k_effective") or 0)
+        except (TypeError, ValueError):
+            top_k = 0
+        snippet_limit = top_k or len(snippets) or None
+        snippet_items = build_snippet_items(snippets, limit=snippet_limit)
+        if request.path.startswith("/rag-tools/"):
+            answer_markdown = link_citations_markdown(answer, snippet_items)
+            answer = render_markdown_answer(answer_markdown)
+        else:
+            answer = link_citations(answer, snippet_items)
+        reasoning = result_payload.get("reasoning")
+        if not isinstance(reasoning, dict):
+            reasoning = None
+        used_sources = build_used_source_items(
+            result_payload.get("used_sources"),
+            snippet_items=snippet_items,
+            limit=snippet_limit,
+        )
+        suggested_followups = result_payload.get("suggested_followups")
+        if not isinstance(suggested_followups, list):
+            suggested_followups = []
+        debug_meta = result_payload.get("debug_meta")
+        show_debug = bool(settings.DEBUG) or bool(
+            getattr(getattr(request, "user", None), "is_staff", False)
+        )
+        if not show_debug:
+            debug_meta = None
+        elif request.path.startswith("/rag-tools/"):
+            passages = (
+                retrieval_meta.get("passages")
+                if isinstance(retrieval_meta, dict)
+                else None
+            )
+            if isinstance(passages, list):
+                debug_meta = dict(debug_meta or {})
+                debug_meta["passages"] = passages
+            if isinstance(retrieval_meta, dict):
+                reference_expansion = retrieval_meta.get("reference_expansion")
+                if isinstance(reference_expansion, dict):
+                    debug_meta = dict(debug_meta or {})
+                    debug_meta["reference_expansion"] = reference_expansion
 
         return render(
             request,
@@ -129,6 +183,11 @@ def chat_submit(request):
                 "message": message,
                 "answer": answer,
                 "snippets": snippet_items,
+                "reasoning": reasoning,
+                "used_sources": used_sources,
+                "suggested_followups": suggested_followups,
+                "debug_meta": debug_meta,
+                "show_debug": show_debug,
                 "tenant_id": tenant_id,
                 "tenant_schema": tenant_schema or scope.tenant_schema,
                 "case_id": case_id,

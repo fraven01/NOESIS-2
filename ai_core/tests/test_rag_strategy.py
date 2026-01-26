@@ -40,3 +40,20 @@ def test_rerank_chunks_heuristic():
     )
     assert len(result.chunks) == 1
     assert result.chunks[0]["id"] == "b"
+
+
+def test_rerank_chunks_question_boost():
+    context = _tool_context()
+    chunks = [
+        {"id": "a", "text": "high score", "score": 0.8},
+        {"id": "b", "text": "Welche Fragen muessen beantwortet werden?", "score": 0.75},
+    ]
+    result = rerank.rerank_chunks(
+        chunks,
+        "welche fragen",
+        context,
+        top_k=1,
+        mode="heuristic",
+        intent="extract_questions",
+    )
+    assert result.chunks[0]["id"] == "b"

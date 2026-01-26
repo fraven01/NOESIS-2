@@ -94,6 +94,58 @@
                                     {% endfor %}
                                 </select>
                             </div>
+                            <details class="ml-auto">
+                                <summary class="list-none cursor-pointer">
+                                    <span class="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:border-indigo-300 hover:text-indigo-700">
+                                        &#9881; Tuning
+                                    </span>
+                                </summary>
+                                <div class="mt-2 rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                                    <p class="text-[10px] uppercase tracking-wider text-slate-400 mb-2">Retrieval Params (Dev)</p>
+                                    <div class="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                                        <label class="flex flex-col gap-1">
+                                            alpha
+                                            <input name="alpha" type="number" step="0.05" min="0" max="1" value="0.5"
+                                                class="rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                                        </label>
+                                        <label class="flex flex-col gap-1">
+                                            top_k
+                                            <input name="top_k" type="number" min="1" max="50" value="5"
+                                                class="rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                                        </label>
+                                        <label class="flex flex-col gap-1">
+                                            min_sim
+                                            <input name="min_sim" type="number" step="0.05" min="0" max="1" value="0.0"
+                                                class="rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                                        </label>
+                                        <label class="flex flex-col gap-1">
+                                            max_candidates
+                                            <input name="max_candidates" type="number" min="1" value="50"
+                                                class="rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                                        </label>
+                                        <label class="flex flex-col gap-1">
+                                            vec_limit
+                                            <input name="vec_limit" type="number" min="1" value="50"
+                                                class="rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                                        </label>
+                                        <label class="flex flex-col gap-1">
+                                            lex_limit
+                                            <input name="lex_limit" type="number" min="1" value="20"
+                                                class="rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                                        </label>
+                                        <label class="flex flex-col gap-1">
+                                            trgm_limit
+                                            <input name="trgm_limit" type="number" step="0.05" min="0" max="1" value="0.3"
+                                                class="rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                                        </label>
+                                        <label class="flex flex-col gap-1">
+                                            diversify_strength
+                                            <input name="diversify_strength" type="number" step="0.05" min="0" max="1" value="0.0"
+                                                class="rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500">
+                                        </label>
+                                    </div>
+                                </div>
+                            </details>
                         </div>
                         <p class="text-xs text-slate-400">Press Enter to send, Shift + Enter for new line</p>
                     </div>

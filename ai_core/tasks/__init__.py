@@ -26,6 +26,7 @@ from .monitoring_tasks import (
     cleanup_dead_letter_queue,
     embedding_drift_check,
 )
+from .rag_feedback_tasks import record_rag_feedback_events, update_rag_rerank_weights
 
 # Helper utilities
 from .helpers.task_utils import log_ingestion_run_end, log_ingestion_run_start
@@ -46,6 +47,9 @@ __all__ = [
     "alert_dead_letter_queue",
     "cleanup_dead_letter_queue",
     "embedding_drift_check",
+    # RAG feedback
+    "record_rag_feedback_events",
+    "update_rag_rerank_weights",
     # Helpers
     "log_ingestion_run_end",
     "log_ingestion_run_start",

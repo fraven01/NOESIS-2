@@ -153,16 +153,19 @@ def prepare_workbench_context(
 
     # Workflow ID
     final_workflow_id = workflow_id
+    if not final_workflow_id and is_http:
+        final_workflow_id = (
+            request.POST.get("workflow_id")
+            or request.GET.get("workflow_id")
+            or request.headers.get("X-Workflow-ID")
+            or request.session.get("rag_active_workflow_id")
+        )
+    if isinstance(final_workflow_id, str):
+        final_workflow_id = final_workflow_id.strip() or None
     if not final_workflow_id:
-        if is_http:
-            final_workflow_id = (
-                request.GET.get("workflow_id")
-                or request.headers.get("X-Workflow-ID")
-                or "rag-workbench-manual"
-            )
-        else:
-            # WebSocket default
-            final_workflow_id = "rag-workbench-manual"
+        raise ContextError(
+            "workflow_id is required for Workbench requests", field="workflow_id"
+        )
 
     # Collection ID
     final_collection_id = collection_id
@@ -202,4 +205,5 @@ def prepare_workbench_context(
     return ToolContext(
         scope=scope,
         business=business,
+        metadata={"workflow_id": final_workflow_id},
     )

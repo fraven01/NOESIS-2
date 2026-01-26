@@ -183,6 +183,39 @@ ALTER TABLE {{SCHEMA_NAME}}.chunks
             to_tsvector('simple', lower(regexp_replace(text, '\s+', ' ', 'g')))
         ) STORED;
 
+ALTER TABLE {{SCHEMA_NAME}}.chunks
+    ADD COLUMN IF NOT EXISTS text_context TEXT
+        GENERATED ALWAYS AS (
+            lower(regexp_replace(
+                coalesce(metadata->>'context_header', '')
+                || ' '
+                || coalesce(metadata->>'section_path_text', '')
+                || ' '
+                || text,
+                '\s+',
+                ' ',
+                'g'
+            ))
+        ) STORED;
+
+ALTER TABLE {{SCHEMA_NAME}}.chunks
+    ADD COLUMN IF NOT EXISTS text_context_tsv tsvector
+        GENERATED ALWAYS AS (
+            to_tsvector(
+                'simple',
+                lower(regexp_replace(
+                    coalesce(metadata->>'context_header', '')
+                    || ' '
+                    || coalesce(metadata->>'section_path_text', '')
+                    || ' '
+                    || text,
+                    '\s+',
+                    ' ',
+                    'g'
+                ))
+            )
+        ) STORED;
+
 ALTER TABLE {{SCHEMA_NAME}}.chunks ADD COLUMN IF NOT EXISTS tenant_id UUID;
 
 ALTER TABLE {{SCHEMA_NAME}}.chunks ADD COLUMN IF NOT EXISTS collection_id UUID;
@@ -209,6 +242,9 @@ CREATE INDEX IF NOT EXISTS chunks_text_norm_trgm_idx
 
 CREATE INDEX IF NOT EXISTS chunks_text_tsv_idx
     ON {{SCHEMA_NAME}}.chunks USING GIN (text_tsv);
+
+CREATE INDEX IF NOT EXISTS chunks_text_context_tsv_idx
+    ON {{SCHEMA_NAME}}.chunks USING GIN (text_context_tsv);
 
 CREATE INDEX IF NOT EXISTS chunks_document_collection_idx
     ON {{SCHEMA_NAME}}.chunks (document_id, collection_id);

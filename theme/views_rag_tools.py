@@ -26,6 +26,17 @@ def _views():
     return theme_views
 
 
+def _resolve_active_workflow_id(request) -> str:
+    workflow_id = request.session.get("rag_active_workflow_id")
+    if not workflow_id:
+        workflow_id = "dev-tests"
+        try:
+            request.session["rag_active_workflow_id"] = workflow_id
+        except Exception:
+            pass
+    return workflow_id
+
+
 @login_required
 def rag_tools(request):
     """Render a minimal interface to exercise the RAG endpoints manually."""
@@ -80,6 +91,7 @@ def rag_tools(request):
     # Context Resolution (Unified Strategy)
     active_collection_id = request.session.get("rag_active_collection_id")
     active_case_id = request.session.get("rag_active_case_id")
+    active_workflow_id = _resolve_active_workflow_id(request)
 
     # Fetch available cases for the tenant
     from cases.models import Case
@@ -101,6 +113,7 @@ def rag_tools(request):
         "case_options": case_options,
         "active_collection_id": active_collection_id,
         "active_case_id": active_case_id,
+        "active_workflow_id": active_workflow_id,
         "simulated_users": views.get_simulated_users(request.user),
         "current_simulated_user_id": request.session.get("rag_tools_simulated_user_id"),
         "resolver_profile_hint": resolver_profile_hint,
@@ -118,6 +131,14 @@ def rag_tools_set_context(request):
     """
     collection_id = request.POST.get("collection_id", "").strip()
     case_id = request.POST.get("case_id", "").strip()
+    workflow_id = request.POST.get("workflow_id", "").strip()
+    if not workflow_id:
+        views = _views()
+        return views._json_error_response(
+            "workflow_id is required",
+            status_code=400,
+            code="missing_workflow_id",
+        )
 
     if collection_id:
         request.session["rag_active_collection_id"] = collection_id
@@ -132,6 +153,8 @@ def rag_tools_set_context(request):
         # If empty, clear it (global mode)
         if "rag_active_case_id" in request.session:
             del request.session["rag_active_case_id"]
+
+    request.session["rag_active_workflow_id"] = workflow_id
 
     # Return empty response with HX-Refresh to reload the page with new context
     response = JsonResponse({"status": "ok"})
@@ -201,6 +224,9 @@ def start_rerank_workflow(request):
         data = json.loads(request.body)
         query = data.get("query", "").strip()
         collection_id = data.get("collection_id", "").strip()
+        workflow_id = str(data.get("workflow_id") or "").strip()
+        if not workflow_id:
+            workflow_id = _resolve_active_workflow_id(request)
         quality_params = SearchQualityParams.model_validate(data)
         quality_mode = quality_params.quality_mode
         max_candidates = quality_params.max_candidates
@@ -222,6 +248,12 @@ def start_rerank_workflow(request):
                 status_code=400,
                 code="missing_collection_id",
             )
+        if not workflow_id:
+            return views._json_error_response(
+                "workflow_id is required",
+                status_code=400,
+                code="missing_workflow_id",
+            )
 
         from theme.helpers.context import prepare_workbench_context
 
@@ -230,18 +262,30 @@ def start_rerank_workflow(request):
             request,
             case_id=data.get("case_id"),
             collection_id=collection_id,
-            workflow_id="rerank-workflow-manual",
+            workflow_id=workflow_id,
         )
 
         trace_id = tool_context.scope.trace_id
         # Ensure run_id for this specific execution
         if not tool_context.scope.run_id:
-            tool_context.scope.run_id = str(uuid4())
+            scope = tool_context.scope.model_copy(update={"run_id": str(uuid4())})
+            tool_context = tool_context.model_copy(update={"scope": scope})
 
         # Build graph input state
         purpose = data.get("purpose", "collection_search")
         quality_mode = SearchQualityParams.model_validate(data).quality_mode
         max_candidates = SearchQualityParams.model_validate(data).max_candidates
+
+        # Auto-ingest settings (default: enabled)
+        auto_ingest_raw = data.get("auto_ingest")
+        # Handle checkbox: "on" = True, absent/empty = False
+        auto_ingest = str(auto_ingest_raw or "").lower() in ("on", "true", "1")
+        # If not explicitly set, use graph default (True)
+        if auto_ingest_raw is None:
+            auto_ingest = True
+
+        auto_ingest_min_score = float(data.get("auto_ingest_min_score", 60.0))
+        auto_ingest_top_k = int(data.get("auto_ingest_top_k", 10))
 
         graph_state = {
             "question": query,
@@ -249,6 +293,9 @@ def start_rerank_workflow(request):
             "quality_mode": quality_mode,
             "max_candidates": max_candidates,
             "purpose": purpose,
+            "auto_ingest": auto_ingest,
+            "auto_ingest_min_score": auto_ingest_min_score,
+            "auto_ingest_top_k": auto_ingest_top_k,
         }
 
         col_tool_context = tool_context
@@ -287,7 +334,7 @@ def start_rerank_workflow(request):
                 }
             )
 
-        graph_result = result_payload.get("result") or {}
+        graph_result = result_payload.get("data") or {}
         search_payload = graph_result.get("search") or {}
         telemetry_payload = graph_result.get("telemetry") or {}
         outcome_label = graph_result.get("outcome") or "Workflow abgeschlossen"
@@ -352,11 +399,13 @@ def workbench_index(request):
         tenant_schema = scope.tenant_schema or tenant_id
 
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
+    active_workflow_id = _resolve_active_workflow_id(request)
 
     context = {
         "tenant_id": tenant_id,
         "tenant_schema": tenant_schema,
         "case_id": case_id,
+        "active_workflow_id": active_workflow_id,
         "simulated_users": views._get_dev_simulated_users(),
         "current_simulated_user_id": request.session.get("rag_tools_simulated_user_id"),
     }
@@ -381,6 +430,7 @@ def tool_search(request):
 
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
     active_collection_id = request.session.get("rag_active_collection_id")
+    active_workflow_id = _resolve_active_workflow_id(request)
 
     collection_options: list[dict[str, str]] = []
     if tenant_schema:
@@ -420,6 +470,7 @@ def tool_search(request):
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "active_collection_id": active_collection_id,
+            "active_workflow_id": active_workflow_id,
             "collection_options": collection_options,
         },
     )
@@ -433,7 +484,12 @@ def tool_ingestion(request):
     if blocked is not None:
         return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
-    return render(request, "theme/partials/tool_ingestion.html", {"case_id": case_id})
+    active_workflow_id = _resolve_active_workflow_id(request)
+    return render(
+        request,
+        "theme/partials/tool_ingestion.html",
+        {"case_id": case_id, "active_workflow_id": active_workflow_id},
+    )
 
 
 @login_required
@@ -444,7 +500,12 @@ def tool_crawler(request):
     if blocked is not None:
         return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
-    return render(request, "theme/partials/tool_crawler.html", {"case_id": case_id})
+    active_workflow_id = _resolve_active_workflow_id(request)
+    return render(
+        request,
+        "theme/partials/tool_crawler.html",
+        {"case_id": case_id, "active_workflow_id": active_workflow_id},
+    )
 
 
 @login_required
@@ -455,7 +516,12 @@ def tool_framework(request):
     if blocked is not None:
         return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
-    return render(request, "theme/partials/tool_framework.html", {"case_id": case_id})
+    active_workflow_id = _resolve_active_workflow_id(request)
+    return render(
+        request,
+        "theme/partials/tool_framework.html",
+        {"case_id": case_id, "active_workflow_id": active_workflow_id},
+    )
 
 
 @login_required
@@ -466,6 +532,7 @@ def tool_chat(request):
     if blocked is not None:
         return blocked
     case_id = request.GET.get("case_id") or request.headers.get("X-Case-ID")
+    active_workflow_id = _resolve_active_workflow_id(request)
     thread_id = request.GET.get("thread_id")
     if thread_id:
         request.session["rag_chat_thread_id"] = thread_id
@@ -551,6 +618,7 @@ def tool_chat(request):
             "tenant_schema": tenant_schema,
             "collection_options": collection_options,
             "active_collection_id": active_collection_id,
+            "active_workflow_id": active_workflow_id,
             "chat_scope": chat_scope,
             "case_options": case_options,
         },
