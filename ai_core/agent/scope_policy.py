@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from ai_core.agent.runtime_config import RuntimeConfig
 from ai_core.contracts.scope import ExecutionScope
+from ai_core.agent.workflow_taxonomy import is_workflow_allowed
 from ai_core.tool_contracts.base import ToolContext
 
 
@@ -53,6 +55,16 @@ def guard_mutation(
         workflow_id = tool_context.business.workflow_id
         if not case_id or not workflow_id:
             raise PolicyViolation("case_scope_requires_case_id_and_workflow_id")
+        caller_module = _caller_module_name()
+        if not is_workflow_allowed(str(workflow_id), caller_module=caller_module):
+            raise PolicyViolation("workflow_id_not_allowed_in_case_scope")
+
+
+def _caller_module_name() -> str | None:
+    frame = inspect.currentframe()
+    if frame is None or frame.f_back is None or frame.f_back.f_back is None:
+        return None
+    return frame.f_back.f_back.f_globals.get("__name__")
 
 
 __all__ = ["PolicyViolation", "guard_mutation", "MUTATION_ACTIONS"]

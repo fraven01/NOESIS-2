@@ -8,7 +8,14 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from ai_core.agent.flows.registry import get_flow_spec
+from ai_core.agent.run_store import InMemoryRunStore, RunStore
 from ai_core.agent.runtime_config import RuntimeConfig
+from ai_core.agent.time_source import (
+    EventIdSource,
+    SystemTimeSource,
+    TimeSource,
+    UUIDEventIdSource,
+)
 from ai_core.rag.vector_store import NullVectorStore, VectorStoreRouter
 from ai_core.tool_contracts.base import ToolContext
 
@@ -22,8 +29,16 @@ def get_runtime_dependencies() -> dict[str, Any]:
 
 
 class AgentRuntime:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        run_store: RunStore | None = None,
+        time_source: TimeSource | None = None,
+        event_id_source: EventIdSource | None = None,
+    ) -> None:
         self._runs: dict[str, dict[str, Any]] = {}
+        self._run_store = run_store or InMemoryRunStore()
+        self._time_source = time_source or SystemTimeSource()
+        self._event_id_source = event_id_source or UUIDEventIdSource()
         self._deps: dict[str, Any] = {
             "vector_router": VectorStoreRouter(
                 {"global": NullVectorStore("global")},
@@ -46,6 +61,7 @@ class AgentRuntime:
 
         contract, execute = get_flow_spec(flow_name)
         validated_input = self._validate_flow_input(contract, flow_input)
+        input_payload = self._serialize_value(validated_input)
 
         run_id = str(uuid4())
         telemetry = {"router_instance_id": id(self._deps["vector_router"])}
@@ -62,6 +78,15 @@ class AgentRuntime:
                     telemetry=telemetry,
                 )
             ]
+            record = {
+                "run_id": run_id,
+                "flow_name": flow_name,
+                "status": "started",
+                "terminal_decision": None,
+                "decision_log": list(decision_log),
+                "created_at": _FIXED_TS,
+            }
+            self._run_store.save(run_id, record)
             result = execute(
                 tool_context,
                 runtime_config,
@@ -89,16 +114,18 @@ class AgentRuntime:
                     telemetry=telemetry,
                 )
             )
-            record = {
-                "run_id": run_id,
-                "flow_name": flow_name,
-                "input": validated_input,
-                "output": output,
-                "decision_log": decision_log,
-                "stop_decision": stop_decision,
-                "status": "completed",
-            }
+            record.update(
+                {
+                    "input": input_payload,
+                    "output": self._serialize_value(output),
+                    "decision_log": decision_log,
+                    "stop_decision": stop_decision,
+                    "terminal_decision": stop_decision,
+                    "status": "completed",
+                }
+            )
             self._runs[run_id] = record
+            self._run_store.save(run_id, record)
             return record
         finally:
             _RUNTIME_DEPS.reset(token)
@@ -106,6 +133,7 @@ class AgentRuntime:
     def resume(
         self,
         *,
+        run_id: str,
         tool_context: ToolContext,
         runtime_config: RuntimeConfig,
         flow_name: str,
@@ -119,14 +147,20 @@ class AgentRuntime:
 
         contract, execute = get_flow_spec(flow_name)
         validated_input = self._validate_flow_input(contract, flow_input)
+        input_payload = self._serialize_value(validated_input)
         if resume_input is not None:
             self._assert_id_free(resume_input)
 
-        run_id = str(uuid4())
+        stored = self._run_store.get(run_id)
+        if stored is None:
+            raise KeyError(f"run_id not found: {run_id}")
+        if stored.get("flow_name") != flow_name:
+            raise ValueError("flow_name_mismatch")
         telemetry = {"router_instance_id": id(self._deps["vector_router"])}
         token = _RUNTIME_DEPS.set(self._deps)
         try:
-            decision_log = [
+            decision_log = list(stored.get("decision_log", []))
+            decision_log.append(
                 self._decision_event(
                     run_id=run_id,
                     kind="start",
@@ -136,7 +170,7 @@ class AgentRuntime:
                     stop_decision=None,
                     telemetry=telemetry,
                 )
-            ]
+            )
             result = execute(
                 tool_context,
                 runtime_config,
@@ -164,17 +198,20 @@ class AgentRuntime:
                     telemetry=telemetry,
                 )
             )
-            record = {
-                "run_id": run_id,
-                "flow_name": flow_name,
-                "input": validated_input,
-                "resume_input": resume_input,
-                "output": output,
-                "decision_log": decision_log,
-                "stop_decision": stop_decision,
-                "status": "completed",
-            }
+            record = dict(stored)
+            record.update(
+                {
+                    "input": input_payload,
+                    "resume_input": resume_input,
+                    "output": self._serialize_value(output),
+                    "decision_log": decision_log,
+                    "stop_decision": stop_decision,
+                    "terminal_decision": stop_decision,
+                    "status": "completed",
+                }
+            )
             self._runs[run_id] = record
+            self._run_store.save(run_id, record)
             return record
         finally:
             _RUNTIME_DEPS.reset(token)
@@ -214,6 +251,11 @@ class AgentRuntime:
                 "flow_input must not include ID fields: " + ", ".join(forbidden)
             )
 
+    def _serialize_value(self, value: Any) -> Any:
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="json")
+        return value
+
     def _decision_event(
         self,
         *,
@@ -227,7 +269,8 @@ class AgentRuntime:
     ) -> dict[str, Any]:
         event: dict[str, Any] = {
             "run_id": run_id,
-            "ts": _FIXED_TS,
+            "event_id": self._event_id_source.next_event_id(),
+            "ts": self._time_source.now_iso(),
             "kind": kind,
             "status": status,
             "reason": reason,
