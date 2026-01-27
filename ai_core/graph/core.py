@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -30,6 +31,57 @@ class GraphRunner(Protocol):
 
     def run(self, state: dict, meta: dict) -> tuple[dict, dict]:
         """Execute the graph and return the updated state and result payload."""
+
+
+def _resolve_direct_entrypoint() -> str:
+    for frame in inspect.stack()[2:]:
+        module = inspect.getmodule(frame.frame)
+        module_name = getattr(module, "__name__", "")
+        if module_name.startswith("ai_core.graph"):
+            continue
+        function = frame.function or "<unknown>"
+        return f"{module_name}:{function}"
+    return "<unknown>"
+
+
+def _is_registry_path() -> bool:
+    for frame in inspect.stack()[2:]:
+        filename = frame.filename.replace("\\", "/")
+        if "/ai_core/graph/registry.py" in filename:
+            return True
+    return False
+
+
+def emit_legacy_direct_call_marker(entrypoint_name: str) -> None:
+    logger.info(
+        "graph.legacy_direct_call",
+        extra={"legacy_direct_call": True, "entrypoint_name": entrypoint_name},
+    )
+
+
+def maybe_mark_legacy_direct_call() -> None:
+    if _is_registry_path():
+        return
+    emit_legacy_direct_call_marker(_resolve_direct_entrypoint())
+
+
+def run_with_legacy_marker(
+    runner: GraphRunner, state: dict, meta: dict
+) -> tuple[dict, dict]:
+    """Run a graph runner and emit a legacy direct-call marker when applicable."""
+
+    maybe_mark_legacy_direct_call()
+    return runner.run(state, meta)
+
+
+def invoke_with_legacy_marker(runner: object, *args, **kwargs):
+    """Invoke a graph runner and emit a legacy direct-call marker when applicable."""
+
+    maybe_mark_legacy_direct_call()
+    invoke = getattr(runner, "invoke", None)
+    if not callable(invoke):
+        raise AttributeError("runner does not expose an invoke method")
+    return invoke(*args, **kwargs)
 
 
 class Checkpointer(Protocol):

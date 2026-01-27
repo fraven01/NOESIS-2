@@ -19,6 +19,11 @@ from django_tenants.utils import schema_context
 
 from common.logging import get_log_context, log_context
 
+from ai_core.agent.runtime_config import RuntimeConfig
+from ai_core.agent.scope_policy import guard_mutation, PolicyViolation
+from ai_core.contracts.business import BusinessContext
+from ai_core.tool_contracts.base import tool_context_from_scope
+
 from .contracts import (
     Asset,
     AssetRef,
@@ -1120,6 +1125,7 @@ class DocumentsRepository:
         workflow_id: Optional[str] = None,
         scope: Optional["ScopeContext"] = None,
         audit_meta: Optional[Mapping[str, object]] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> NormalizedDocument:
         """Create or replace a document instance.
 
@@ -1302,12 +1308,39 @@ class InMemoryDocumentsRepository(DocumentsRepository):
             "ScopeContext"
         ] = None,  # scope unused in-memory but kept for parity
         audit_meta: Optional[Mapping[str, object]] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> NormalizedDocument:
         """Persist a normalized document in-memory.
 
         Planned refactor: CRUD persistence will move into a LangGraph-based
         technical document graph; this implementation remains a local adapter.
         """
+        if runtime_config is not None:
+            if scope is None:
+                raise PolicyViolation("tool_context_required_for_mutation")
+            business = BusinessContext(
+                case_id=None,
+                collection_id=(
+                    str(doc.ref.collection_id)
+                    if doc.ref.collection_id is not None
+                    else None
+                ),
+                workflow_id=workflow_id or doc.ref.workflow_id,
+                document_id=str(doc.ref.document_id),
+                document_version_id=(
+                    str(doc.ref.document_version_id)
+                    if getattr(doc.ref, "document_version_id", None) is not None
+                    else None
+                ),
+            )
+            tool_context = tool_context_from_scope(scope, business)
+            guard_mutation(
+                "document_upsert",
+                tool_context,
+                runtime_config,
+                details={"document_id": str(doc.ref.document_id)},
+            )
+
         doc_copy = doc.model_copy(deep=True)
         doc_copy = self._materialize_document(doc_copy)
         ref = doc_copy.ref

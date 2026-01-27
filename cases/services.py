@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final, Mapping
 
 from common.logging import get_logger
+
+from ai_core.agent.runtime_config import RuntimeConfig
+from ai_core.agent.scope_policy import guard_mutation, PolicyViolation
+from ai_core.tool_contracts.base import ToolContext
 from customers.models import Tenant
 
 if TYPE_CHECKING:
@@ -131,9 +135,23 @@ def _build_ingestion_payload(
 
 
 def record_ingestion_case_event(
-    tenant: Tenant, case_id: str | None, ingestion_run: "DocumentIngestionRun"
+    tenant: Tenant,
+    case_id: str | None,
+    ingestion_run: "DocumentIngestionRun",
+    tool_context: ToolContext | None = None,
+    runtime_config: RuntimeConfig | None = None,
 ) -> models.CaseEvent | None:
     """Create a case event reflecting the latest ingestion run state."""
+
+    if runtime_config is not None:
+        if tool_context is None:
+            raise PolicyViolation("tool_context_required_for_mutation")
+        guard_mutation(
+            "case_event",
+            tool_context,
+            runtime_config,
+            details={"case_id": case_id or ""},
+        )
 
     case = resolve_case(tenant, case_id)
     if not case:

@@ -1,0 +1,47 @@
+[
+  {
+    "id": "rag_query_001",
+    "flow_name": "rag_query",
+    "input": {
+      "question": "What is the capital of France?",
+      "top_k": 5
+    },
+    "notes": "Basic geography sanity check"
+  },
+  {
+    "id": "rag_query_002",
+    "flow_name": "rag_query",
+    "input": {
+      "question": "Summarize the concept of photosynthesis in one sentence.",
+      "top_k": 5
+    },
+    "notes": "Simple science summary"
+  },
+  {
+    "id": "rag_query_003",
+    "flow_name": "rag_query",
+    "input": {
+      "question": "List three common symptoms of seasonal allergies.",
+      "top_k": 5
+    },
+    "notes": "Generic health topic"
+  },
+  {
+    "id": "rag_query_004",
+    "flow_name": "rag_query",
+    "input": {
+      "question": "Give a brief definition of machine learning.",
+      "top_k": 5
+    },
+    "notes": "Generic ML definition"
+  },
+  {
+    "id": "rag_query_005",
+    "flow_name": "rag_query",
+    "input": {
+      "question": "Explain the water cycle in two sentences.",
+      "top_k": 5
+    },
+    "notes": "Basic earth science"
+  }
+]

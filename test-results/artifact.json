@@ -1,0 +1,24 @@
+{
+  "run_id": "dev-run-001",
+  "inputs_hash": "96780c036a8123d5389f2883041c9c4fa71b034b2ae4e9990a60cf5e2535c5cc",
+  "decision_log": [
+    {
+      "run_id": "dev-run-001",
+      "ts": "2026-01-01T00:00:00Z",
+      "kind": "stop",
+      "status": "succeeded",
+      "reason": "dummy_flow completed",
+      "evidence_refs": [],
+      "stop_decision": {
+        "status": "succeeded",
+        "reason": "dummy_flow completed",
+        "evidence_refs": []
+      }
+    }
+  ],
+  "stop_decision": {
+    "status": "succeeded",
+    "reason": "dummy_flow completed",
+    "evidence_refs": []
+  }
+}
