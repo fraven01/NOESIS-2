@@ -104,6 +104,22 @@ def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
     return candidate or None
 
 
+def _guard_runtime_mutation(
+    *,
+    action: str,
+    runtime_config: RuntimeConfig | None,
+    scope: Optional["ScopeContext"],
+    business: BusinessContext,
+    details: Mapping[str, object] | None = None,
+) -> None:
+    if runtime_config is None:
+        return
+    if scope is None:
+        raise PolicyViolation("tool_context_required_for_mutation")
+    tool_context = tool_context_from_scope(scope, business)
+    guard_mutation(action, tool_context, runtime_config, details=dict(details or {}))
+
+
 def _resolve_changed_timestamp(
     *,
     lifecycle_meta: Mapping[str, object],
@@ -338,7 +354,20 @@ class DocumentLifecycleStore:
         reason: Optional[str] = None,
         policy_events: Iterable[object] = (),
         changed_at: Optional[datetime] = None,
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> DocumentLifecycleRecord:
+        _guard_runtime_mutation(
+            action="document_lifecycle_record",
+            runtime_config=runtime_config,
+            scope=scope,
+            business=BusinessContext(
+                case_id=None,
+                workflow_id=workflow_id,
+                document_id=str(document_id),
+            ),
+            details={"document_id": str(document_id)},
+        )
         normalized_state = _normalize_lifecycle_state(state)
         normalized_reason = _normalize_reason(reason)
         normalized_events = _normalize_policy_events(policy_events)
@@ -414,7 +443,16 @@ class DocumentLifecycleStore:
         collection_id: Optional[str] = None,
         embedding_profile: Optional[str] = None,
         source: Optional[str] = None,
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> Dict[str, object]:
+        _guard_runtime_mutation(
+            action="ingestion_run_queued",
+            runtime_config=runtime_config,
+            scope=scope,
+            business=BusinessContext(case_id=case, workflow_id=None),
+            details={"case_id": case or ""},
+        )
         normalized_ids = tuple(
             value
             for value in (_normalize_identifier(v) for v in document_ids)
@@ -486,7 +524,16 @@ class DocumentLifecycleStore:
         invalid_document_ids: Iterable[str],
         document_ids: Iterable[str],
         error: Optional[str],
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> Optional[Dict[str, object]]:
+        _guard_runtime_mutation(
+            action="ingestion_run_completed",
+            runtime_config=runtime_config,
+            scope=scope,
+            business=BusinessContext(case_id=case, workflow_id=None),
+            details={"case_id": case or ""},
+        )
         key = (tenant_id, case or "")
         normalized_ids = tuple(
             value
@@ -545,7 +592,20 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         reason: Optional[str] = None,
         policy_events: Iterable[object] = (),
         changed_at: Optional[datetime] = None,
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> DocumentLifecycleRecord:
+        _guard_runtime_mutation(
+            action="document_lifecycle_record",
+            runtime_config=runtime_config,
+            scope=scope,
+            business=BusinessContext(
+                case_id=None,
+                workflow_id=workflow_id,
+                document_id=str(document_id),
+            ),
+            details={"document_id": str(document_id)},
+        )
         normalized_state = _normalize_lifecycle_state(state)
         normalized_workflow = (workflow_id or None) and str(workflow_id)
         timestamp = _normalize_timestamp(changed_at)
@@ -753,7 +813,16 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         collection_id: Optional[str] = None,
         embedding_profile: Optional[str] = None,
         source: Optional[str] = None,
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> Dict[str, object]:
+        _guard_runtime_mutation(
+            action="ingestion_run_queued",
+            runtime_config=runtime_config,
+            scope=scope,
+            business=BusinessContext(case_id=case, workflow_id=None),
+            details={"case_id": case or ""},
+        )
         payload = super().record_ingestion_run_queued(
             tenant_id=tenant_id,
             case=case,
@@ -765,6 +834,8 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
             collection_id=collection_id,
             embedding_profile=embedding_profile,
             source=source,
+            scope=scope,
+            runtime_config=runtime_config,
         )
         normalized_collection = _normalize_optional_string(collection_id)
         try:
@@ -864,7 +935,16 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         invalid_document_ids: Iterable[str],
         document_ids: Iterable[str],
         error: Optional[str],
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> Optional[Dict[str, object]]:
+        _guard_runtime_mutation(
+            action="ingestion_run_completed",
+            runtime_config=runtime_config,
+            scope=scope,
+            business=BusinessContext(case_id=case, workflow_id=None),
+            details={"case_id": case or ""},
+        )
         normalized_ids = tuple(
             value
             for value in (_normalize_identifier(v) for v in document_ids)
@@ -892,6 +972,8 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
                     invalid_document_ids=normalized_invalid,
                     document_ids=normalized_ids,
                     error=error,
+                    scope=scope,
+                    runtime_config=runtime_config,
                 )
 
             model.status = "failed" if normalized_error else "succeeded"
@@ -942,6 +1024,8 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
                 invalid_document_ids=normalized_invalid,
                 document_ids=normalized_ids,
                 error=error,
+                scope=scope,
+                runtime_config=runtime_config,
             )
 
     def get_ingestion_run(
@@ -1199,6 +1283,8 @@ class DocumentsRepository:
         *,
         workflow_id: Optional[str] = None,
         hard: bool = False,
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> bool:
         """Soft or hard delete a document across all versions.
 
@@ -1253,6 +1339,8 @@ class DocumentsRepository:
         *,
         workflow_id: Optional[str] = None,
         hard: bool = False,
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> bool:
         """Soft or hard delete an asset.
 
@@ -1559,12 +1647,25 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         *,
         workflow_id: Optional[str] = None,
         hard: bool = False,
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> bool:
         """Delete a document in-memory.
 
         Planned refactor: CRUD persistence will move into a LangGraph-based
         technical document graph; this implementation remains a local adapter.
         """
+        _guard_runtime_mutation(
+            action="document_delete",
+            runtime_config=runtime_config,
+            scope=scope,
+            business=BusinessContext(
+                case_id=None,
+                workflow_id=workflow_id,
+                document_id=str(document_id),
+            ),
+            details={"document_id": str(document_id)},
+        )
         with log_context(tenant=tenant_id, workflow_id=workflow_id):
             log_extra_entry(
                 tenant_id=tenant_id,
@@ -1708,12 +1809,25 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         *,
         workflow_id: Optional[str] = None,
         hard: bool = False,
+        scope: Optional["ScopeContext"] = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> bool:
         """Delete an asset in-memory.
 
         Planned refactor: CRUD persistence will move into a LangGraph-based
         technical document graph; this implementation remains a local adapter.
         """
+        _guard_runtime_mutation(
+            action="asset_delete",
+            runtime_config=runtime_config,
+            scope=scope,
+            business=BusinessContext(
+                case_id=None,
+                workflow_id=workflow_id,
+                document_id=None,
+            ),
+            details={"asset_id": str(asset_id)},
+        )
         with log_context(tenant=tenant_id, workflow_id=workflow_id):
             log_extra_entry(
                 tenant_id=tenant_id,

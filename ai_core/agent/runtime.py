@@ -48,6 +48,7 @@ class AgentRuntime:
         validated_input = self._validate_flow_input(contract, flow_input)
 
         run_id = str(uuid4())
+        telemetry = {"router_instance_id": id(self._deps["vector_router"])}
         token = _RUNTIME_DEPS.set(self._deps)
         try:
             decision_log = [
@@ -58,6 +59,7 @@ class AgentRuntime:
                     reason="flow started",
                     evidence_refs=[],
                     stop_decision=None,
+                    telemetry=telemetry,
                 )
             ]
             result = execute(
@@ -84,6 +86,7 @@ class AgentRuntime:
                     reason=stop_decision["reason"],
                     evidence_refs=stop_decision["evidence_refs"],
                     stop_decision=stop_decision,
+                    telemetry=telemetry,
                 )
             )
             record = {
@@ -120,6 +123,7 @@ class AgentRuntime:
             self._assert_id_free(resume_input)
 
         run_id = str(uuid4())
+        telemetry = {"router_instance_id": id(self._deps["vector_router"])}
         token = _RUNTIME_DEPS.set(self._deps)
         try:
             decision_log = [
@@ -130,6 +134,7 @@ class AgentRuntime:
                     reason="flow resumed",
                     evidence_refs=[],
                     stop_decision=None,
+                    telemetry=telemetry,
                 )
             ]
             result = execute(
@@ -156,6 +161,7 @@ class AgentRuntime:
                     reason=stop_decision["reason"],
                     evidence_refs=stop_decision["evidence_refs"],
                     stop_decision=stop_decision,
+                    telemetry=telemetry,
                 )
             )
             record = {
@@ -217,6 +223,7 @@ class AgentRuntime:
         reason: str,
         evidence_refs: list[str],
         stop_decision: dict[str, Any] | None,
+        telemetry: dict[str, Any] | None,
     ) -> dict[str, Any]:
         event: dict[str, Any] = {
             "run_id": run_id,
@@ -226,6 +233,8 @@ class AgentRuntime:
             "reason": reason,
             "evidence_refs": evidence_refs,
         }
+        if telemetry is not None:
+            event["telemetry"] = telemetry
         if stop_decision is not None:
             event["stop_decision"] = stop_decision
         return event

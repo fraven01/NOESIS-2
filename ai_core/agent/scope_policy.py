@@ -11,6 +11,18 @@ class PolicyViolation(RuntimeError):
     """Raised when a mutation violates execution scope policy."""
 
 
+MUTATION_ACTIONS = (
+    "document_upsert",
+    "document_delete",
+    "asset_delete",
+    "document_lifecycle_record",
+    "ingestion_run_queued",
+    "ingestion_run_completed",
+    "case_event",
+    "vector_upsert",
+)
+
+
 def guard_mutation(
     action: str,
     tool_context: ToolContext,
@@ -43,4 +55,4 @@ def guard_mutation(
             raise PolicyViolation("case_scope_requires_case_id_and_workflow_id")
 
 
-__all__ = ["PolicyViolation", "guard_mutation"]
+__all__ = ["PolicyViolation", "guard_mutation", "MUTATION_ACTIONS"]

@@ -67,6 +67,14 @@ class RagQueryService:
             legacy_artifact = _artifact_from_legacy(legacy_state, legacy_result)
             runtime_artifact = _artifact_from_runtime(runtime_record)
             diff = diff_artifacts(legacy_artifact, runtime_artifact)
+            diff.update(
+                {
+                    "citations_count_legacy": diff.get("citations_count_a", 0),
+                    "citations_count_runtime": diff.get("citations_count_b", 0),
+                    "has_claim_map_legacy": diff.get("has_claim_map_a", False),
+                    "has_claim_map_runtime": diff.get("has_claim_map_b", False),
+                }
+            )
             passed, reasons = gate_artifact(runtime_artifact)
             return {
                 "legacy": {"artifact": legacy_artifact},
