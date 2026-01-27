@@ -27,6 +27,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, ClassVar, Generic, Literal, Optional, TypeVar, Union
+import hashlib
+import json
 
 try:  # pragma: no cover - typing backport
     from typing import TypeAliasType
@@ -73,6 +75,23 @@ class ToolContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    _CANONICAL_SCOPE_FIELDS: ClassVar[tuple[str, ...]] = (
+        "tenant_id",
+        "user_id",
+        "service_id",
+        "run_id",
+        "ingestion_run_id",
+        "tenant_schema",
+    )
+    _CANONICAL_BUSINESS_FIELDS: ClassVar[tuple[str, ...]] = (
+        "case_id",
+        "collection_id",
+        "workflow_id",
+        "thread_id",
+        "document_id",
+        "document_version_id",
+    )
+
     # === Compositional Structure (NEW in v2) ===
     scope: ScopeContext = Field(
         description="Request correlation scope (tenant, trace, runtime IDs)"
@@ -90,6 +109,32 @@ class ToolContext(BaseModel):
     auth: Optional[dict[str, Any]] = None
     visibility_override_allowed: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def _canonical_payload(self) -> dict[str, dict[str, Any]]:
+        scope_payload = {
+            key: getattr(self.scope, key, None) for key in self._CANONICAL_SCOPE_FIELDS
+        }
+        business_payload = {
+            key: getattr(self.business, key, None)
+            for key in self._CANONICAL_BUSINESS_FIELDS
+        }
+        return {"scope": scope_payload, "business": business_payload}
+
+    def canonical_json(self) -> str:
+        """Return a deterministic JSON string for hashing."""
+        payload = self._canonical_payload()
+        return json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+
+    @property
+    def tool_context_hash(self) -> str:
+        """Stable hash derived from the canonical JSON payload."""
+        digest = hashlib.sha256(self.canonical_json().encode("utf-8"))
+        return digest.hexdigest()
 
 
 def tool_context_from_scope(

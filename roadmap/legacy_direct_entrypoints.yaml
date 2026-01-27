@@ -1,0 +1,9 @@
+- path: ai_core/services/rag_query.py
+  owner: platform-runtime
+  removal_by: "2026-03-31"
+- path: ai_core/graphs/technical/retrieval_augmented_generation.py
+  owner: platform-runtime
+  removal_by: "2026-03-31"
+- path: ai_core/graphs/business/framework_analysis_graph.py
+  owner: platform-runtime
+  removal_by: "2026-03-31"

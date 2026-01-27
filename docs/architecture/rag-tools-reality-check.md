@@ -224,7 +224,7 @@ json.loads(request.body) → data
     ↓
 Build CrawlerRunRequest from data.urls
     ↓
-run_crawler_runner(meta, request_model, lifecycle_store, graph_factory)
+run_crawler_runner(meta, request_model, lifecycle_store)
     ↓
 Returns JsonResponse with task_ids
 ```
@@ -255,7 +255,6 @@ def run_crawler_runner(
     meta: dict[str, Any],
     request_model: CrawlerRunRequest,
     lifecycle_store: object | None,
-    graph_factory: Callable[[], object] | None = None,
 ) -> CrawlerRunnerCoordinatorResult:
     # Returns:
     # CrawlerRunnerCoordinatorResult(
@@ -416,7 +415,7 @@ Before deploying any changes, verify:
 
 - [ ] `crawl_selected()` accepts same JSON
 - [ ] `crawl_selected()` returns same JSON structure
-- [ ] `run_crawler_runner()` signature unchanged (or backwards compatible)
+- [ ] `run_crawler_runner()` signature matches implementation
 
 ### **Error Cases**
 

@@ -54,7 +54,6 @@ def ingest_document(
     *,
     meta: Mapping[str, Any],
     chunks_path: str,
-    embedding_state: Mapping[str, Any] | None = None,
     dispatcher: IngestionDispatcher | None = None,
 ) -> MutableMapping[str, Any]:
     """Persist document metadata and queue vector ingestion."""

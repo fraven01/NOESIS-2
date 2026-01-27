@@ -1,9 +1,6 @@
 from typing import Any, Mapping
 from uuid import UUID, uuid4
 
-from opentelemetry import trace
-from opentelemetry.trace import format_trace_id
-
 from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpResponse, JsonResponse
@@ -14,7 +11,6 @@ from structlog.stdlib import get_logger
 from ai_core.contracts import ScopeContext, BusinessContext
 from ai_core.ids import normalize_request
 from ai_core.infra.resp import build_tool_error_payload
-from ai_core.services.crawler_runner import run_crawler_runner
 from ai_core.services import _get_documents_repository as _core_get_documents_repository
 from ai_core.rag.collections import (
     MANUAL_COLLECTION_SLUG,
@@ -23,7 +19,6 @@ from ai_core.rag.collections import (
 from documents.collection_service import CollectionService
 from documents.models import DocumentCollection
 from ai_core.llm import routing as llm_routing
-from ai_core.schemas import CrawlerRunRequest
 from theme.helpers.tasks import submit_business_graph
 
 from customers.tenant_context import TenantContext, TenantRequiredError
@@ -428,79 +423,6 @@ def _run_rerank_workflow(
     meta["graph_name"] = rerank_response.get("graph_name", "collection_search")
 
     return meta, merged_results
-
-
-class _ViewCrawlerIngestionAdapter:
-    """Adapter that triggers crawler ingestion by calling run_crawler_runner."""
-
-    def trigger(
-        self,
-        *,
-        url: str,
-        collection_id: str,
-        context: Mapping[str, str],
-    ) -> Mapping[str, Any]:
-        """Trigger ingestion for the given URL."""
-        tenant_id = context.get("tenant_id", "dev")
-        trace_id = context.get("trace_id", "")
-
-        if not trace_id:
-            span = trace.get_current_span()
-            ctx = span.get_span_context()
-            if ctx.is_valid:
-                trace_id = format_trace_id(ctx.trace_id)
-
-        case_id = context.get("case_id")
-        mode = context.get("mode", "live")
-        tenant_schema = context.get("tenant_schema") or tenant_id
-
-        payload = {
-            "workflow_id": "external-knowledge-ingestion",
-            "mode": mode,
-            "origins": [{"url": url}],
-            "collection_id": collection_id,
-        }
-        try:
-            request_model = CrawlerRunRequest.model_validate(payload)
-            scope = ScopeContext(
-                tenant_id=str(tenant_id),
-                tenant_schema=str(tenant_schema),
-                trace_id=str(trace_id) if trace_id else str(uuid4()),
-                invocation_id=str(uuid4()),
-                run_id=str(uuid4()),
-                user_id=context.get("user_id"),
-            )
-            business = BusinessContext(case_id=str(case_id) if case_id else None)
-            tool_context = scope.to_tool_context(business=business)
-            meta = {
-                "scope_context": scope.model_dump(mode="json", exclude_none=True),
-                "business_context": business.model_dump(mode="json", exclude_none=True),
-                "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
-            }
-            result = run_crawler_runner(
-                meta=meta,
-                request_model=request_model,
-                lifecycle_store=_resolve_lifecycle_store(),
-                graph_factory=None,
-            )
-            response_data = result.payload
-
-            if result.status_code in (200, 202):
-                return {
-                    "decision": "ingested",
-                    "crawler_decision": response_data.get("decision", "unknown"),
-                    "document_id": response_data.get("document_id"),
-                }
-            return {
-                "decision": "ingestion_error",
-                "crawler_decision": response_data.get("code", "http_error"),
-            }
-        except Exception:
-            logger.exception("crawler.trigger.failed")
-            return {
-                "decision": "ingestion_error",
-                "crawler_decision": "trigger_exception",
-            }
 
 
 def _resolve_lifecycle_store() -> object | None:

@@ -1,0 +1,6 @@
+agent_state_schema_version: "0.1.0"
+decision_log_schema_version: "0.1.0"
+harness_artifact_schema_version: "0.1.0"
+tool_context_hash_version: "0.1.0"
+capability_iospec_versions: {}
+flow_versions: {}

@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from enum import Enum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -50,6 +51,12 @@ Timestamp = datetime
 # Identity IDs (Pre-MVP ID Contract)
 UserId = str | None  # UUIDv7 string, required for User Request Hops
 ServiceId = str | None  # Required for S2S Hops (e.g., "celery-ingestion-worker")
+
+
+class ExecutionScope(str, Enum):
+    CASE = "CASE"
+    TENANT = "TENANT"
+    SYSTEM = "SYSTEM"
 
 
 class ScopeContext(BaseModel):
@@ -241,6 +248,7 @@ class ScopeContext(BaseModel):
 
 
 __all__ = [
+    "ExecutionScope",
     "IdempotencyKey",
     "IngestionRunId",
     "InvocationId",

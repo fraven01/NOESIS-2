@@ -27,6 +27,9 @@ from psycopg2 import OperationalError
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.limits import clamp_fraction, get_limit_setting
 from ai_core.rag.visibility import DEFAULT_VISIBILITY, Visibility
+from ai_core.agent.runtime_config import RuntimeConfig
+from ai_core.agent.scope_policy import guard_mutation, PolicyViolation
+from ai_core.tool_contracts.base import ToolContext
 from common.logging import get_log_context
 from ai_core.infra.observability import (
     emit_event,
@@ -1444,7 +1447,22 @@ class _TenantScopedClient:
             scope=self._scope,
         )
 
-    def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
+    def upsert_chunks(
+        self,
+        chunks: Iterable[Chunk],
+        *,
+        tool_context: ToolContext | None = None,
+        runtime_config: RuntimeConfig | None = None,
+    ) -> int:
+        if runtime_config is not None:
+            if tool_context is None:
+                raise PolicyViolation("tool_context_required_for_mutation")
+            guard_mutation(
+                "vector_upsert",
+                tool_context,
+                runtime_config,
+                details={"tenant_id": self._tenant_id},
+            )
         chunk_list = list(chunks)
         coerced: list[Chunk] = []
         for chunk in chunk_list:

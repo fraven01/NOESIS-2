@@ -4,7 +4,7 @@ import time
 import json
 from importlib import import_module
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 from contextlib import nullcontext
 from uuid import UUID
 
@@ -15,19 +15,7 @@ from common.logging import get_logger
 from django.utils import timezone
 from django.conf import settings
 
-from documents import (
-    DocumentPipelineConfig,
-    DocxDocumentParser,
-    HtmlDocumentParser,
-    ImageDocumentParser,
-    MarkdownDocumentParser,
-    ParserDispatcher,
-    ParserRegistry,
-    PdfDocumentParser,
-    PptxDocumentParser,
-    ParsedResult,
-    ParsedTextBlock,
-)
+from documents import DocumentPipelineConfig
 
 from . import tasks as pipe
 from .case_events import emit_ingestion_case_event
@@ -65,17 +53,6 @@ def _load_case_observability_context(
         if record:
             return dict(record)
     return {}
-
-
-def _meta_store_path(tenant: str, case: str | None, document_id: str) -> str:
-    return "/".join(
-        (
-            object_store.sanitize_identifier(tenant),
-            object_store.sanitize_identifier(case or "upload"),
-            "uploads",
-            f"{document_id}.meta.json",
-        )
-    )
 
 
 def _status_store_path(tenant: str, case: str | None, document_id: str) -> str:
@@ -134,54 +111,6 @@ def _write_pipeline_state(
         else:
             serialized[key] = value
     object_store.write_json(status_path, serialized)
-
-
-def _normalize_step_result(result: Dict[str, object]) -> Dict[str, object]:
-    normalized: Dict[str, object] = {}
-    for key, value in result.items():
-        if isinstance(value, Path):
-            normalized[key] = str(value)
-        else:
-            normalized[key] = value
-    return normalized
-
-
-def _ensure_step(
-    tenant: str,
-    case: str | None,
-    document_id: str,
-    state: Dict[str, object],
-    step_name: str,
-    run_step: Callable[[], Dict[str, object]],
-) -> tuple[Dict[str, object], bool]:
-    steps = state.setdefault("steps", {})
-    cached = steps.get(step_name)
-    if isinstance(cached, dict):
-        cached_path = cached.get("path")
-        if cached_path:
-            if (object_store.BASE_PATH / str(cached_path)).exists():
-                cached_result = {
-                    key: cached[key]
-                    for key in cached
-                    if key not in {"completed_at", "cleaned"}
-                }
-                return cached_result, True
-        elif "path" not in cached:
-            cached_result = {
-                key: cached[key]
-                for key in cached
-                if key not in {"completed_at", "cleaned"}
-            }
-            return cached_result, True
-
-    result = _normalize_step_result(run_step())
-    steps[step_name] = {
-        **result,
-        "completed_at": time.time(),
-        "cleaned": False,
-    }
-    _write_pipeline_state(tenant, case, document_id, state)
-    return result, False
 
 
 def _normalize_object_store_relative_path(path: str, base_path: Path) -> Path:
@@ -254,27 +183,6 @@ def cleanup_raw_payload_artifact(raw_payload_path: Optional[str]) -> List[str]:
     if not raw_payload_path:
         return []
     return _cleanup_artifacts([raw_payload_path])
-
-
-def _mark_cleaned(
-    tenant: str,
-    case: str | None,
-    document_id: str,
-    state: Dict[str, object],
-    removed_paths: Iterable[str],
-) -> None:
-    removed_set = {str(path) for path in removed_paths}
-    steps = state.setdefault("steps", {})
-    updated = False
-    for step_name, step_data in list(steps.items()):
-        if not isinstance(step_data, dict):
-            continue
-        if step_data.get("path") in removed_set:
-            step_data["path"] = None
-            step_data["cleaned"] = True
-            updated = True
-    if updated:
-        _write_pipeline_state(tenant, case, document_id, state)
 
 
 _CONFIG_FIELD_NAMES = {
@@ -397,153 +305,6 @@ def _build_document_pipeline_config(
         config_kwargs.update(runtime_overrides)
 
     return DocumentPipelineConfig(**config_kwargs)
-
-
-def _build_parser_dispatcher() -> ParserDispatcher:
-    """Return a dispatcher with the configured parser order."""
-
-    registry = ParserRegistry()
-    registry.register(MarkdownDocumentParser())
-    registry.register(HtmlDocumentParser())
-    registry.register(DocxDocumentParser())
-    registry.register(PptxDocumentParser())
-    registry.register(PdfDocumentParser())
-    registry.register(ImageDocumentParser())
-    text_parser_cls = getattr(
-        import_module("documents.parsers_text"), "TextDocumentParser"
-    )
-    registry.register(text_parser_cls())
-    return ParserDispatcher(registry)
-
-
-def _render_parsed_text(parsed: ParsedResult) -> str:
-    """Flatten parsed text blocks into a single string for downstream tasks."""
-
-    if parsed.text_blocks:
-        return "\n\n".join(block.text for block in parsed.text_blocks)
-    return ""
-
-
-def _parsed_text_path(tenant: str, case: str | None, document_identifier: UUID) -> str:
-    tenant_segment = object_store.sanitize_identifier(str(tenant))
-    case_segment = object_store.sanitize_identifier(case or "upload")
-    document_segment = object_store.sanitize_identifier(str(document_identifier))
-    return "/".join(
-        [tenant_segment, case_segment, "text", f"{document_segment}.parsed.txt"]
-    )
-
-
-def _parsed_blocks_path(
-    tenant: str, case: str | None, document_identifier: UUID
-) -> str:
-    tenant_segment = object_store.sanitize_identifier(str(tenant))
-    case_segment = object_store.sanitize_identifier(case or "upload")
-    document_segment = object_store.sanitize_identifier(str(document_identifier))
-    return "/".join(
-        [tenant_segment, case_segment, "text", f"{document_segment}.parsed.json"]
-    )
-
-
-def _serialise_text_block(block: ParsedTextBlock) -> Dict[str, object]:
-    payload: Dict[str, object] = {
-        "text": block.text,
-        "kind": str(block.kind),
-        "section_path": list(block.section_path) if block.section_path else None,
-        "page_index": block.page_index,
-        "table_meta": dict(block.table_meta) if block.table_meta is not None else None,
-        "language": block.language,
-    }
-    metadata = getattr(block, "metadata", None)
-    if isinstance(metadata, Mapping):
-        parent_ref = metadata.get("parent_ref")
-        if parent_ref:
-            payload["parent_ref"] = parent_ref
-        locator = metadata.get("locator")
-        if locator:
-            payload["locator"] = locator
-    return payload
-
-
-# TODO: check if we still need this function
-# def _persist_parsed_text(
-#     tenant: str,
-#     case: str | None,
-#     document_identifier: UUID,
-#     parsed: ParsedResult,
-# ) -> Dict[str, object]:
-#     text_content = _render_parsed_text(parsed)
-#     text_path = _parsed_text_path(tenant, case, document_identifier)
-#     object_store.put_bytes(text_path, text_content.encode("utf-8"))
-
-#     blocks_path = _parsed_blocks_path(tenant, case, document_identifier)
-#     serialised_blocks = [
-#         {"index": index, **_serialise_text_block(block)}
-#         for index, block in enumerate(parsed.text_blocks)
-#     ]
-#     payload = {
-#         "blocks": serialised_blocks,
-#         "statistics": dict(parsed.statistics),
-#         "text": text_content,
-#     }
-#     object_store.write_json(blocks_path, payload)
-
-#     return {
-#         "path": text_path,
-#         "text_path": text_path,
-#         "blocks_path": blocks_path,
-#         "statistics": dict(parsed.statistics),
-#     }
-
-
-def _extract_blob_payload_bytes(document: object) -> bytes | None:
-    blob = getattr(document, "blob", None)
-    if hasattr(blob, "decoded_payload"):
-        try:
-            payload = blob.decoded_payload()
-        except Exception:  # pragma: no cover - defensive guard
-            return None
-        if isinstance(payload, (bytes, bytearray)):
-            return bytes(payload)
-    payload_attr = getattr(blob, "payload", None)
-    if isinstance(payload_attr, (bytes, bytearray)):
-        return bytes(payload_attr)
-    return None
-
-
-def _extract_external_id(document: object) -> str | None:
-    meta = getattr(document, "meta", None)
-    external_ref = getattr(meta, "external_ref", None)
-    if isinstance(external_ref, Mapping):
-        candidate = external_ref.get("external_id")
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
-    return None
-
-
-def _extract_meta_media_type(document: object) -> str | None:
-    media_type = getattr(document, "media_type", None)
-    if isinstance(media_type, str) and media_type.strip():
-        return media_type.strip().lower()
-    return None
-
-
-def _hydrate_blob_payload(repository: object, document: object) -> bytes | None:
-    blob = getattr(document, "blob", None)
-    if blob is None:
-        return None
-    payload = _extract_blob_payload_bytes(document)
-    if payload is not None:
-        return payload
-    uri = getattr(blob, "uri", None)
-    storage = getattr(repository, "_storage", None)
-    if uri and storage is not None:
-        try:
-            payload = storage.get(uri)  # type: ignore[call-arg]
-        except Exception:
-            return None
-        object.__setattr__(blob, "payload", payload)
-        return payload
-    return None
 
 
 def partition_document_ids(

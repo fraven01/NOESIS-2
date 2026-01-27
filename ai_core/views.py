@@ -2193,14 +2193,12 @@ class CrawlerIngestionRunnerView(APIView):
             )
 
         lifecycle_store = _resolve_lifecycle_store()
-        # Note: graph_factory is always None now (Finding #5 fix removed module-level import)
-        # Tests that need custom graphs should patch run_crawler_runner directly
+        # Tests that need custom graphs should patch run_crawler_runner directly.
         try:
             result = run_crawler_runner(
                 meta=meta,
                 request_model=request_model,
                 lifecycle_store=lifecycle_store,
-                graph_factory=None,
             )
         except CrawlerRunError as exc:
             payload = build_tool_error_payload(

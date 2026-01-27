@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 import html
 import re
-
-
-DEFAULT_HISTORY_LIMIT = 6
 
 
 def coerce_optional_text(value: object) -> str | None:
@@ -42,17 +38,6 @@ def coerce_optional_int(value: object, *, minimum: int | None = None) -> int | N
     if minimum is not None and candidate < minimum:
         candidate = minimum
     return candidate
-
-
-def coerce_optional_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        return normalized in {"1", "true", "yes", "on"}
-    return False
 
 
 def build_hybrid_config_from_payload(
@@ -489,11 +474,6 @@ def _build_download_url(document_id: str | None) -> str | None:
         return None
 
 
-def resolve_history_limit() -> int:
-    value = coerce_optional_int(os.getenv("RAG_CHAT_HISTORY_MAX_MESSAGES"), minimum=1)
-    return value or DEFAULT_HISTORY_LIMIT
-
-
 def load_history(state: object) -> list[dict[str, str]]:
     if not isinstance(state, dict):
         return []
@@ -510,22 +490,3 @@ def load_history(state: object) -> list[dict[str, str]]:
             continue
         cleaned.append({"role": role, "content": content})
     return cleaned
-
-
-def append_history(
-    history: list[dict[str, str]],
-    *,
-    role: str,
-    content: str | None,
-) -> None:
-    if not content:
-        return
-    history.append({"role": role, "content": content})
-
-
-def trim_history(history: list[dict[str, str]], *, limit: int) -> list[dict[str, str]]:
-    if limit <= 0:
-        return history
-    if len(history) <= limit:
-        return history
-    return history[-limit:]
